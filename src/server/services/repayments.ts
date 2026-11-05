@@ -50,7 +50,9 @@ import { railForWorld } from "./worlds";
  * - capture of gross G against outstanding fee F' / principal P'
  *   (fee first): Dr `cash_paypal` G / Cr `fee_income` f / Cr
  *   `loans_receivable` p / Cr `payable_to_borrower[borrower]` r;
- * - holders' share of the fee collected BY THIS CAPTURE: H = floor(f×80/100),
+ * - holders' share of the fee collected BY THIS CAPTURE, cumulative so
+ *   flooring never loses a cent across partial payments:
+ *   H = floor((F_before+f)×80/100) − floor(F_before×80/100),
  *   Dr `note_interest_expense` H / Cr `notes_payable[holder_i]` h_i,
  *   distributed pro rata over the series' positions at that moment
  *   (largest remainder). Each holder's position `units` also grows by h_i
@@ -150,7 +152,7 @@ async function createInvoiceRepaymentLink(tx: Db, loan: LoanRow): Promise<void> 
   }
   const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
   const amountCents = BigInt(invoice.amount_cents);
-  const description = `Invoice ${invoice.description ?? ""} — pay to Mandate on behalf of ${agent?.name ?? "the borrower"}`;
+  const description = invoiceLinkDescription(invoice.description ?? "", agent?.name ?? "the borrower");
 
   const rail = await railForWorld(tx, worldId);
   const { operationId } = await enqueueOperation(tx, {
@@ -161,7 +163,7 @@ async function createInvoiceRepaymentLink(tx: Db, loan: LoanRow): Promise<void> 
     sourceId: loan.id,
     request: buildCreateOrderRequest({
       amountCents,
-      description: description.slice(0, PAYPAL_DESCRIPTION_MAX),
+      description,
       customId: loan.id,
       returnUrl: checkoutUrl("/checkout/invoice/return"),
       cancelUrl: checkoutUrl("/checkout/invoice/cancel"),
@@ -178,7 +180,21 @@ async function createInvoiceRepaymentLink(tx: Db, loan: LoanRow): Promise<void> 
   });
 }
 
-registerLoanActivatedHook(createInvoiceRepaymentLink);
+/**
+ * The invoice link's order description: `Invoice <description> — pay to
+ * Mandate on behalf of <agent name>` (no double space for a blank
+ * description), cut to PayPal's 127-character limit.
+ */
+export function invoiceLinkDescription(invoiceDescription: string, agentName: string): string {
+  const text = invoiceDescription.trim();
+  const full = `Invoice ${text ? `${text} ` : ""}— pay to Mandate on behalf of ${agentName}`;
+  return full.slice(0, PAYPAL_DESCRIPTION_MAX);
+}
+
+/** The production loan-activated hook (exported so tests that reset hooks can re-register it). */
+export const invoiceRepaymentLinkHook = createInvoiceRepaymentLink;
+
+registerLoanActivatedHook(invoiceRepaymentLinkHook);
 
 /**
  * Executes a link's queued `order.create` if it hasn't produced an order
@@ -390,7 +406,7 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
  *
  * In the transaction (series → loan → positions locks): the waterfall
  * on the loan's CURRENT outstanding (fee first), the repayment row, the
- * repayment journal, the holders' share on the fee part of THIS capture,
+ * repayment journal, the (cumulative) holders' share for THIS capture's fee,
  * the loan's new outstanding (ACTIVE → REPAID at zero, via the loan
  * machine), events, and — when there is a remainder — the remainder
  * payout's enqueue. The payout is executed after commit.
@@ -499,7 +515,11 @@ export async function applyRepaymentCapture(
       postings: repaymentPostings,
     });
 
-    const holdersCents = holdersShare(split.fee);
+    // Cumulative, so partial payments never lose cents to flooring: the
+    // holders' share of everything collected so far minus what earlier
+    // captures already distributed (fee 1 then 749 → 0 then 600).
+    const feePaidBefore = loan.feeCents - owed.feeCents;
+    const holdersCents = holdersShare(feePaidBefore + split.fee) - holdersShare(feePaidBefore);
     let holdersPaid = 0n;
     if (holdersCents > 0n && series) {
       // Ruling N: series row (locked above) → position rows.

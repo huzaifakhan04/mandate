@@ -7,7 +7,7 @@ import "@/server/contracts/tools";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
-import { agents, apiKeys, journalEntries, loans, offers, paypalOperations } from "@/server/db/schema";
+import { agents, apiKeys, journalEntries, loans, offers, paypalOperations, repaymentLinks } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { disclosureHash } from "@/server/domain/disclosure";
 import { availableLiquidity } from "@/server/domain/liquidity";
@@ -20,6 +20,7 @@ import {
   applyPayoutOutcome,
   registerLoanActivatedHook,
 } from "@/server/services/loans";
+import { invoiceRepaymentLinkHook } from "@/server/services/repayments";
 import { createWorld } from "@/server/services/worlds";
 
 type Data = Record<string, unknown>;
@@ -102,6 +103,9 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
   afterEach(() => {
     delete process.env.API_KEY_PEPPER;
     __resetLoanActivatedHooksForTests();
+    // Keep the production hook (Task 7's invoice link) registered: the
+    // reset only exists to drop the per-test fixture hooks.
+    registerLoanActivatedHook(invoiceRepaymentLinkHook);
   });
 
   it("check_eligibility on an empty pool: not eligible (insufficient_liquidity), with a quote", async () => {
@@ -246,6 +250,11 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     });
     const history = (loanData.history as Data[]).map((e) => e.type);
     expect(history).toEqual(["loan.offered", "loan.accepted", "loan.disbursed"]);
+
+    // Task 7: the invoice's repayment link was created on activation.
+    const links = await db.select().from(repaymentLinks).where(eq(repaymentLinks.loanId, acceptedData.loan_id as string));
+    expect(links).toHaveLength(1);
+    expect(links[0]?.amountCents).toBe(40000n);
   });
 
   it("no invoice → collateral None", async () => {

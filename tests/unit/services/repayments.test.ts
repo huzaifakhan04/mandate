@@ -23,6 +23,7 @@ import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
 import { settleCheckoutByOrderId } from "@/server/services/checkouts";
 import { pollPayoutStatus } from "@/server/services/payoutPolling";
+import { invoiceLinkDescription } from "@/server/services/repayments";
 import { createWorld } from "@/server/services/worlds";
 
 type Data = Record<string, unknown>;
@@ -323,6 +324,37 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const again = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId });
     expect(again.httpStatus).toBe(409);
     expect(again.envelope.status).toBe("INVALID_TRANSITION");
+  });
+
+  it("holders' share is cumulative over partial payments: fee paid as 1 then 749 cents → holders 600 in total", async () => {
+    const worldId = await createSimWorld(db);
+    const lender = await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId, { invoice: false });
+
+    for (const amount of [1, 749]) {
+      const repay = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: amount });
+      const checkoutId = (repay.envelope.data as Data).checkout_id as string;
+      await simApprove(db, checkoutId);
+      const done = await call(db, "confirm_checkout", borrower.key, { checkout_id: checkoutId });
+      expect(done.envelope.status).toBe("COMPLETED");
+    }
+
+    expect(await bal(db, worldId, "fee_income")).toBe(-750n);
+    expect(await bal(db, worldId, "note_interest_expense")).toBe(600n);
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
+    const [loan] = await db.select().from(loans).where(eq(loans.id, borrower.loanId));
+    expect(loan?.outstandingCents).toBe(25000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+    await expectPositionsMatchLedger(db, worldId);
+  });
+
+  it("invoice link description: no double space when the invoice description is blank", () => {
+    expect(invoiceLinkDescription("Website build", "Acme Agent")).toBe(
+      "Invoice Website build — pay to Mandate on behalf of Acme Agent",
+    );
+    expect(invoiceLinkDescription("", "Acme Agent")).toBe("Invoice — pay to Mandate on behalf of Acme Agent");
+    expect(invoiceLinkDescription("   ", "Acme Agent")).toBe("Invoice — pay to Mandate on behalf of Acme Agent");
+    expect(invoiceLinkDescription("x".repeat(500), "Acme Agent").length).toBeLessThanOrEqual(127);
   });
 
   it("repay_loan: overpaying → 400 AMOUNT_EXCEEDS_OUTSTANDING; another agent's loan → NOT_FOUND", async () => {

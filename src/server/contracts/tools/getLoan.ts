@@ -27,7 +27,8 @@ export const getLoanTool = defineTool({
     "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, DISBURSEMENT_FAILED, " +
     "REPAID), principal, fee, outstanding balance, due date, the invoice repayment link to forward " +
     "to the client (if the loan has an invoice) and full event history. Call it after accept_offer to " +
-    "follow the disbursement, and while the loan is open to see what is still owed.",
+    "follow the disbursement, and while the loan is open to see what is still owed. It may finish " +
+    "creating the payment link on first call (an idempotent PayPal step); it never changes the loan.",
   auth: "agent",
   mutating: false,
   readOnly: true,
