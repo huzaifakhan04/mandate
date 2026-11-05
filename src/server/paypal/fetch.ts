@@ -1,11 +1,11 @@
 import { randomUUID } from "crypto";
 
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { scoped } from "../db/scoped";
 import { paypalOperations } from "../db/schema";
-import { paypalConfig } from "./config";
+import { PayPalConfigError, paypalConfig, paypalTimeoutMs } from "./config";
 import { redact } from "./redact";
 import { getAccessToken } from "./token";
 
@@ -20,11 +20,11 @@ export interface PaypalFetchOp {
   path: string;
   body?: unknown;
   /**
-   * Caller-supplied operation id. Used by callers (e.g. `payouts.send`)
-   * that must embed the id into the request body itself (PayPal's
-   * `sender_batch_id`) before the request is sent. When omitted, a fresh
-   * id is generated and becomes the `paypal_operations.id` /
-   * `PayPal-Request-Id`.
+   * Caller-supplied operation id. Used by callers that need the same
+   * logical operation (e.g. a payout keyed by a loan/note id) to always
+   * reuse the same `PayPal-Request-Id` / `paypal_operations.id` across
+   * separate invocations — so a duplicate call for the same id never
+   * re-sends money. When omitted, a fresh id is generated.
    */
   operationId?: string;
 }
@@ -54,8 +54,27 @@ export class PayPalApiError extends Error {
   }
 }
 
+/**
+ * A fatal, non-retryable failure that happened before/outside the normal
+ * request/retry loop (or after exhausting it) — e.g. the retry budget
+ * for a network/timeout error ran out.
+ */
+export class PayPalNetworkError extends Error {
+  constructor(
+    message: string,
+    readonly operationCause: unknown,
+  ) {
+    super(message);
+    this.name = "PayPalNetworkError";
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function describeError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 async function parseJsonSafe(res: Response): Promise<unknown> {
@@ -109,23 +128,53 @@ function extractDebugId(body: unknown): string | undefined {
 }
 
 /**
+ * The headers logged alongside the request body. The bearer token is
+ * never included in the first place (not merely masked) — only the
+ * non-secret `PayPal-Request-Id` is kept for traceability.
+ */
+function buildLoggedHeaders(requestId: string): Record<string, string> {
+  return { "PayPal-Request-Id": requestId };
+}
+
+interface EnsureOperationRowResult {
+  id: string;
+  /**
+   * Set when an explicit, caller-supplied `operationId` was reused and
+   * the prior call for it already succeeded — its stored result is
+   * returned as-is, without ever calling PayPal again.
+   */
+  reusedResult: PaypalFetchResult<unknown> | null;
+}
+
+/**
  * Creates the `paypal_operations` row for this call before any request is
- * sent. Its id is the value PayPal's idempotency header (`PayPal-Request-Id`)
- * carries for every attempt of this call, including retries.
+ * sent — its id is the value sent as `PayPal-Request-Id` for every
+ * attempt of this call, including retries. The (redacted) request is
+ * stored at insert time, so even a failure that never reaches the retry
+ * loop (e.g. a config error) still leaves a row with the request on it.
+ *
+ * When `explicitId` names a row that already exists, it is re-selected
+ * scoped to `worldId`: reusing an id that belongs to a different world
+ * is refused outright (never silently creates/returns another world's
+ * row), and reusing an id whose call already succeeded short-circuits —
+ * no new PayPal call is made, the stored result is just replayed. This
+ * is what makes `orders.create`/`payouts.send` idempotent for a
+ * caller-supplied id (e.g. derived from a loan/note id): posting the
+ * same logical payout twice can't move money twice.
  *
  * Writes directly with `db.insert` (rather than through `scoped()`) so an
  * explicit, caller-chosen `id` can be supplied — `scoped().insert()`
- * doesn't let the caller set the primary key. `worldId` is still only ever
- * the one passed in here.
+ * doesn't let the caller set the primary key. `worldId` is still only
+ * ever the one passed in here.
  */
-async function createOperationRow(
+async function ensureOperationRow(
   db: Db,
   worldId: string,
   kind: string,
-  explicitId: string | undefined,
-): Promise<string> {
-  const id = explicitId ?? randomUUID();
-  const [row] = await db
+  id: string,
+  loggedRequest: unknown,
+): Promise<EnsureOperationRowResult> {
+  const [inserted] = await db
     .insert(paypalOperations)
     .values({
       id,
@@ -135,15 +184,42 @@ async function createOperationRow(
       requestId: id,
       status: "pending",
       attempts: 0,
+      request: redact(loggedRequest),
     })
     .onConflictDoNothing({ target: paypalOperations.id })
     .returning();
 
-  if (row) {
-    return row.id;
+  if (inserted) {
+    return { id: inserted.id, reusedResult: null };
   }
-  // The row already existed (an explicit, reused operationId) — trust the caller's id.
-  return id;
+
+  // The row already existed — this must be an explicit, caller-reused
+  // operationId (a fresh `randomUUID()` would never collide).
+  const [existing] = await db
+    .select()
+    .from(paypalOperations)
+    .where(
+      and(eq(paypalOperations.id, id), eq(paypalOperations.worldId, worldId)),
+    );
+
+  if (!existing) {
+    throw new Error(
+      `operationId ${id} belongs to a different world, or vanished after a conflicting insert — refusing to reuse it`,
+    );
+  }
+
+  if (existing.status === "succeeded") {
+    return {
+      id: existing.id,
+      reusedResult: {
+        status: existing.httpStatus ?? 200,
+        body: existing.response,
+        operationId: existing.id,
+      },
+    };
+  }
+
+  return { id: existing.id, reusedResult: null };
 }
 
 async function updateOperationRow(
@@ -163,88 +239,146 @@ async function updateOperationRow(
  * Idempotent PayPal REST call. Sends `PayPal-Request-Id` equal to the
  * `paypal_operations.id` created for this call, refreshes the access
  * token and retries once on a 401, retries up to twice (with 300ms/900ms
- * backoff) on a 5xx or network error — always with the *same* request id
- * — and persists the redacted request/response, status, latency and
- * attempt count. Throws `PayPalApiError` on a final non-2xx response.
+ * backoff) on a 5xx, a timed-out/aborted request, or any other network
+ * error — always with the *same* request id — and persists the redacted
+ * request/response, status, latency and attempt count. An OAuth token
+ * failure (network/timeout/non-2xx) is retried within the same budget as
+ * the main request, rather than failing the call outright.
+ *
+ * Every exit — success, a final non-2xx, a network-error budget
+ * exhaustion, or an unexpected/config error — writes a terminal
+ * `paypal_operations` status (`succeeded`/`failed`); none leave the row
+ * stuck `pending`. Throws `PayPalApiError` on a final non-2xx response
+ * (including an exhausted network-error budget, as status 0), or
+ * rethrows a `PayPalConfigError` / wraps anything else as
+ * `PayPalNetworkError`.
  */
 export async function paypalFetch<T>(
   db: Db,
   op: PaypalFetchOp,
 ): Promise<PaypalFetchResult<T>> {
   const { worldId, kind, method, path, body: requestBody } = op;
-  const operationId = await createOperationRow(
+  const operationIdCandidate = op.operationId ?? randomUUID();
+
+  const loggedRequest = {
+    method,
+    path,
+    headers: buildLoggedHeaders(operationIdCandidate),
+    body: requestBody,
+  };
+
+  const { id: operationId, reusedResult } = await ensureOperationRow(
     db,
     worldId,
     kind,
-    op.operationId,
+    operationIdCandidate,
+    loggedRequest,
   );
+
+  if (reusedResult) {
+    return reusedResult as PaypalFetchResult<T>;
+  }
+
   const requestId = operationId;
+  const startedAt = Date.now();
 
-  const { baseUrl } = paypalConfig();
-  const url = `${baseUrl}${path}`;
-
-  let accessToken = await getAccessToken();
-  let triedRefresh = false;
-  let networkRetries = 0;
   let attempts = 0;
   let lastStatus = 0;
   let lastBody: unknown;
-  let networkErrorMessage: string | undefined;
-  const startedAt = Date.now();
+  let lastErrorMessage: string | undefined;
+  let fatalError: unknown;
 
-  for (;;) {
-    attempts += 1;
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
-      "PayPal-Request-Id": requestId,
-    };
+  try {
+    const { baseUrl } = paypalConfig();
+    const url = `${baseUrl}${path}`;
 
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method,
-        headers,
-        ...(requestBody !== undefined
-          ? { body: JSON.stringify(requestBody) }
-          : {}),
-      });
-    } catch (err) {
-      networkErrorMessage = err instanceof Error ? err.message : String(err);
-      lastStatus = 0;
-      lastBody = undefined;
-      if (networkRetries < MAX_RETRIES) {
-        await sleep(BACKOFF_MS[networkRetries] as number);
-        networkRetries += 1;
+    let triedRefresh = false;
+    let forceTokenRefresh = false;
+    let retries = 0;
+
+    for (;;) {
+      attempts += 1;
+
+      let accessToken: string;
+      try {
+        accessToken = await getAccessToken(forceTokenRefresh);
+        forceTokenRefresh = false;
+      } catch (err) {
+        lastErrorMessage = describeError(err);
+        lastStatus = 0;
+        lastBody = undefined;
+        if (retries < MAX_RETRIES) {
+          await sleep(BACKOFF_MS[retries] as number);
+          retries += 1;
+          continue;
+        }
+        break;
+      }
+
+      let res: Response;
+      try {
+        res = await fetch(url, {
+          method,
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${accessToken}`,
+            "PayPal-Request-Id": requestId,
+          },
+          signal: AbortSignal.timeout(paypalTimeoutMs()),
+          ...(requestBody !== undefined
+            ? { body: JSON.stringify(requestBody) }
+            : {}),
+        });
+      } catch (err) {
+        // Includes an `AbortError` from the timeout above — treated the
+        // same as any other network error.
+        lastErrorMessage = describeError(err);
+        lastStatus = 0;
+        lastBody = undefined;
+        if (retries < MAX_RETRIES) {
+          await sleep(BACKOFF_MS[retries] as number);
+          retries += 1;
+          continue;
+        }
+        break;
+      }
+
+      lastStatus = res.status;
+      lastBody = await parseJsonSafe(res);
+      lastErrorMessage = undefined;
+
+      if (lastStatus === 401 && !triedRefresh) {
+        triedRefresh = true;
+        forceTokenRefresh = true;
         continue;
       }
+
+      if (lastStatus >= 500 && retries < MAX_RETRIES) {
+        await sleep(BACKOFF_MS[retries] as number);
+        retries += 1;
+        continue;
+      }
+
       break;
     }
-
-    lastStatus = res.status;
-    lastBody = await parseJsonSafe(res);
-    networkErrorMessage = undefined;
-
-    if (lastStatus === 401 && !triedRefresh) {
-      triedRefresh = true;
-      accessToken = await getAccessToken(true);
-      continue;
+  } catch (err) {
+    fatalError = err;
+    if (attempts === 0) {
+      attempts = 1;
     }
-
-    if (lastStatus >= 500 && networkRetries < MAX_RETRIES) {
-      await sleep(BACKOFF_MS[networkRetries] as number);
-      networkRetries += 1;
-      continue;
-    }
-
-    break;
+    lastStatus = 0;
+    lastBody = undefined;
+    lastErrorMessage = describeError(err);
   }
 
   const latencyMs = Date.now() - startedAt;
-  const success = lastStatus >= 200 && lastStatus < 300;
+  const success =
+    fatalError === undefined && lastStatus >= 200 && lastStatus < 300;
 
+  // Every exit path reaches this update — success, a final non-2xx, an
+  // exhausted retry budget, or the fatal-error catch above — so no row is
+  // ever left `pending`.
   await updateOperationRow(db, worldId, operationId, {
-    request: redact({ method, path, headers: buildLoggedHeaders(requestId), body: requestBody }),
     response: redact(lastBody),
     httpStatus: lastStatus === 0 ? null : lastStatus,
     latencyMs,
@@ -252,34 +386,28 @@ export async function paypalFetch<T>(
     status: success ? "succeeded" : "failed",
     lastError: success
       ? null
-      : (networkErrorMessage ?? extractErrorName(lastBody)),
+      : (lastErrorMessage ?? extractErrorName(lastBody)),
     paypalId: extractPaypalId(lastBody),
   });
 
-  if (!success) {
-    if (lastStatus === 0) {
-      throw new PayPalApiError({
-        status: 0,
-        name: "PayPalNetworkError",
-        details: { message: networkErrorMessage },
-      });
+  if (fatalError !== undefined) {
+    if (fatalError instanceof PayPalConfigError) {
+      throw fatalError;
     }
+    throw new PayPalNetworkError(
+      lastErrorMessage ?? "PayPal request failed before any attempt completed",
+      fatalError,
+    );
+  }
+
+  if (!success) {
     throw new PayPalApiError({
       status: lastStatus,
-      name: extractErrorName(lastBody),
-      details: lastBody,
+      name: lastStatus === 0 ? "PayPalNetworkError" : extractErrorName(lastBody),
+      details: redact(lastBody),
       debugId: extractDebugId(lastBody),
     });
   }
 
   return { status: lastStatus, body: lastBody as T, operationId };
-}
-
-/**
- * The headers logged alongside the request body, with the bearer token
- * never included in the first place (not merely masked) — only the
- * non-secret `PayPal-Request-Id` is kept for traceability.
- */
-function buildLoggedHeaders(requestId: string): Record<string, string> {
-  return { "PayPal-Request-Id": requestId };
 }

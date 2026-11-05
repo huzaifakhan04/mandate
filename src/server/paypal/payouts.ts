@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 
 import type { Db } from "../db/client";
-import { centsToAmount } from "./orders";
+import { assertPositiveAmountCents, centsToAmount } from "./orders";
 import { paypalFetch } from "./fetch";
 
 interface PayPalPayoutItem {
@@ -26,6 +26,20 @@ export interface SendPayoutParams {
   amountCents: bigint;
   note?: string;
   senderItemId: string;
+  /**
+   * Optional caller-supplied idempotency id (e.g. derived from a
+   * loan/note id). Reusing the same id for a retried call replays the
+   * original payout's result instead of sending money twice — it also
+   * becomes the batch's `sender_batch_id`. Omit to let this function
+   * mint a fresh id.
+   *
+   * NOTE: this only covers an exact-id replay. A duplicate
+   * `sender_batch_id` collision from two *different* operationIds that
+   * happen to target the same loan/note (e.g. a reconciler re-deriving
+   * an id slightly differently) is a P1 reconciliation concern, not
+   * handled here.
+   */
+  operationId?: string;
 }
 
 export interface SendPayoutResult {
@@ -38,14 +52,17 @@ export interface SendPayoutResult {
 /**
  * Submits a single-item PayPal Payouts batch. The batch's
  * `sender_batch_id` is the same id used as the `PayPal-Request-Id` /
- * `paypal_operations.id` for this call, generated up front so it can be
- * embedded in the request body before the request is sent.
+ * `paypal_operations.id` for this call, generated (or taken from
+ * `params.operationId`) up front so it can be embedded in the request
+ * body before the request is sent.
  */
 export async function send(
   db: Db,
   params: SendPayoutParams,
 ): Promise<SendPayoutResult> {
-  const operationId = randomUUID();
+  assertPositiveAmountCents(params.amountCents);
+
+  const operationId = params.operationId ?? randomUUID();
 
   const { body, operationId: confirmedOperationId } =
     await paypalFetch<PayPalPayoutResponse>(db, {
@@ -102,7 +119,7 @@ export async function get(
     worldId: params.worldId,
     kind: "payout.get",
     method: "GET",
-    path: `/v1/payments/payouts/${params.batchId}`,
+    path: `/v1/payments/payouts/${encodeURIComponent(params.batchId)}`,
   });
 
   return {

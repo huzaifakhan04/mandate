@@ -10,6 +10,8 @@ export interface CreateCheckoutParams {
   payeeEmail?: string;
   returnUrl: string;
   cancelUrl: string;
+  /** Optional caller-supplied idempotency id — see `orders.CreateOrderParams.operationId`. */
+  operationId?: string;
 }
 
 export interface RailCheckoutResult {
@@ -29,6 +31,7 @@ export interface RailCaptureResult {
   rail: RailName;
   operationId: string;
   status: string;
+  captureStatus: string;
   captureId: string;
   amountCents: bigint;
 }
@@ -52,6 +55,8 @@ export interface SendPayoutParams {
   amountCents: bigint;
   note?: string;
   senderItemId: string;
+  /** Optional caller-supplied idempotency id — see `payouts.SendPayoutParams.operationId`. */
+  operationId?: string;
 }
 
 export interface RailPayoutSendResult {

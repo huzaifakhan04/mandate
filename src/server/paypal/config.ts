@@ -18,6 +18,7 @@ export interface PayPalConfig {
 }
 
 const DEFAULT_BASE_URL = "https://api-m.sandbox.paypal.com";
+const DEFAULT_TIMEOUT_MS = 15_000;
 
 /**
  * Reads `PAYPAL_BASE_URL` (defaults to the sandbox host), `PAYPAL_CLIENT_ID`
@@ -36,4 +37,17 @@ export function paypalConfig(): PayPalConfig {
   }
 
   return { baseUrl, clientId, clientSecret };
+}
+
+/**
+ * Per-request timeout, in ms, for every outbound PayPal fetch (token and
+ * API calls alike). Defaults to 15s; override with `PAYPAL_TIMEOUT_MS`.
+ * An abort from this timeout is treated as a network error upstream (and
+ * so is retried with the same `PayPal-Request-Id`, within the normal
+ * retry budget).
+ */
+export function paypalTimeoutMs(): number {
+  const raw = process.env.PAYPAL_TIMEOUT_MS;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }

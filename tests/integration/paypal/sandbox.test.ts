@@ -38,7 +38,7 @@ describe.skipIf(!process.env.PAYPAL_CLIENT_ID)("PayPal sandbox integration", () 
     expect(token.length).toBeGreaterThan(0);
   });
 
-  it("creates a $1.00 order and reads it back as CREATED", async () => {
+  it("creates a $1.00 order and reads it back", async () => {
     const created = await orders.create(db, {
       worldId,
       amountCents: 100n,
@@ -49,12 +49,15 @@ describe.skipIf(!process.env.PAYPAL_CLIENT_ID)("PayPal sandbox integration", () 
     });
 
     expect(created.approveUrl).toContain("sandbox.paypal.com");
-    expect(created.status).toBe("CREATED");
+    // With `payment_source.paypal.experience_context` set, PayPal may
+    // return the order either as a plain CREATED order or already
+    // waiting on payer action — both are valid outcomes here.
+    expect(["CREATED", "PAYER_ACTION_REQUIRED"]).toContain(created.status);
 
     const fetched = await orders.get(db, {
       worldId,
       orderId: created.orderId,
     });
-    expect(fetched.status).toBe("CREATED");
+    expect(["CREATED", "PAYER_ACTION_REQUIRED"]).toContain(fetched.status);
   }, 30_000);
 });
