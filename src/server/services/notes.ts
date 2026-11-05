@@ -1,6 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
+import type { NextAction } from "../contracts/envelope";
 import type { Db } from "../db/client";
 import { agents, noteSeries, notePositions, noteTransactions } from "../db/schema";
 import { scoped } from "../db/scoped";
@@ -146,6 +147,13 @@ export async function createNotePurchase(
  * `currency_code: USD` — so there is no separate currency field to
  * compare). A mismatch credits nothing, posts no journal, and leaves the
  * note transaction `review` instead of `completed`.
+ *
+ * Fix round 2 (item 1): on a replay (the transaction isn't `pending`
+ * any more), the outcome reported must match what's actually stored —
+ * `completed` really was applied, `review` really is a mismatch,
+ * `failed` really did fail — never a blanket "applied" regardless of
+ * which terminal state the row is in (the bug that let a second
+ * `confirm_checkout` call after a mismatch claim `COMPLETED`).
  */
 async function applyNotePurchaseCaptureEffect(
   db: Db,
@@ -160,14 +168,25 @@ async function applyNotePurchaseCaptureEffect(
   if (!noteTx) {
     throw new Error(`note_transactions row ${args.createSourceId} not found in world ${worldId}`);
   }
-  // Already settled (success or mismatch-review) — nothing to do; keeps
-  // this safe to call on every replay without re-deriving the result.
-  if (noteTx.status !== "pending") {
+
+  const capturedAmountCents = BigInt(args.capture.amountCents);
+
+  // Already settled one way or another — nothing to (re-)apply, but the
+  // reported outcome must reflect which way it settled.
+  if (noteTx.status === "completed") {
     return { outcome: "applied", summary: "Already captured.", data: { amount_cents: Number(noteTx.amountCents) } };
+  }
+  if (noteTx.status === "review") {
+    return {
+      outcome: "mismatch",
+      reason: `captured ${capturedAmountCents.toString()} cents, expected ${noteTx.amountCents.toString()}`,
+    };
+  }
+  if (noteTx.status === "failed") {
+    return { outcome: "failed", reason: "this note purchase previously failed" };
   }
 
   const amountCents = noteTx.amountCents;
-  const capturedAmountCents = BigInt(args.capture.amountCents);
 
   if (capturedAmountCents !== amountCents) {
     await scoped(db, worldId).update(
@@ -271,10 +290,21 @@ async function resolveNotePurchaseOwnerAgentId(
   return position?.agentId ?? null;
 }
 
+/** Fix round 2 (item 4): points a failed note purchase back at `buy_notes` with its original amount. */
+async function notePurchaseRetryNextAction(
+  db: Db,
+  worldId: string,
+  createSourceId: string,
+): Promise<NextAction> {
+  const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, createSourceId));
+  return { tool: "buy_notes", args: noteTx ? { amount_cents: Number(noteTx.amountCents) } : {} };
+}
+
 registerCaptureHandler("note_purchase", {
   resolveOwnerAgentId: resolveNotePurchaseOwnerAgentId,
   applyEffect: (db, worldId, simNow, args) => applyNotePurchaseCaptureEffect(db, worldId, simNow, args),
   applyFailure: applyNotePurchaseFailure,
+  retryNextAction: notePurchaseRetryNextAction,
 });
 
 // ---------------------------------------------------------------------
@@ -304,6 +334,16 @@ const OPEN_REDEMPTION_STATUSES = ["pending"] as const;
  * also pass the balance check and double-spend the same units. Combined
  * with the series row lock, two concurrent `redeem_notes` calls for the
  * same agent can never both read a stale `positionUnits` snapshot.
+ *
+ * Fix round 2 (C1 race, item 2): the series row AND the agent's own
+ * `note_positions` row are both locked with `SELECT … FOR UPDATE`
+ * *before* `units`/the pending-redemption sum are read — otherwise two
+ * concurrent `redeem_notes` calls for the same agent could each read the
+ * position before either had inserted its pending redemption row, and
+ * both pass the balance check. Lock order everywhere in this module is
+ * **series row, then position row** (never the reverse) — `
+ * applyRedemptionPayoutOutcome`'s settlement follows the same order — so
+ * the two can never deadlock against each other.
  */
 export async function beginNoteRedemption(
   tx: Db,
@@ -312,15 +352,19 @@ export async function beginNoteRedemption(
   amountCents: bigint,
 ): Promise<RedeemNotesOutcome> {
   const seriesId = await getNoteSeriesId(tx, worldId);
-  // Row-lock the series so concurrent redemptions (or a future
-  // accept_offer disbursement) can't both pass the liquidity check
-  // against the same stale snapshot.
+  // Lock order: series row, then position row (see doc comment above).
   await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.id, seriesId));
 
-  const position = await scoped(tx, worldId).findOne(
+  const positionRow = await scoped(tx, worldId).findOne(
     notePositions,
     and(eq(notePositions.seriesId, seriesId), eq(notePositions.agentId, agentId))!,
   );
+  // Lock the position row itself (if it exists) before trusting its
+  // `units` or querying its pending redemptions — a brand-new agent with
+  // no position row yet has nothing to lock, and trivially redeems 0.
+  const position = positionRow
+    ? (await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.id, positionRow.id)))[0]
+    : undefined;
   const positionUnits = position?.units ?? 0n;
 
   const pendingRedemptions = position
@@ -478,6 +522,10 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
 
   const simAt = await getSimNow(db, worldId);
 
+  // Fix round 2 (C1 race, item 2): same lock order as `beginNoteRedemption`
+  // — series row, then position row — acquired before the position is
+  // mutated, so a concurrent redemption request and this settlement can
+  // never deadlock against each other.
   await db.transaction(async (tx) => {
     const updated = await scoped(tx, worldId).update(
       noteTransactions,
@@ -487,6 +535,12 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
     if (updated.length !== 1) {
       return;
     }
+
+    await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.id, position.seriesId));
+    const [lockedPosition] = await scoped(tx, worldId).forUpdate(
+      notePositions,
+      eq(notePositions.id, position.id),
+    );
 
     await postJournal(tx, {
       worldId,
@@ -501,10 +555,6 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
       ],
     });
 
-    const [lockedPosition] = await scoped(tx, worldId).forUpdate(
-      notePositions,
-      eq(notePositions.id, position.id),
-    );
     if (lockedPosition) {
       await scoped(tx, worldId).update(
         notePositions,

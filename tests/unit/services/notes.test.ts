@@ -296,6 +296,31 @@ describe("Fix round 1: C1 double redemption", () => {
     const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
     expect(position?.units).toBe(10000n); // untouched — nothing settled yet
   });
+
+  it("Fix round 2 (item 2): two truly concurrent redemptions of the full balance — exactly one wins", async () => {
+    const worldId = await createSimWorld(db);
+    const { key, agentId } = await createTestAgent(db, worldId);
+
+    const buyResult = await call(db, "buy_notes", key, { amount_cents: 7000 });
+    const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
+    await simApprove(db, checkoutId);
+    await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+
+    // Both transactions race for the series lock, then the position
+    // lock, before either reads `units`/the pending-redemption sum —
+    // the fix under test (Fix round 2, item 2) is locking the position
+    // row *before* that read, not after.
+    const [first, second] = await Promise.all([
+      db.transaction((tx) => beginNoteRedemption(tx, worldId, agentId, 7000n)),
+      db.transaction((tx) => beginNoteRedemption(tx, worldId, agentId, 7000n)),
+    ]);
+
+    const outcomes = [first.outcome, second.outcome].sort();
+    expect(outcomes).toEqual(["insufficient_note_balance", "submitted"]);
+
+    const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
+    expect(position?.units).toBe(7000n); // neither settled; still untouched
+  });
 });
 
 describe("Fix round 1: C2 payout item statuses", () => {
@@ -386,7 +411,8 @@ describe("Fix round 1: I3 terminal checkout failure", () => {
     expect(result.envelope.status).toBe("CHECKOUT_FAILED");
     expect(result.httpStatus).toBe(400);
     expect(result.envelope.reason_codes).toContain("order_voided");
-    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: {} }]);
+    // Fix round 2 (item 4): the retry next action carries the original amount.
+    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: { amount_cents: 4000 } }]);
 
     const [noteTx] = await db
       .select()
@@ -426,7 +452,8 @@ describe("Fix round 1: I3 terminal checkout failure", () => {
     expect(result.envelope.status).toBe("CHECKOUT_FAILED");
     expect(result.httpStatus).toBe(400);
     expect(result.envelope.reason_codes).toContain("INSTRUMENT_DECLINED");
-    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: {} }]);
+    // Fix round 2 (item 4): the retry next action carries the original amount.
+    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: { amount_cents: 4500 } }]);
 
     const [noteTx] = await db
       .select()
@@ -502,6 +529,25 @@ describe("Fix round 1: M2 amount mismatch / M3 no redundant order.get", () => {
     expect(tb.totalCents).toBe(0n);
     const cash = tb.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
     expect(cash?.balanceCents ?? 0n).toBe(0n); // nothing credited
+
+    // Fix round 2 (item 1): confirming the same (now `review`) checkout
+    // again must report the mismatch again — never COMPLETED — and still
+    // credit nothing.
+    const second = await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    expect(second.envelope.status).toBe("CHECKOUT_FAILED");
+    expect(second.envelope.status).not.toBe("COMPLETED");
+    expect(second.envelope.reason_codes).toContain("amount_mismatch");
+
+    const [noteTxAfter] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "buy")));
+    expect(noteTxAfter?.status).toBe("review");
+
+    const tbAfter = await trialBalance(db, worldId);
+    expect(tbAfter.totalCents).toBe(0n);
+    const cashAfter = tbAfter.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
+    expect(cashAfter?.balanceCents ?? 0n).toBe(0n); // still nothing credited
   });
 
   it("M3: confirming an already-completed checkout again makes no new order.get", async () => {
@@ -599,5 +645,161 @@ describe("Fix round 1: M1 missing payout receiver", () => {
     const redeem = await call(db, "redeem_notes", generated.key, { amount_cents: 2000 });
     expect(redeem.envelope.status).toBe("PAYOUT_RECEIVER_MISSING");
     expect(redeem.httpStatus).toBe(400);
+  });
+});
+
+describe("Fix round 2: item 3 — credit only on capture status COMPLETED", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  it("a succeeded capture operation with captureStatus PENDING leaves the checkout and note transaction pending", async () => {
+    const worldId = await createSimWorld(db);
+    const { key } = await createTestAgent(db, worldId);
+
+    const buyResult = await call(db, "buy_notes", key, { amount_cents: 6000 });
+    const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
+    await simApprove(db, checkoutId);
+
+    // Pre-seed the deterministic capture operation as succeeded at the
+    // HTTP level, but with PayPal's own capture object still PENDING
+    // (e.g. an eCheck) — nothing should be credited yet.
+    const captureOpId = deriveOperationId(worldId, "note_purchase_capture", checkoutId);
+    await db.insert(paypalOperations).values({
+      id: captureOpId,
+      worldId,
+      rail: "sim",
+      kind: "order.capture",
+      requestId: captureOpId,
+      status: "succeeded",
+      purpose: "note_purchase_capture",
+      sourceId: checkoutId,
+      paypalId: checkoutId,
+      attempts: 1,
+      response: {
+        orderId: checkoutId,
+        status: "COMPLETED",
+        captureId: "CAP-PENDING",
+        captureStatus: "PENDING",
+        amountCents: "6000",
+        recovered: false,
+      },
+    });
+
+    const result = await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    expect(result.envelope.status).toBe("PENDING");
+    expect(result.envelope.status).not.toBe("COMPLETED");
+
+    const [noteTx] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "buy")));
+    expect(noteTx?.status).toBe("pending");
+
+    const tb = await trialBalance(db, worldId);
+    expect(tb.totalCents).toBe(0n);
+    const cash = tb.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
+    expect(cash?.balanceCents ?? 0n).toBe(0n);
+  });
+
+  it("a succeeded capture operation with captureStatus DECLINED fails the checkout via applyFailure", async () => {
+    const worldId = await createSimWorld(db);
+    const { key } = await createTestAgent(db, worldId);
+
+    const buyResult = await call(db, "buy_notes", key, { amount_cents: 6500 });
+    const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
+    await simApprove(db, checkoutId);
+
+    const captureOpId = deriveOperationId(worldId, "note_purchase_capture", checkoutId);
+    await db.insert(paypalOperations).values({
+      id: captureOpId,
+      worldId,
+      rail: "sim",
+      kind: "order.capture",
+      requestId: captureOpId,
+      status: "succeeded",
+      purpose: "note_purchase_capture",
+      sourceId: checkoutId,
+      paypalId: checkoutId,
+      attempts: 1,
+      response: {
+        orderId: checkoutId,
+        status: "VOIDED",
+        captureId: "CAP-DECLINED",
+        captureStatus: "DECLINED",
+        amountCents: "6500",
+        recovered: false,
+      },
+    });
+
+    const result = await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    expect(result.envelope.status).toBe("CHECKOUT_FAILED");
+    expect(result.httpStatus).toBe(400);
+    expect(result.envelope.reason_codes).toContain("capture_declined");
+    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: { amount_cents: 6500 } }]);
+
+    const [noteTx] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "buy")));
+    expect(noteTx?.status).toBe("failed");
+
+    const tb = await trialBalance(db, worldId);
+    expect(tb.totalCents).toBe(0n);
+    const cash = tb.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
+    expect(cash?.balanceCents ?? 0n).toBe(0n);
+  });
+});
+
+describe("Fix round 2: item 5 — terminally-failed order.get fails the checkout", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  it("a 404 RESOURCE_NOT_FOUND on order.get fails the checkout instead of staying PENDING forever", async () => {
+    const worldId = await createSimWorld(db);
+    const { key } = await createTestAgent(db, worldId);
+
+    const buyResult = await call(db, "buy_notes", key, { amount_cents: 3500 });
+    const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
+
+    // Break the sim order's lookup so `order.get` 404s (RESOURCE_NOT_FOUND
+    // is classified failed_terminal — see classify.ts): wipe the orderId
+    // the sim handler matches on out of the create op's sim_state.
+    const [createOp] = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.kind, "order.create"), eq(paypalOperations.paypalId, checkoutId)));
+    expect(createOp).toBeTruthy();
+    await db
+      .update(paypalOperations)
+      .set({ simState: { ...(createOp!.simState as object), orderId: "SIMORDER-gone" } })
+      .where(eq(paypalOperations.id, createOp!.id));
+
+    const result = await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    expect(result.envelope.status).toBe("CHECKOUT_FAILED");
+    expect(result.httpStatus).toBe(400);
+    expect(result.envelope.reason_codes).toContain("checkout_failed");
+    expect(result.envelope.next_actions).toEqual([{ tool: "buy_notes", args: { amount_cents: 3500 } }]);
+
+    const [noteTx] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "buy")));
+    expect(noteTx?.status).toBe("failed");
   });
 });

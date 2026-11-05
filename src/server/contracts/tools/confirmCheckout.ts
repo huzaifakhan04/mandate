@@ -104,10 +104,12 @@ export const confirmCheckoutTool = defineTool({
           ]
         : result.status === "PENDING"
           ? [{ tool: "confirm_checkout", args: { checkout_id: pending.orderId } }]
-          : result.status === "CHECKOUT_FAILED"
-            ? // Fix round 1 (I3): a failed checkout can't be retried under
-              // the same id — the agent must start a fresh one.
-              [{ tool: "buy_notes", args: {} }]
+          : result.status === "CHECKOUT_FAILED" && result.nextAction
+            ? // Fix round 1 (I3) / Fix round 2 (item 4): a failed checkout
+              // can't be retried under the same id — the handler's own
+              // `retryNextAction` says where to start over, with the
+              // original amount already filled in.
+              [result.nextAction]
             : [];
 
     return ok(result.data, {
