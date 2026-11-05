@@ -5,7 +5,7 @@
  *
  * Run: npx tsx --env-file=.env.local scripts/spikes/openai-models.ts
  */
-import { requireEnv } from "./_helpers";
+import { requireEnv, safeJson } from "./_helpers";
 
 const WANTED = ["gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "gpt-5.6-sol"];
 
@@ -26,7 +26,7 @@ async function main() {
     /^(gpt-5|gpt-4\.1|gpt-4o|o[0-9]|o1|o3|o4)/.test(id),
   );
 
-  console.log(JSON.stringify({ status: res.status, totalModels: ids.length, found, missing, chatReasoningLike, ms: Date.now() - t0 }, null, 2));
+  console.log(safeJson({ status: res.status, totalModels: ids.length, found, missing, chatReasoningLike, ms: Date.now() - t0 }, 2));
 }
 
 main().catch((err) => {

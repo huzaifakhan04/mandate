@@ -7,7 +7,7 @@
  * Run: npx tsx --env-file=.env.local scripts/spikes/vault.ts
  */
 import { paypalFetch, PayPalApiError } from "@/server/paypal/fetch";
-import { spikeDb, requireEnv } from "./_helpers";
+import { spikeDb, requireEnv, safeJson } from "./_helpers";
 
 async function main() {
   const baseUrl = requireEnv("PUBLIC_BASE_URL");
@@ -33,13 +33,12 @@ async function main() {
         },
       },
     });
-    console.log(JSON.stringify({ status, operationId, body, ms: Date.now() - t0 }, null, 2));
+    console.log(safeJson({ status, operationId, body, ms: Date.now() - t0 }, 2));
   } catch (err) {
     if (err instanceof PayPalApiError) {
       console.log(
-        JSON.stringify(
+        safeJson(
           { status: err.status, name: err.name, details: err.details, ms: Date.now() - t0 },
-          null,
           2,
         ),
       );

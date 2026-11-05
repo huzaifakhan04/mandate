@@ -1,17 +1,22 @@
 /**
  * Spike: create an order whose purchase_unit `payee` is
  * PAYPAL_BANK_EMAIL (the bank's own merchant account, not the sandbox
- * app's default merchant), approve it headlessly as PAYPAL_CLIENT_EMAIL,
- * capture it, and confirm the capture lands with the bank as payee.
+ * app's default merchant), approve it headlessly as a buyer sandbox
+ * personal account, capture it, and confirm the capture lands with the
+ * bank as payee.
  *
- * Run: npx tsx --env-file=.env.local scripts/spikes/payee-routing.ts
+ * The buyer account is selectable (default `client`, so earlier runs
+ * stay reproducible) in case one account is temporarily rate-limited by
+ * PayPal's sandbox login after repeated attempts:
+ *
+ * Run: npx tsx --env-file=.env.local scripts/spikes/payee-routing.ts [client|lender|owner]
  */
 import { chromium } from "@playwright/test";
 
 import * as orders from "@/server/paypal/orders";
 import { paypalConfig } from "@/server/paypal/config";
 import { getAccessToken } from "@/server/paypal/token";
-import { spikeDb, requireEnv } from "./_helpers";
+import { spikeDb, requireEnv, safeJson, payerAccountFromArgv } from "./_helpers";
 
 interface ApprovalResult {
   ok: boolean;
@@ -83,9 +88,25 @@ async function getRawOrder(orderId: string): Promise<unknown> {
 
 async function main() {
   const bankEmail = requireEnv("PAYPAL_BANK_EMAIL");
-  const clientEmail = requireEnv("PAYPAL_CLIENT_EMAIL");
-  const clientPassword = requireEnv("PAYPAL_CLIENT_PASSWORD");
   const baseUrl = requireEnv("PUBLIC_BASE_URL");
+
+  const payerAccount = payerAccountFromArgv("client");
+  const buyerEmail = requireEnv(
+    payerAccount === "lender"
+      ? "PAYPAL_LENDER_EMAIL"
+      : payerAccount === "owner"
+        ? "PAYPAL_OWNER_EMAIL"
+        : "PAYPAL_CLIENT_EMAIL",
+  );
+  const buyerPassword = requireEnv(
+    payerAccount === "lender"
+      ? "PAYPAL_LENDER_PASSWORD"
+      : payerAccount === "owner"
+        ? "PAYPAL_OWNER_PASSWORD"
+        : "PAYPAL_CLIENT_PASSWORD",
+  );
+  console.log(`buyer account: ${payerAccount}`);
+
   const { db, worldId } = await spikeDb();
 
   const t0 = Date.now();
@@ -98,10 +119,10 @@ async function main() {
     returnUrl: `${baseUrl}/return`,
     cancelUrl: `${baseUrl}/cancel`,
   });
-  console.log("created:", JSON.stringify(created));
+  console.log("created:", safeJson(created));
 
-  const approval = await approveAsBuyer(created.approveUrl, clientEmail, clientPassword);
-  console.log("approval:", JSON.stringify(approval));
+  const approval = await approveAsBuyer(created.approveUrl, buyerEmail, buyerPassword);
+  console.log("approval:", safeJson(approval));
 
   if (!approval.ok) {
     console.log(
@@ -111,10 +132,10 @@ async function main() {
   }
 
   const captured = await orders.capture(db, { worldId, orderId: created.orderId });
-  console.log("captured:", JSON.stringify(captured));
+  console.log("captured:", safeJson(captured));
 
   const raw = await getRawOrder(created.orderId);
-  console.log("raw order after capture:", JSON.stringify(raw, null, 2));
+  console.log("raw order after capture:", safeJson(raw, 2));
   console.log(`total ms: ${Date.now() - t0}`);
 }
 

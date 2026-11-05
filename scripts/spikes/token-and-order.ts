@@ -6,7 +6,7 @@
  * Run: npx tsx --env-file=.env.local scripts/spikes/token-and-order.ts
  */
 import * as orders from "@/server/paypal/orders";
-import { spikeDb, requireEnv } from "./_helpers";
+import { spikeDb, requireEnv, safeJson } from "./_helpers";
 
 async function main() {
   const baseUrl = requireEnv("PUBLIC_BASE_URL");
@@ -23,7 +23,7 @@ async function main() {
   });
   const ms = Date.now() - started;
 
-  console.log(JSON.stringify({ ...result, ms }, null, 2));
+  console.log(safeJson({ ...result, ms }, 2));
 }
 
 main().catch((err) => {

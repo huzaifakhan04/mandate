@@ -12,7 +12,7 @@ import { chromium } from "@playwright/test";
 import * as orders from "@/server/paypal/orders";
 import { paypalConfig } from "@/server/paypal/config";
 import { getAccessToken } from "@/server/paypal/token";
-import { spikeDb, requireEnv } from "./_helpers";
+import { spikeDb, requireEnv, safeJson } from "./_helpers";
 
 async function approveAsBuyer(approveUrl: string, email: string, password: string) {
   const browser = await chromium.launch({ headless: true });
@@ -77,10 +77,10 @@ async function main() {
     returnUrl: `${baseUrl}/return`,
     cancelUrl: `${baseUrl}/cancel`,
   });
-  console.log("created:", JSON.stringify(created));
+  console.log("created:", safeJson(created));
 
   const approval = await approveAsBuyer(created.approveUrl, owner, ownerPassword);
-  console.log("approval:", JSON.stringify(approval));
+  console.log("approval:", safeJson(approval));
 
   if (!approval.ok) {
     console.log("STOPPED: owner approval did not complete, skipping capture.");
@@ -88,12 +88,12 @@ async function main() {
   }
 
   const captured = await orders.capture(db, { worldId, orderId: created.orderId });
-  console.log("captured:", JSON.stringify(captured));
+  console.log("captured:", safeJson(captured));
 
   const raw = (await getRawOrder(created.orderId)) as {
     payer?: { email_address?: string; payer_id?: string };
   };
-  console.log("payer on order:", JSON.stringify(raw.payer ?? null));
+  console.log("payer on order:", safeJson(raw.payer ?? null));
 }
 
 main().catch((err) => {

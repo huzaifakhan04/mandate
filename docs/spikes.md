@@ -13,6 +13,21 @@ Production deploy: `https://agentic-bank-mu.vercel.app` (publicly
 reachable, no deployment protection). Preview deploys are gated by
 Vercel Authentication, which is expected/fine.
 
+**Root cause of the initial sandbox-login failures (spikes c/e, below):**
+the `*_PASSWORD` values in `.env.local` contained a literal `#`. Both
+`node --env-file` and dotenv-style parsers treat an unquoted `#` as a
+comment, so everything after it was silently dropped — the script was
+submitting a truncated password, which PayPal correctly rejected. Fix:
+quote every `*_PASSWORD` value in `.env.local`. Those passwords were
+never needed by the deployed app at runtime (only by local
+Playwright-driven spikes), so they were removed from Vercel entirely
+rather than re-added quoted. Separately, the bank's sandbox business
+account was renamed from a name containing "Bank" (PayPal's sandbox
+rejects business names containing "Bank") to **"Mandate"**, and a
+`PAYPAL_BANK_PASSWORD` was added (quoted) to `.env.local` for
+completeness, though no spike currently logs into the bank account
+directly.
+
 ## a. token-and-order (`scripts/spikes/token-and-order.ts`)
 
 - Command: `npx tsx --env-file=.env.local scripts/spikes/token-and-order.ts`
@@ -38,31 +53,40 @@ Vercel Authentication, which is expected/fine.
 
 ## c. payee-routing (`scripts/spikes/payee-routing.ts`)
 
-- Command: `npx tsx --env-file=.env.local scripts/spikes/payee-routing.ts`
-- Order created with `purchase_units[0].payee.email_address =
-  PAYPAL_BANK_EMAIL` (order id `1MD28854GH5106907` on the final attempt)
-  — PayPal accepted the payee override and returned a normal
-  `approveUrl`.
-- Buyer approval (headless Playwright, logging in as
-  `PAYPAL_CLIENT_EMAIL`): **FAIL.** First attempts returned PayPal's
-  *"Some of your info isn't correct. Please try again."* banner (wrong
-  password, not a script bug — the login form, email submit, and
-  password submit all worked mechanically, confirmed via screenshots).
-  After a few attempts debugging the form automation, the account
-  started returning *"It looks like you've tried too many times. Try
-  again later, or reset your password."* (sandbox login lockout).
-- No guest/card checkout option was offered on the initial `approveUrl`
-  landing page (only email+password login or "Create an Account"), so
-  there's no guest fallback to try instead.
-- Capture was never reached (script stops short and reports instead of
-  crashing once login fails).
-- Time to failure: ~16s (order create + failed login attempt).
-- **Fail — blocked on sandbox credentials, not code.** Fallback
-  decision: none needed in code — `orders.create`'s `payeeEmail` param
-  already does the payee override correctly (confirmed by PayPal
-  accepting the order); once a working `PAYPAL_CLIENT_PASSWORD` is
-  supplied, re-run this script to confirm the capture's payee. See
-  "Action needed" below.
+- Command: `npx tsx --env-file=.env.local scripts/spikes/payee-routing.ts [client|lender|owner]`
+  (buyer account selectable via CLI arg, default `client`; added so a
+  temporarily rate-limited account can be swapped out without editing
+  the script).
+- **First attempt (`client`, before the `#`-in-password fix):** order
+  created fine with `purchase_units[0].payee.email_address =
+  PAYPAL_BANK_EMAIL` (order id `1MD28854GH5106907`), but buyer approval
+  via headless Playwright login as `PAYPAL_CLIENT_EMAIL` failed —
+  PayPal's own *"Some of your info isn't correct. Please try again."*
+  banner (truncated password, root-caused below). After a few retries
+  while debugging the form automation, that account hit PayPal's own
+  rate limit: *"It looks like you've tried too many times. Try again
+  later, or reset your password."* No guest/card checkout option was
+  offered at the `approveUrl` landing page.
+- **Re-run after the password fix, using `lender` (the client account
+  was still presumed rate-limited, so the payer account was switched
+  rather than retried):** full pass.
+  - Order id `10F302363V728613C`, buyer logged in as
+    `PAYPAL_LENDER_EMAIL` successfully.
+  - Capture: id `9AK70291S7102635Y`, `status: COMPLETED`, amount
+    `$1.50`, `seller_receivable_breakdown.net_amount: $0.96` (after
+    PayPal's $0.54 fee).
+  - Raw order after capture confirms `purchase_units[0].payee.email_address
+    = PAYPAL_BANK_EMAIL` (the bank's sandbox business account) — the
+    payee override lands money in the bank account as intended, not the
+    buyer or a default merchant.
+  - `payer.email_address`/`payer.payer_id` also present on the order
+    (lender's sandbox identity).
+  - Time: ~19s end-to-end (order create + Playwright login/approve +
+    capture + order re-fetch).
+- **Pass** (on the second run, with the lender account). The original
+  `client`-account failure was a sandbox-login/credential issue, not a
+  code or rail-routing defect — `orders.create`'s `payeeEmail` param was
+  already correct, as the successful lender run confirms.
 
 ## d. vault (`scripts/spikes/vault.ts`)
 
@@ -95,16 +119,35 @@ Full writeup: `scripts/spikes/login-with-paypal.md`. Summary:
 - **Fallback ("Verify with PayPal"), `verify-with-paypal.ts`:** $0.01
   order approved by `PAYPAL_OWNER_EMAIL` via headless Playwright, then
   captured, reading `payer.email_address`/`payer.payer_id` off the
-  order. Result: **FAIL** — same symptom as spike c: PayPal rejected the
-  login with *"Some of your info isn't correct. Please try again."* No
-  further attempts were made against this account (to avoid triggering
-  the same lockout seen on the client account). Capture never ran, so
-  `payer.email_address`/`payer.payer_id` presence is unconfirmed — but
-  PayPal's Orders v2 docs show these fields on an approved order's
-  `payer` object, and the capture call itself is already proven working
-  by spike a/b's code paths.
-- Time to failure: ~15s (order create + failed login).
-- **Fail — blocked on sandbox credentials, not code.**
+  order.
+  - **First attempt (before the `#`-in-password fix): FAIL** — same
+    truncated-password symptom as spike c: PayPal rejected the login
+    with *"Some of your info isn't correct. Please try again."* No
+    further attempts were made against this account in that run, to
+    avoid triggering the same lockout seen on the client account.
+  - **Re-run after quoting the passwords in `.env.local`: PASS.** Owner
+    login succeeded (`approval.ok: true`). Capture `3UA71900VF7082636`,
+    `status: COMPLETED`, `$0.01`. `payer.email_address` and
+    `payer.payer_id` are both present on the order (the owner's sandbox
+    identity) — confirming the "Verify with PayPal" fallback's design
+    works end to end. This run also hit (and fixed) the `BigInt`
+    serialization bug noted below.
+- Time: ~15s for the first (failed) attempt; a similar time for the
+  passing re-run.
+- **Pass**, once run with corrected credentials.
+
+### BigInt serialization bug (found during the re-run, now fixed)
+
+The first successful re-run of `verify-with-paypal.ts` crashed at the
+final `console.log(JSON.stringify(captured))` with `TypeError: Do not
+know how to serialize a BigInt` — `CaptureOrderResult.amountCents` is a
+`bigint`, which the built-in `JSON.stringify` can't handle. Fixed by
+adding `safeJson()` to `scripts/spikes/_helpers.ts` (a `JSON.stringify`
+wrapper with a bigint-to-string replacer) and switching every spike
+script's logging over to it, not just the one that happened to hit the
+bug — `orders.capture`'s `amountCents` is the only bigint field returned
+by any of these calls today, but `payout.send`/`payout.get` and
+`orders.create` results were switched too for consistency/future-proofing.
 
 ## f. openai-models (`scripts/spikes/openai-models.ts`)
 
@@ -153,27 +196,28 @@ Full writeup: `scripts/spikes/login-with-paypal.md`. Summary:
   in the ~45-50s range for this event type (consistent with the payout
   batch's own PENDING->PROCESSING->SUCCESS timeline from spike b).
 
-## Action needed from Huzaifa
+## Resolved: sandbox credentials
 
-The sandbox personal account passwords for `PAYPAL_OWNER_EMAIL` and
-`PAYPAL_CLIENT_EMAIL` in `.env.local` do not match what PayPal's sandbox
-login currently accepts (confirmed by PayPal's own "info isn't correct"
-error, not a script defect — order creation, the login form automation,
-and error-banner detection all worked correctly). The `PAYPAL_CLIENT_EMAIL`
-account is also temporarily rate-limited after repeated failed attempts
-during debugging. Please:
+Both blockers above are now resolved:
 
-1. Confirm/reset the passwords for both sandbox personal accounts.
-2. Update `.env.local` with the corrected passwords (no code change
-   needed).
-3. Allow the client account's temporary lockout to clear, then re-run
-   `scripts/spikes/payee-routing.ts` and
-   `scripts/spikes/verify-with-paypal.ts` to confirm: (a) a capture
-   under a bank-owned `payee` succeeds and reports the bank as payee,
-   and (b) `payer.email_address`/`payer.payer_id` are present on a
-   captured order (needed for the "Verify with PayPal" KYC-lite
-   fallback in P1).
+- Root cause (`#` truncating `.env.local` passwords) fixed by quoting
+  every `*_PASSWORD` value.
+- `PAYPAL_OWNER_PASSWORD` / `PAYPAL_CLIENT_PASSWORD` / `PAYPAL_LENDER_PASSWORD`
+  were removed from Vercel — they're only used by local Playwright spike
+  scripts, never by the deployed app, so they don't belong in the
+  runtime environment. **Do not re-add them to Vercel.**
+- The sandbox business account was renamed to **"Mandate"** (PayPal's
+  sandbox rejects business names containing "Bank"), and
+  `PAYPAL_BANK_PASSWORD` was added to `.env.local` (quoted) for
+  completeness.
+- `PAYPAL_CLIENT_EMAIL` may still be temporarily rate-limited from the
+  earlier debugging attempts — `payee-routing.ts` was re-run against
+  `PAYPAL_LENDER_EMAIL` instead (now the recommended default to avoid
+  hammering a possibly-still-locked account) and passed cleanly;
+  `verify-with-paypal.ts` was re-run against `PAYPAL_OWNER_EMAIL` and
+  also passed.
 
-This does not block Phase 0 deploy/infra: deploy, the REST/MCP tool
-surface, the webhook pipeline, and five of the six day-1 spikes all
-passed cleanly.
+Summary: deploy, the REST/MCP tool surface, the webhook pipeline, and
+all six day-1 spikes now pass end to end (five on the first pass; two —
+payee-routing and the login-with-paypal fallback — on the password-fixed
+re-run).
