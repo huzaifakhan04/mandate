@@ -73,12 +73,33 @@ interface Violation {
   text: string;
 }
 
+/** 1-indexed line number containing `index` into `text`, plus a trimmed,
+ * whitespace-collapsed snippet of the source line the match *starts* on
+ * (useful for reporting even when the match itself spans several lines,
+ * e.g. a multi-line method chain). */
+function locate(text: string, index: number): { line: number; snippet: string } {
+  const before = text.slice(0, index);
+  const line = before.split("\n").length;
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const nextNewline = text.indexOf("\n", index);
+  const rawLine = text.slice(lineStart, nextNewline === -1 ? text.length : nextNewline);
+  return { line, snippet: rawLine.replace(/\s+/g, " ").trim() };
+}
+
 /**
- * Scans every `.ts` file under `rootDir` for `.from(<worldTable>)`,
- * `.insert(<worldTable>)`, `.update(<worldTable>)` or
- * `.delete(<worldTable>)` where `<worldTable>` is one of `worldTables`
- * (the schema's export identifiers, which is also what calling code
- * imports and references), and reports every hit outside the allowlist.
+ * Scans every `.ts` file under `rootDir` for direct world-table access
+ * outside the allowlist, over each file's *whole text* (not line by
+ * line) so a call broken across lines — e.g.
+ * `db.select().from(\n  loans,\n)` — is still caught. Two shapes are
+ * flagged, where `<worldTable>` is one of `worldTables` (the schema's
+ * export identifiers, which is also what calling code imports and
+ * references):
+ *   - `.from(<worldTable>)`, `.insert(<worldTable>)`,
+ *     `.update(<worldTable>)`, `.delete(<worldTable>)` — the
+ *     query-builder entry points.
+ *   - `.query.<worldTable>.` — Drizzle's relational query API
+ *     (`db.query.loans.findMany()` etc.), a second way to read a table
+ *     that bypasses `scoped()` just as much as `.from()` does.
  * `relativeTo` is the base that allowlist paths are resolved against.
  */
 function scanForDirectWorldTableAccess(
@@ -90,23 +111,29 @@ function scanForDirectWorldTableAccess(
     throw new Error("worldTables must not be empty — the scan would be a no-op");
   }
 
-  const tablePattern = new RegExp(
-    `\\.(from|insert|update|delete)\\(\\s*(${worldTables.join("|")})\\b`,
+  const tableGroup = worldTables.join("|");
+  // `\s*` around the identifier (and between the paren and it) tolerates
+  // the call being wrapped across lines by a formatter.
+  const builderPattern = new RegExp(
+    `\\.\\s*(?:from|insert|update|delete)\\s*\\(\\s*(?:${tableGroup})\\b`,
+    "g",
   );
+  const relationalPattern = new RegExp(`\\.\\s*query\\s*\\.\\s*(?:${tableGroup})\\s*\\.`, "g");
 
   const violations: Violation[] = [];
   for (const file of walkTsFiles(rootDir)) {
     const relPath = relative(relativeTo, file);
     if (isAllowlisted(relPath)) continue;
 
-    const lines = readFileSync(file, "utf8").split("\n");
-    lines.forEach((lineText, index) => {
-      if (tablePattern.test(lineText)) {
-        violations.push({ file: relPath, line: index + 1, text: lineText.trim() });
+    const text = readFileSync(file, "utf8");
+    for (const pattern of [builderPattern, relationalPattern]) {
+      for (const match of text.matchAll(pattern)) {
+        const { line, snippet } = locate(text, match.index);
+        violations.push({ file: relPath, line, text: snippet });
       }
-    });
+    }
   }
-  return violations;
+  return violations.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line);
 }
 
 const repoRoot = process.cwd();
@@ -204,6 +231,66 @@ describe("world-isolation guard", () => {
       );
 
       expect(violations.map((v) => v.line)).toEqual([5, 6, 7]);
+    });
+
+    it("fails on a `.from(<worldTable>)` call broken across multiple lines", () => {
+      fixtureDir = mkdtempSync(join(tmpdir(), "world-guard-fixture-"));
+      const fixtureFile = join(fixtureDir, "leaky-multiline.ts");
+      writeFileSync(
+        fixtureFile,
+        [
+          'import { db } from "../db/client";',
+          'import { loans } from "../db/schema";',
+          "",
+          "export async function leak() {",
+          "  return db",
+          "    .select()",
+          "    .from(",
+          "      loans,",
+          "    );",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
+      const violations = scanForDirectWorldTableAccess(
+        fixtureDir,
+        fixtureDir,
+        worldTables,
+      );
+
+      expect(violations).toHaveLength(1);
+      expect(violations[0]?.file).toBe("leaky-multiline.ts");
+      // `.from(` is on line 7; the match starts there even though
+      // `loans` itself sits on the next line.
+      expect(violations[0]?.line).toBe(7);
+    });
+
+    it("fails on a Drizzle relational `.query.<worldTable>.` call", () => {
+      fixtureDir = mkdtempSync(join(tmpdir(), "world-guard-fixture-"));
+      const fixtureFile = join(fixtureDir, "leaky-relational.ts");
+      writeFileSync(
+        fixtureFile,
+        [
+          'import { db } from "../db/client";',
+          "",
+          "export async function leak() {",
+          "  return db.query.loans.findMany();",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
+      const violations = scanForDirectWorldTableAccess(
+        fixtureDir,
+        fixtureDir,
+        worldTables,
+      );
+
+      expect(violations).toHaveLength(1);
+      expect(violations[0]?.file).toBe("leaky-relational.ts");
+      expect(violations[0]?.line).toBe(4);
+      expect(violations[0]?.text).toContain(".query.loans.");
     });
 
     it("does not flag a fixture path that happens to sit under an allowlisted directory name", () => {

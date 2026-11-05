@@ -1,3 +1,4 @@
+import { eq } from "drizzle-orm";
 import { describe, expectTypeOf, it } from "vitest";
 
 import { agents } from "@/server/db/schema";
@@ -47,6 +48,18 @@ function typeOnlyGuards(db: Db) {
     // @ts-expect-error -- update()'s `set` must not accept a caller-supplied world_id
     worldId: "some-other-world",
   });
+
+  // A valid call (where supplied) must type-check with no error.
+  void client.delete(agents, eq(agents.name, "agent"));
+
+  // @ts-expect-error -- delete()'s `where` is required (never deletes a whole world's table by accident)
+  void client.delete(agents);
+
+  // A valid call (where supplied) must type-check with no error.
+  void client.forUpdate(agents, eq(agents.name, "agent"));
+
+  // @ts-expect-error -- forUpdate()'s `where` is required, same reasoning as delete()
+  void client.forUpdate(agents);
 }
 
 void typeOnlyGuards;

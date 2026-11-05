@@ -123,7 +123,7 @@ export function scoped(db: Db, worldId: string) {
 
     async delete<T extends WorldScopedTable>(
       table: T,
-      where?: SQL,
+      where: SQL,
     ): Promise<T["$inferSelect"][]> {
       const anyTable = table as unknown as PgTable;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -145,7 +145,7 @@ export function scoped(db: Db, worldId: string) {
      */
     forUpdate<T extends WorldScopedTable>(
       table: T,
-      where?: SQL,
+      where: SQL,
     ): Promise<T["$inferSelect"][]> {
       const anyTable = table as unknown as PgTable;
       return db
