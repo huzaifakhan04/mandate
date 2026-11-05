@@ -13,23 +13,13 @@ import {
 } from "../paypal/operations";
 import { applyPayoutOutcome } from "./loans";
 import { applyRedemptionPayoutOutcome } from "./notes";
+import type { ObservedPayoutStatus } from "./payoutStatus";
+import { isPollDue, pollIntervalMs } from "./pollThrottle";
 import { applyRemainderPayoutOutcome, refreshRepaymentLink, remainderPayoutNeedsPolling } from "./repayments";
 import { railForWorld } from "./worlds";
 
-const MINUTE_MS = 60_000;
-const HOUR_MS = 60 * MINUTE_MS;
-
-/**
- * Minimum time between two `payout.get` reads of one send, backing off
- * with the send's age (real time): < 10 min → 1 min; < 1 h → 5 min;
- * < 24 h → 30 min; else 6 h.
- */
-export function pollIntervalMs(sendAgeMs: number): number {
-  if (sendAgeMs < 10 * MINUTE_MS) return MINUTE_MS;
-  if (sendAgeMs < HOUR_MS) return 5 * MINUTE_MS;
-  if (sendAgeMs < 24 * HOUR_MS) return 30 * MINUTE_MS;
-  return 6 * HOUR_MS;
-}
+/** Re-exported: the age-based interval now lives in the shared throttle helper. */
+export { pollIntervalMs };
 
 export type PollPayoutReason =
   | "not_a_payout_send"
@@ -56,6 +46,41 @@ async function sourceNeedsPolling(db: Db, worldId: string, purpose: string, sour
   }
   const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, sourceId));
   return noteTx?.kind === "redeem" && noteTx.status === "pending";
+}
+
+type PayoutApplier = (db: Db, operationId: string, observed?: ObservedPayoutStatus) => Promise<void>;
+
+/** The outcome applier for each payout purpose (Ruling B). */
+const PAYOUT_APPLIERS: Partial<Record<string, PayoutApplier>> = {
+  loan_disbursement: applyPayoutOutcome,
+  note_redemption: applyRedemptionPayoutOutcome,
+  remainder_payout: applyRemainderPayoutOutcome,
+};
+
+/**
+ * Ruling B: settles a `payout.send` operation with the applier for its
+ * purpose — for a verified webhook (`observed` = the event's item
+ * status, Ruling Q), `pollPayoutStatus` and the reconcile cron. After a
+ * loan disbursement it also executes the loan's queued invoice-link
+ * `order.create` (Task 7: an activation enqueues it; no-op without a
+ * link). Returns `false` when the operation isn't a payout send with a
+ * known purpose. Idempotent; never call inside a transaction.
+ */
+export async function dispatchPayoutOutcome(
+  db: Db,
+  sendOperationId: string,
+  observed?: ObservedPayoutStatus,
+): Promise<boolean> {
+  const record = await getOperation(db, sendOperationId);
+  const applier = record?.purpose ? PAYOUT_APPLIERS[record.purpose] : undefined;
+  if (!record || record.kind !== "payout.send" || !record.sourceId || !applier) {
+    return false;
+  }
+  await applier(db, sendOperationId, observed);
+  if (record.purpose === "loan_disbursement") {
+    await refreshRepaymentLink(db, record.worldId, record.sourceId);
+  }
+  return true;
 }
 
 /**
@@ -86,29 +111,10 @@ export async function pollPayoutStatus(
   if (!record || record.kind !== "payout.send" || !record.sourceId) {
     return { polled: false, reason: "not_a_payout_send" };
   }
-  const applyOutcome =
-    record.purpose === "loan_disbursement"
-      ? applyPayoutOutcome
-      : record.purpose === "note_redemption"
-        ? applyRedemptionPayoutOutcome
-        : record.purpose === "remainder_payout"
-          ? applyRemainderPayoutOutcome
-          : null;
-  const worldId = record.worldId;
-  const sourceId = record.sourceId;
-  // Task 7: an activation enqueues the invoice link's order.create —
-  // execute it right after the applier (no-op if there's no link).
-  const apply = applyOutcome
-    ? async (database: Db, opId: string) => {
-        await applyOutcome(database, opId);
-        if (record.purpose === "loan_disbursement") {
-          await refreshRepaymentLink(database, worldId, sourceId);
-        }
-      }
-    : null;
-  if (!apply || !record.purpose) {
+  if (!record.purpose || !PAYOUT_APPLIERS[record.purpose]) {
     return { polled: false, reason: "unsupported_purpose" };
   }
+  const apply = (database: Db, opId: string) => dispatchPayoutOutcome(database, opId);
 
   if (!(await sourceNeedsPolling(db, record.worldId, record.purpose, record.sourceId))) {
     return { polled: false, reason: "source_settled" };
@@ -120,11 +126,8 @@ export async function pollPayoutStatus(
   }
 
   const times = await payoutPollTimes(db, sendOperationId);
-  if (times?.lastReadCreatedAt) {
-    const interval = pollIntervalMs(now.getTime() - times.sendCreatedAt.getTime());
-    if (now.getTime() - times.lastReadCreatedAt.getTime() < interval) {
-      return { polled: false, reason: "throttled" };
-    }
+  if (times && !isPollDue({ createdAt: times.sendCreatedAt, lastReadAt: times.lastReadCreatedAt, now })) {
+    return { polled: false, reason: "throttled" };
   }
 
   const batchId = (record.body as PayoutSendResult).batchId;

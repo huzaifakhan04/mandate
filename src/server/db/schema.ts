@@ -648,17 +648,23 @@ export const jobRuns = pgTable(
       .notNull()
       .references(() => worlds.id),
     job: text("job").notNull(),
-    simDay: integer("sim_day").notNull(),
+    /**
+     * The simulated day a once-per-sim-day job (P4) ran for — unique per
+     * (world, job) when set. Task 8's every-minute crons (`reconcile`,
+     * `tick`) leave it null and write one row per world per run.
+     */
+    simDay: integer("sim_day"),
+    /** Task 8: the run's counts, errors and anomalies (JSON-safe). */
+    output: jsonb("output"),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
-    uniqueIndex("job_runs_world_job_day_idx").on(
-      table.worldId,
-      table.job,
-      table.simDay,
-    ),
+    uniqueIndex("job_runs_world_job_day_idx")
+      .on(table.worldId, table.job, table.simDay)
+      .where(sql`${table.simDay} is not null`),
   ],
 );
 

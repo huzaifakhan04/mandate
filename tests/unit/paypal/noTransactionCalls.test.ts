@@ -26,7 +26,7 @@ const ROOT = path.resolve(__dirname, "../../..");
 const FORBIDDEN_IMPORT_RE =
   /from\s+["'][^"']*\/(paypal\/(fetch|orders|payouts)|rail\/(paypalRail|simRail|simHandler|operationRail))["']/g;
 
-const GUARDED_GLOBS = ["src/server/services/**/*.ts", "src/server/contracts/**/*.ts"];
+const GUARDED_GLOBS = ["src/server/services/**/*.ts", "src/server/contracts/**/*.ts", "src/server/jobs/**/*.ts"];
 
 function findViolations(): { file: string; line: string }[] {
   const violations: { file: string; line: string }[] = [];

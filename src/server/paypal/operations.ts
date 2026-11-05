@@ -701,18 +701,125 @@ export interface OperationRecord extends OperationResult {
   sourceId: string | null;
 }
 
-/** Looks up an operation by id with no world filter, or `undefined` if it doesn't exist. */
-export async function getOperation(db: Db, operationId: string): Promise<OperationRecord | undefined> {
-  const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, operationId));
-  if (!row) {
-    return undefined;
-  }
+function toOperationRecord(row: OperationRow): OperationRecord {
   return {
     ...toOperationResult(row),
     worldId: row.worldId,
     purpose: row.purpose as OperationPurpose | null,
     sourceId: row.sourceId,
   };
+}
+
+/** Looks up an operation by id with no world filter, or `undefined` if it doesn't exist. */
+export async function getOperation(db: Db, operationId: string): Promise<OperationRecord | undefined> {
+  const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, operationId));
+  return row ? toOperationRecord(row) : undefined;
+}
+
+/**
+ * Task 8 (webhooks): the operation of `kind` whose PayPal-side id is
+ * `paypalId` — an `order.create` by order id, a `payout.send` by batch
+ * id — across ALL worlds (a webhook doesn't say which world it's for;
+ * the operation does). Oldest first if, implausibly, more than one
+ * matches. `undefined` when no operation knows that id.
+ */
+export async function findOperationByPaypalId(
+  db: Db,
+  kind: OperationKind,
+  paypalId: string,
+): Promise<OperationRecord | undefined> {
+  const [row] = await db
+    .select()
+    .from(paypalOperations)
+    .where(and(eq(paypalOperations.kind, kind), eq(paypalOperations.paypalId, paypalId)))
+    .orderBy(paypalOperations.createdAt, paypalOperations.id)
+    .limit(1);
+  return row ? toOperationRecord(row) : undefined;
+}
+
+/**
+ * Task 8 (reconcile, step 1): money-moving operations, across all
+ * worlds, that the cron should (re-)execute — oldest first, at most
+ * `limit`:
+ * - `queued` with no backoff, enqueued at least `minQueuedAgeMs` ago (a
+ *   younger one belongs to a request that is about to execute it itself);
+ * - `queued`/`failed_retryable` whose `next_attempt_at` ≤ `now`;
+ * - `in_flight` with a stale claim (the same window `claim` uses).
+ * Read kinds (`order.get`/`payout.get`) are excluded — a stranded read
+ * moves nothing and a fresh one is cheaper. `executeOperation`'s claim
+ * re-checks every condition atomically, so a row listed here that is
+ * no longer claimable is simply returned as-is.
+ */
+export async function listDueOperations(
+  db: Db,
+  { now, limit, minQueuedAgeMs }: { now: Date; limit: number; minQueuedAgeMs: number },
+): Promise<OperationRecord[]> {
+  if (limit <= 0) {
+    return [];
+  }
+  const t = paypalOperations;
+  const queuedBefore = new Date(now.getTime() - minQueuedAgeMs);
+  const rows = await db
+    .select()
+    .from(t)
+    .where(
+      and(
+        sql`${t.kind} not in (${sql.join(
+          READ_KINDS.map((kind) => sql`${kind}`),
+          sql`, `,
+        )})`,
+        or(
+          and(eq(t.status, "queued"), isNull(t.nextAttemptAt), lte(t.createdAt, queuedBefore)),
+          and(inArray(t.status, ["queued", "failed_retryable"]), lte(t.nextAttemptAt, now)),
+          and(eq(t.status, "in_flight"), lt(t.claimedAt, STALE_CLAIM)),
+        ),
+      ),
+    )
+    .orderBy(t.createdAt, t.id)
+    .limit(limit);
+  return rows.map(toOperationRecord);
+}
+
+/**
+ * Task 8 (reconcile, step 3 throttle): when the `order.create` that made
+ * `orderId` was enqueued, and when the newest `order.get` of that order
+ * was enqueued — in ANY status (matched on the request path, as
+ * `payoutPollTimes` does), so failing reads throttle too. `null` when no
+ * `order.create` in `worldId` made that order.
+ */
+export async function orderPollTimes(
+  db: Db,
+  worldId: string,
+  orderId: string,
+): Promise<{ createdAt: Date; lastReadCreatedAt: Date | null } | null> {
+  const [createRow] = await db
+    .select({ createdAt: paypalOperations.createdAt })
+    .from(paypalOperations)
+    .where(
+      and(
+        eq(paypalOperations.worldId, worldId),
+        eq(paypalOperations.kind, "order.create"),
+        eq(paypalOperations.paypalId, orderId),
+      ),
+    )
+    .limit(1);
+  if (!createRow) {
+    return null;
+  }
+  const path = buildGetOrderRequest(orderId).path;
+  const [read] = await db
+    .select({ createdAt: paypalOperations.createdAt })
+    .from(paypalOperations)
+    .where(
+      and(
+        eq(paypalOperations.worldId, worldId),
+        eq(paypalOperations.kind, "order.get"),
+        sql`${paypalOperations.executableRequest}->>'path' = ${path}`,
+      ),
+    )
+    .orderBy(desc(paypalOperations.createdAt), desc(paypalOperations.id))
+    .limit(1);
+  return { createdAt: createRow.createdAt, lastReadCreatedAt: read?.createdAt ?? null };
 }
 
 /**

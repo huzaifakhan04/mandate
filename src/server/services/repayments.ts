@@ -142,33 +142,12 @@ interface InvoiceRef {
  */
 async function createInvoiceRepaymentLink(tx: Db, loan: LoanRow): Promise<void> {
   const worldId = loan.worldId;
-  const offer = await scoped(tx, worldId).findOne(offers, eq(offers.id, loan.offerId));
-  const application = offer
-    ? await scoped(tx, worldId).findOne(applications, eq(applications.id, offer.applicationId))
-    : undefined;
-  const invoice = (application?.invoiceRef ?? null) as InvoiceRef | null;
-  if (!invoice || typeof invoice.amount_cents !== "number") {
+  const invoice = await loanInvoice(tx, loan);
+  if (!invoice) {
     return;
   }
-  const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
   const amountCents = BigInt(invoice.amount_cents);
-  const description = invoiceLinkDescription(invoice.description ?? "", agent?.name ?? "the borrower");
-
-  const rail = await railForWorld(tx, worldId);
-  const { operationId } = await enqueueOperation(tx, {
-    worldId,
-    rail,
-    kind: "order.create",
-    purpose: "repayment_link",
-    sourceId: loan.id,
-    request: buildCreateOrderRequest({
-      amountCents,
-      description,
-      customId: loan.id,
-      returnUrl: checkoutUrl("/checkout/invoice/return"),
-      cancelUrl: checkoutUrl("/checkout/invoice/cancel"),
-    }),
-  });
+  const operationId = await enqueueInvoiceOrderCreate(tx, loan, invoice, loan.id);
 
   await scoped(tx, worldId).insert(repaymentLinks, {
     loanId: loan.id,
@@ -178,6 +157,135 @@ async function createInvoiceRepaymentLink(tx: Db, loan: LoanRow): Promise<void> 
     status: "pending",
     createOpId: operationId,
   });
+}
+
+/** The invoice the loan's application carried, or `null`. */
+async function loanInvoice(tx: Db, loan: LoanRow): Promise<(InvoiceRef & { amount_cents: number }) | null> {
+  const worldId = loan.worldId;
+  const offer = await scoped(tx, worldId).findOne(offers, eq(offers.id, loan.offerId));
+  const application = offer
+    ? await scoped(tx, worldId).findOne(applications, eq(applications.id, offer.applicationId))
+    : undefined;
+  const invoice = (application?.invoiceRef ?? null) as InvoiceRef | null;
+  if (!invoice || typeof invoice.amount_cents !== "number") {
+    return null;
+  }
+  return invoice as InvoiceRef & { amount_cents: number };
+}
+
+/**
+ * Enqueues an invoice link's `order.create` (purpose `repayment_link`).
+ * `sourceId` is the loan id for the first issue and `${loanId}:${n}` for
+ * a re-issue (Task 8) — see `invoiceLinkSourceId`.
+ */
+async function enqueueInvoiceOrderCreate(
+  tx: Db,
+  loan: LoanRow,
+  invoice: InvoiceRef & { amount_cents: number },
+  sourceId: string,
+): Promise<string> {
+  const worldId = loan.worldId;
+  const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
+  const description = invoiceLinkDescription(invoice.description ?? "", agent?.name ?? "the borrower");
+  const rail = await railForWorld(tx, worldId);
+  const { operationId } = await enqueueOperation(tx, {
+    worldId,
+    rail,
+    kind: "order.create",
+    purpose: "repayment_link",
+    sourceId,
+    request: buildCreateOrderRequest({
+      amountCents: BigInt(invoice.amount_cents),
+      description,
+      customId: loan.id,
+      returnUrl: checkoutUrl("/checkout/invoice/return"),
+      cancelUrl: checkoutUrl("/checkout/invoice/cancel"),
+    }),
+  });
+  return operationId;
+}
+
+/**
+ * The `repayment_link` checkout's `sourceId` for issue `n` of a loan's
+ * invoice link: the loan id itself for the first issue, `${loanId}:${n}`
+ * for a re-issue — so every issue gets its own deterministic operation id.
+ */
+export function invoiceLinkSourceId(loanId: string, issue: number): string {
+  return issue <= 1 ? loanId : `${loanId}:${issue}`;
+}
+
+/** The loan id behind a `repayment_link` checkout's `sourceId` (strips a re-issue suffix). */
+export function loanIdFromInvoiceSourceId(sourceId: string): string {
+  return sourceId.replace(/:\d+$/, "");
+}
+
+/** How many times the reconcile cron may issue one loan's invoice link in total. */
+export const MAX_INVOICE_LINK_ISSUES = 3;
+
+export type ReissueInvoiceLinkOutcome =
+  | { outcome: "reissued"; issue: number; link: LinkRow }
+  | { outcome: "not_needed" }
+  | { outcome: "exhausted"; issues: number };
+
+/**
+ * Task 8 (reconcile auto-fix): re-issues a `failed` invoice link of a
+ * still-ACTIVE loan — agents depend on the link, the client may not have
+ * paid yet. In one transaction (link row locked): checks it's still
+ * `failed`, works out which issue its current `order.create` was, and —
+ * below `MAX_INVOICE_LINK_ISSUES` — enqueues the next issue's
+ * `order.create` (sourceId `${loanId}:${n}`, so idempotent: a repeat
+ * resolves to the same operation) and resets the SAME row to `pending`
+ * with no order/URL (one invoice link per loan stays true). After commit
+ * it executes the create and copies the new approve URL (`open`).
+ * Never call inside a transaction.
+ */
+export async function reissueInvoiceLink(db: Db, worldId: string, linkId: string): Promise<ReissueInvoiceLinkOutcome> {
+  const result = await db.transaction(async (tx): Promise<ReissueInvoiceLinkOutcome> => {
+    const [link] = await scoped(tx, worldId).forUpdate(repaymentLinks, eq(repaymentLinks.id, linkId));
+    if (!link || link.kind !== "invoice" || link.status !== "failed") {
+      return { outcome: "not_needed" };
+    }
+    const loan = await scoped(tx, worldId).findOne(loans, eq(loans.id, link.loanId));
+    if (!loan || loan.status !== "active") {
+      return { outcome: "not_needed" };
+    }
+    const invoice = await loanInvoice(tx, loan);
+    if (!invoice) {
+      return { outcome: "not_needed" };
+    }
+
+    let current = 1;
+    for (let issue = 1; issue <= MAX_INVOICE_LINK_ISSUES; issue += 1) {
+      if (deriveOperationId(worldId, "repayment_link", invoiceLinkSourceId(loan.id, issue)) === link.createOpId) {
+        current = issue;
+        break;
+      }
+    }
+    const next = current + 1;
+    if (next > MAX_INVOICE_LINK_ISSUES) {
+      return { outcome: "exhausted", issues: current };
+    }
+
+    const operationId = await enqueueInvoiceOrderCreate(tx, loan, invoice, invoiceLinkSourceId(loan.id, next));
+    const [reset] = await scoped(tx, worldId).update(
+      repaymentLinks,
+      { status: "pending", createOpId: operationId, paypalOrderId: null, approveUrl: null },
+      and(eq(repaymentLinks.id, link.id), eq(repaymentLinks.status, "failed"))!,
+    );
+    await appendEvent(tx, worldId, {
+      type: "loan.repayment_link_reissued",
+      aggregateId: loan.id,
+      simAt: await getSimNow(tx, worldId),
+      payload: { link_id: link.id, issue: next },
+    });
+    return { outcome: "reissued", issue: next, link: reset! };
+  });
+
+  if (result.outcome !== "reissued") {
+    return result;
+  }
+  const refreshed = await refreshLinkRow(db, worldId, result.link, { ignoreBackoff: true });
+  return { ...result, link: refreshed };
 }
 
 /**
@@ -351,7 +459,7 @@ async function findLinkForCheckout(
   return purpose === "repayment_link"
     ? scoped(db, worldId).findOne(
         repaymentLinks,
-        and(eq(repaymentLinks.loanId, createSourceId), eq(repaymentLinks.kind, "invoice"))!,
+        and(eq(repaymentLinks.loanId, loanIdFromInvoiceSourceId(createSourceId)), eq(repaymentLinks.kind, "invoice"))!,
       )
     : scoped(db, worldId).findOne(
         repaymentLinks,
@@ -675,6 +783,11 @@ function failureApplier(purpose: OperationPurpose) {
     if (!link) {
       return;
     }
+    if (link.paypalOrderId && link.paypalOrderId !== args.orderId) {
+      // A stale order of a re-issued invoice link (Task 8): the link now
+      // points at a newer order, which this failure says nothing about.
+      return;
+    }
     const failed = await scoped(db, worldId).update(
       repaymentLinks,
       { status: "failed" },
@@ -688,10 +801,13 @@ function failureApplier(purpose: OperationPurpose) {
 
 registerCaptureHandler("repayment_link", {
   // The borrower agent owns its client's invoice link (the client pays it).
-  resolveOwnerAgentId: resolveLinkOwnerAgentId,
+  resolveOwnerAgentId: (db, worldId, sourceId) => resolveLinkOwnerAgentId(db, worldId, loanIdFromInvoiceSourceId(sourceId)),
   applyEffect: (db, worldId, simNow, args) => applyRepaymentCapture(db, worldId, simNow, { purpose: "repayment_link", ...args }),
   applyFailure: failureApplier("repayment_link"),
-  retryNextAction: async (_db, _worldId, loanId): Promise<NextAction> => ({ tool: "get_loan", args: { loan_id: loanId } }),
+  retryNextAction: async (_db, _worldId, sourceId): Promise<NextAction> => ({
+    tool: "get_loan",
+    args: { loan_id: loanIdFromInvoiceSourceId(sourceId) },
+  }),
 });
 
 registerCaptureHandler("repayment_direct", {

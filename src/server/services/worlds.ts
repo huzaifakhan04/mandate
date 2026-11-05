@@ -57,6 +57,19 @@ export async function railForWorld(db: Db, worldId: string): Promise<"paypal" | 
   return world.railMode === "sim" ? "sim" : "paypal";
 }
 
+/**
+ * Every active world's id, oldest first — for Task 8's crons, which run
+ * across all worlds (reads `worlds` directly, like `railForWorld`).
+ */
+export async function listActiveWorldIds(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: worlds.id })
+    .from(worlds)
+    .where(eq(worlds.status, "active"))
+    .orderBy(worlds.createdAt, worlds.id);
+  return rows.map((row) => row.id);
+}
+
 function slugify(name: string): string {
   return name
     .toLowerCase()
