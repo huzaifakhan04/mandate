@@ -197,7 +197,8 @@ describe("paypalFetch", () => {
     const [requestId] = seenRequestIds;
     const row = await readOperation(db, requestId as string);
     expect(row.attempts).toBe(3);
-    expect(row.status).toBe("failed");
+    expect(row.status).toBe("failed_retryable");
+    expect(row.nextAttemptAt).not.toBeNull();
   });
 
   it("throws PayPalApiError with the PayPal error name on a final non-2xx response", async () => {
@@ -395,8 +396,9 @@ describe("paypalFetch", () => {
 
     expect(operationId).toBeTruthy();
     const row = await readOperation(db, operationId as string);
-    expect(row.status).not.toBe("pending");
-    expect(row.status).toBe("failed");
+    expect(row.status).not.toBe("queued");
+    expect(row.status).not.toBe("in_flight");
+    expect(row.status).toBe("failed_terminal");
   });
 
   it("replays a reused operationId's stored result without calling PayPal again, once it already succeeded", async () => {

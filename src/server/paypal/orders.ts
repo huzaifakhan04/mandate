@@ -1,5 +1,5 @@
 import type { Db } from "../db/client";
-import { paypalFetch } from "./fetch";
+import { PayPalApiError, paypalFetch } from "./fetch";
 
 /** Thrown by `amountToCents`/`assertPositiveAmountCents` for malformed or non-positive amounts. */
 export class InvalidAmountError extends Error {
@@ -167,6 +167,13 @@ export async function create(
 export interface CaptureOrderParams {
   worldId: string;
   orderId: string;
+  /**
+   * Optional caller-supplied idempotency id — see
+   * `CreateOrderParams.operationId`. `executeOperation` always passes
+   * this (its own row's id), so a replayed capture reuses the same
+   * `PayPal-Request-Id` instead of minting a new one.
+   */
+  operationId?: string;
 }
 
 export interface CaptureOrderResult {
@@ -178,26 +185,24 @@ export interface CaptureOrderResult {
   operationId: string;
 }
 
-export async function capture(
-  db: Db,
-  params: CaptureOrderParams,
-): Promise<CaptureOrderResult> {
-  const { body, operationId } = await paypalFetch<PayPalCaptureResponse>(db, {
-    worldId: params.worldId,
-    kind: "order.capture",
-    method: "POST",
-    path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}/capture`,
-  });
+function extractCapture(body: PayPalCaptureResponse): PayPalCapture | undefined {
+  return body.purchase_units?.[0]?.payments?.captures?.[0];
+}
 
-  const captured = body.purchase_units?.[0]?.payments?.captures?.[0];
+function buildCaptureResult(
+  orderId: string,
+  body: PayPalCaptureResponse,
+  operationId: string,
+): CaptureOrderResult {
+  const captured = extractCapture(body);
   if (!captured) {
     throw new Error(
-      `PayPal order ${params.orderId} capture response (status=${body.status}) had no capture record`,
+      `PayPal order ${orderId} capture response (status=${body.status}) had no capture record`,
     );
   }
   if (!captured.amount?.value) {
     throw new Error(
-      `PayPal capture ${captured.id} for order ${params.orderId} had no amount value`,
+      `PayPal capture ${captured.id} for order ${orderId} had no amount value`,
     );
   }
 
@@ -208,6 +213,53 @@ export async function capture(
     amountCents: amountToCents(captured.amount.value),
     operationId,
   };
+}
+
+/**
+ * Captures an approved order. If the order was already captured by an
+ * earlier attempt (PayPal's `422 ORDER_ALREADY_CAPTURED`, e.g. a retried
+ * call whose first attempt succeeded but whose response was lost), this
+ * is treated as success: the order is fetched via `GET` and its
+ * existing capture is returned instead of surfacing the 422 to the
+ * caller. This is what makes repeated `executeOperation` attempts for
+ * the same capture operation safe — a capture can never be double-sent.
+ */
+export async function capture(
+  db: Db,
+  params: CaptureOrderParams,
+): Promise<CaptureOrderResult> {
+  try {
+    const { body, operationId } = await paypalFetch<PayPalCaptureResponse>(db, {
+      worldId: params.worldId,
+      kind: "order.capture",
+      method: "POST",
+      path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}/capture`,
+      operationId: params.operationId,
+    });
+    return buildCaptureResult(params.orderId, body, operationId);
+  } catch (err) {
+    if (err instanceof PayPalApiError && err.name === "ORDER_ALREADY_CAPTURED") {
+      const { body: orderBody, operationId: getOperationId } =
+        await paypalFetch<PayPalCaptureResponse>(db, {
+          worldId: params.worldId,
+          kind: "order.get",
+          method: "GET",
+          path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}`,
+        });
+      const captured = extractCapture(orderBody);
+      if (!captured) {
+        // Couldn't recover a capture record from the GET either — the
+        // 422 wasn't actually recoverable, so surface the original error.
+        throw err;
+      }
+      return buildCaptureResult(
+        params.orderId,
+        orderBody,
+        params.operationId ?? getOperationId,
+      );
+    }
+    throw err;
+  }
 }
 
 export interface GetOrderParams {

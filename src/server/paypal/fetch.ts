@@ -5,6 +5,7 @@ import { and, eq, ne } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { scoped } from "../db/scoped";
 import { paypalOperations } from "../db/schema";
+import { classifyFailureStatus, computeNextAttemptAt } from "./classify";
 import { PayPalConfigError, paypalConfig, paypalTimeoutMs } from "./config";
 import { redact } from "./redact";
 import { PayPalOAuthError, getAccessToken } from "./token";
@@ -210,7 +211,7 @@ async function ensureOperationRow(
       rail: "paypal",
       kind,
       requestId: id,
-      status: "pending",
+      status: "queued",
       attempts: 0,
       request: redact(loggedRequest),
     })
@@ -290,11 +291,24 @@ async function updateOperationRow(
  *
  * Every exit — success, a final non-2xx, a network-error budget
  * exhaustion, or an unexpected/config error — writes a terminal
- * `paypal_operations` status (`succeeded`/`failed`); none leave the row
- * stuck `pending`. Throws `PayPalApiError` on a final non-2xx response
+ * `paypal_operations` status (`succeeded` / `failed_retryable` /
+ * `failed_terminal`, classified by `classifyFailureStatus`, with
+ * `next_attempt_at` set for a `failed_retryable` row); none leave the row
+ * stuck `queued`. Throws `PayPalApiError` on a final non-2xx response
  * (including an exhausted network-error budget, as status 0), or
  * rethrows a `PayPalConfigError` / wraps anything else as
  * `PayPalNetworkError`.
+ *
+ * IMPORTANT — never call this (or `executeOperation`, which calls it)
+ * from inside a `db.transaction`. A PayPal round trip can take seconds,
+ * and holding a DB transaction open for that long blocks other work and
+ * risks the transaction timing out mid-call with an ambiguous outcome
+ * (money may or may not have moved). Enqueue the operation row inside
+ * the transaction (`enqueueOperation`), then call `executeOperation`
+ * from `ctx.afterCommit` once the transaction has committed. Only
+ * `src/server/paypal/operations.ts` may call `paypalFetch` or the
+ * `orders`/`payouts` request functions directly — see
+ * `tests/unit/paypal/noTransactionCalls.test.ts`.
  */
 export async function paypalFetch<T>(
   db: Db,
@@ -447,17 +461,38 @@ export async function paypalFetch<T>(
   const success =
     fatalError === undefined && lastStatus >= 200 && lastStatus < 300;
 
+  // A `PayPalConfigError` means PayPal was never even reachable (missing
+  // credentials) — retrying later without a human fixing the config
+  // can't help, so it's terminal regardless of `lastStatus` being 0.
+  // Every other non-success exit is classified from the HTTP status
+  // that was actually observed (0 meaning network/timeout).
+  const terminalStatus = success
+    ? "succeeded"
+    : fatalError instanceof PayPalConfigError
+      ? "failed_terminal"
+      : classifyFailureStatus(lastStatus);
+
   // Every exit path reaches this update — success, a final non-2xx, an
   // exhausted retry budget, or the fatal-error catch above — so no row is
-  // ever left `pending`. `updateOperationRow` itself guards against
-  // downgrading a row a concurrent, already-finished attempt for the
-  // same operationId marked `succeeded`.
+  // ever left `queued`/`in_flight`. `updateOperationRow` itself guards
+  // against downgrading a row a concurrent, already-finished attempt for
+  // the same operationId marked `succeeded`.
   await updateOperationRow(db, worldId, operationId, {
     response: redact(lastStatus === 0 ? lastFailureDetails : lastBody),
     httpStatus: lastStatus === 0 ? null : lastStatus,
     latencyMs,
     attempts,
-    status: success ? "succeeded" : "failed",
+    status: terminalStatus,
+    // The claim (if any — `executeOperation` claims a row before
+    // calling in here) is over now that a terminal status has been
+    // written, whether this attempt succeeded or not: clear it so a
+    // later `executeOperation` retry of a `failed_retryable` row isn't
+    // blocked behind the 2-minute stale-claim window for no reason.
+    claimedAt: null,
+    nextAttemptAt:
+      terminalStatus === "failed_retryable"
+        ? computeNextAttemptAt(attempts)
+        : null,
     lastError: success
       ? null
       : (lastErrorMessage ?? extractErrorName(lastBody)),

@@ -25,6 +25,8 @@ export interface RailCheckoutResult {
 export interface CaptureCheckoutParams {
   worldId: string;
   orderId: string;
+  /** Optional caller-supplied idempotency id — see `orders.CaptureOrderParams.operationId`. */
+  operationId?: string;
 }
 
 export interface RailCaptureResult {

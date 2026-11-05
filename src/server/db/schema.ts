@@ -79,13 +79,34 @@ export const paypalOperations = pgTable("paypal_operations", {
   kind: text("kind").notNull(),
   requestId: text("request_id").notNull(),
   paypalId: text("paypal_id"),
-  status: text("status").notNull().default("pending"),
+  /** `queued | in_flight | succeeded | failed_retryable | failed_terminal`. */
+  status: text("status").notNull().default("queued"),
+  /** Redacted copy of the request, kept for audit/display. */
   request: jsonb("request"),
+  /**
+   * Unredacted `{ method, path, body }` this operation re-sends on every
+   * `executeOperation` attempt — sandbox-only, and safe to store
+   * unredacted because it never carries an auth header (the bearer
+   * token is added by `paypalFetch` itself, never stored here).
+   */
+  executableRequest: jsonb("executable_request"),
   response: jsonb("response"),
   httpStatus: integer("http_status"),
   latencyMs: integer("latency_ms"),
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
+  /**
+   * Set when `executeOperation` claims this row (`queued`/
+   * `failed_retryable` -> `in_flight`); a claim older than 2 minutes is
+   * treated as abandoned and can be re-claimed.
+   */
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  /** Earliest time a `failed_retryable` row should be retried. */
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  /** Why this operation exists — see `OperationPurpose` in paypal/operationId.ts. */
+  purpose: text("purpose"),
+  /** The domain row (note/loan/repayment id, …) this operation is for. */
+  sourceId: text("source_id"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -66,7 +66,7 @@ async function insertOrReuse(
     paypalId: string;
     request: unknown;
     response: unknown;
-    status: "succeeded" | "failed";
+    status: "succeeded" | "failed_terminal";
   },
 ): Promise<InsertOrReuseResult> {
   const id = explicitId ?? randomUUID();
@@ -220,7 +220,7 @@ export function simRail(
           kind: "order.capture",
           requestId: auditId,
           paypalId: params.orderId,
-          status: "failed",
+          status: "failed_terminal",
           request: redact(params),
           response: redact({ name: error.name, status: state.status }),
           httpStatus: 422,
@@ -353,7 +353,7 @@ export function simRail(
             paypalId: batchId,
             request: params,
             response: state,
-            status: failed ? "failed" : "succeeded",
+            status: failed ? "failed_terminal" : "succeeded",
           };
         },
       );
