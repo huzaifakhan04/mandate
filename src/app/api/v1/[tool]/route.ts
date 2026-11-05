@@ -2,12 +2,11 @@ import { randomUUID } from "crypto";
 
 import { NextResponse } from "next/server";
 
-import { getSimNow } from "@/server/clock/clock";
 import { fail } from "@/server/contracts/envelope";
 import { findTool } from "@/server/contracts/registry";
+import { runTool } from "@/server/contracts/runTool";
 import "@/server/contracts/tools";
 import { getDb as defaultGetDb, type Db } from "@/server/db/client";
-import { ensureMainWorld } from "@/server/services/worlds";
 
 type RouteParams = { params: Promise<{ tool: string }> };
 
@@ -30,62 +29,48 @@ async function readJsonBody(req: Request): Promise<unknown> {
  * (lazy) Neon/dev resolver.
  */
 export function createRestHandler({ getDb }: RestHandlerDeps) {
-  async function handle(toolName: string, rawInputPromise: Promise<unknown>): Promise<NextResponse> {
+  async function dispatch(toolName: string, rawInput: unknown, requestId: string): Promise<NextResponse> {
     const tool = findTool(toolName);
-    if (!tool) {
-      return NextResponse.json(fail("NOT_FOUND", `Unknown tool: ${toolName}`, [toolName]), {
-        status: 404,
-      });
-    }
-
-    let rawInput: unknown;
-    try {
-      rawInput = await rawInputPromise;
-    } catch {
-      return NextResponse.json(
-        fail("INVALID_REQUEST", "Request body must be valid JSON.", ["body"]),
-        { status: 400 },
-      );
-    }
-
-    const parsed = tool.input.safeParse(rawInput);
-    if (!parsed.success) {
-      const reasonCodes = parsed.error.issues.map((issue) => issue.path.join(".") || "root");
-      return NextResponse.json(
-        fail("INVALID_REQUEST", "Invalid input.", reasonCodes),
-        { status: 400 },
-      );
-    }
-
-    const db = await getDb();
-    const { worldId } = await ensureMainWorld(db);
-    const simNow = await getSimNow(db, worldId);
-
-    const envelope = await tool.handler(parsed.data, {
-      worldId,
-      simNow,
-      agentId: null,
-      requestId: randomUUID(),
-    });
-
-    return NextResponse.json(envelope, { status: 200 });
+    const { httpStatus, envelope } = await runTool(tool, toolName, rawInput, { getDb, requestId });
+    return NextResponse.json(envelope, { status: httpStatus });
   }
 
   return {
     async GET(_req: Request, { params }: RouteParams): Promise<NextResponse> {
       const { tool } = await params;
+      const requestId = randomUUID();
+
+      const found = findTool(tool);
+      if (!found) {
+        return NextResponse.json(fail("NOT_FOUND", `Unknown tool: ${tool}`, [tool]), {
+          status: 404,
+        });
+      }
       if (tool !== "get_bank_guide") {
         return NextResponse.json(
-          fail("NOT_FOUND", `GET is not supported for tool: ${tool}`, [tool]),
-          { status: 404 },
+          fail("METHOD_NOT_ALLOWED", `GET is not supported for tool: ${tool}`, [tool]),
+          { status: 405 },
         );
       }
-      return handle(tool, Promise.resolve({}));
+
+      return dispatch(tool, {}, requestId);
     },
 
     async POST(req: Request, { params }: RouteParams): Promise<NextResponse> {
       const { tool } = await params;
-      return handle(tool, readJsonBody(req));
+      const requestId = randomUUID();
+
+      let rawInput: unknown;
+      try {
+        rawInput = await readJsonBody(req);
+      } catch {
+        return NextResponse.json(
+          fail("INVALID_REQUEST", "Request body must be valid JSON.", ["body"]),
+          { status: 400 },
+        );
+      }
+
+      return dispatch(tool, rawInput, requestId);
     },
   };
 }

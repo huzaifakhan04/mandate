@@ -45,17 +45,22 @@ export function ok<T>(data: T, opts: OkOptions): Envelope<T> {
   };
 }
 
-/** Builds an error envelope. `data` is always an empty object. */
+/**
+ * Builds an error envelope. `data` is an empty object unless an explicit
+ * `data` is passed (e.g. `{ request_id }` for correlating an internal
+ * error against server logs).
+ */
 export function fail(
   status: string,
   summary: string,
   reasonCodes: string[],
-): Envelope<Record<string, never>> {
+  data: Record<string, unknown> = {},
+): Envelope<Record<string, unknown>> {
   return {
     status,
     summary,
     reason_codes: reasonCodes,
-    data: {},
+    data,
     next_actions: [],
     docs_url: docsUrl(),
   };

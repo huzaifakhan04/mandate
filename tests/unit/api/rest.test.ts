@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { z } from "zod";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createRestHandler } from "@/app/api/v1/[tool]/route";
+import { ok } from "@/server/contracts/envelope";
+import { registry } from "@/server/contracts/registry";
 import "@/server/contracts/tools";
 import { createTestDb } from "@/server/db/testing";
 
@@ -96,5 +99,60 @@ describe("REST contract route /api/v1/[tool]", () => {
     expect(body.status).toBe("INVALID_REQUEST");
     expect(Array.isArray(body.reason_codes)).toBe(true);
     expect(body.reason_codes.length).toBeGreaterThan(0);
+  });
+
+  it("unexpected error (getDb throws) returns 500 INTERNAL_ERROR with no stack/message leak", async () => {
+    const boom = new Error("connection string had password=super-secret");
+    const { POST } = createRestHandler({
+      getDb: async () => {
+        throw boom;
+      },
+    });
+    const req = new Request("http://localhost/api/v1/get_bank_guide", {
+      method: "POST",
+      body: "{}",
+      headers: { "content-type": "application/json" },
+    });
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const res = await POST(req, params("get_bank_guide"));
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.status).toBe("INTERNAL_ERROR");
+    expect(JSON.stringify(body)).not.toContain("super-secret");
+    consoleErrorSpy.mockRestore();
+  });
+
+  describe("GET on a tool that does not support GET", () => {
+    const otherTool = {
+      name: "other_tool",
+      title: "Other Tool",
+      description: "A test-only POST-only tool used to exercise the 405 path for GET requests.",
+      auth: "none" as const,
+      mutating: false,
+      input: z.object({}),
+      output: z.object({}),
+      handler: async () => ok({}, { status: "OK", summary: "ok" }),
+    };
+
+    afterEach(() => {
+      const index = registry.indexOf(otherTool);
+      if (index !== -1) {
+        registry.splice(index, 1);
+      }
+    });
+
+    it("returns 405 METHOD_NOT_ALLOWED", async () => {
+      registry.push(otherTool);
+      const { GET } = createRestHandler({ getDb: createTestDb });
+      const req = new Request("http://localhost/api/v1/other_tool");
+
+      const res = await GET(req, params("other_tool"));
+
+      expect(res.status).toBe(405);
+      const body = await res.json();
+      expect(body.status).toBe("METHOD_NOT_ALLOWED");
+    });
   });
 });

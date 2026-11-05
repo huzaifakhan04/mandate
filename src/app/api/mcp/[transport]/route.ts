@@ -2,17 +2,18 @@ import { randomUUID } from "crypto";
 
 import { createMcpHandler } from "mcp-handler";
 
-import { getSimNow } from "@/server/clock/clock";
 import { registry } from "@/server/contracts/registry";
+import { runTool } from "@/server/contracts/runTool";
 import "@/server/contracts/tools";
 import { getDb } from "@/server/db/client";
-import { ensureMainWorld } from "@/server/services/worlds";
 
 /**
- * One MCP tool per registry entry. The handler reuses the same per-request
- * context (worldId/simNow/agentId/requestId) as the REST route, and returns
- * the tool's envelope both as `content[0].text` (JSON string) and as
- * `structuredContent`, so clients can read either.
+ * One MCP tool per registry entry. Dispatch goes through the same
+ * `runTool` the REST route uses, so unknown-tool/invalid-input/unexpected
+ * errors are handled identically: the envelope is always returned (never a
+ * thrown error or leaked stack trace), as both `content[0].text` (JSON
+ * string) and `structuredContent`, with `isError: true` whenever the
+ * shared dispatch reports a non-2xx status.
  */
 const mcpHandler = createMcpHandler(
   (server) => {
@@ -25,20 +26,16 @@ const mcpHandler = createMcpHandler(
           inputSchema: tool.input,
         },
         async (input) => {
-          const db = await getDb();
-          const { worldId } = await ensureMainWorld(db);
-          const simNow = await getSimNow(db, worldId);
-
-          const envelope = await tool.handler(input, {
-            worldId,
-            simNow,
-            agentId: null,
-            requestId: randomUUID(),
+          const requestId = randomUUID();
+          const { httpStatus, envelope } = await runTool(tool, tool.name, input, {
+            getDb,
+            requestId,
           });
 
           return {
             content: [{ type: "text" as const, text: JSON.stringify(envelope) }],
             structuredContent: envelope,
+            isError: httpStatus >= 400,
           };
         },
       );
