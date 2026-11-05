@@ -87,6 +87,13 @@ const mainWorldMemo = new WeakMap<Db, Promise<{ worldId: string }>>();
  * `db` returns the cached promise instead of hitting the database again. A
  * failed attempt is evicted from the cache so a transient error doesn't
  * poison every later call for that `db`.
+ *
+ * On a successful resolution, the memo is permanent for that `db`'s
+ * lifetime — there is no invalidation/TTL. That's fine because the memoised
+ * value (the main world's id) is immutable once created; the main world is
+ * never deleted or recreated under a running process. If that ever stops
+ * being true (e.g. a future "reset the sandbox" operation that drops and
+ * recreates worlds), this memo would need an explicit invalidation hook.
  */
 export function ensureMainWorldOnce(db: Db): Promise<{ worldId: string }> {
   let cached = mainWorldMemo.get(db);

@@ -65,3 +65,29 @@ export function fail(
     docs_url: docsUrl(),
   };
 }
+
+/**
+ * The HTTP status every known envelope `status` maps to. A status not in
+ * this table (e.g. a business-level outcome a handler invents, like
+ * `REJECTED` or `PENDING`) is not a transport-level error — it defaults to
+ * `200`: the request was handled fine, the *business* outcome just wasn't
+ * a plain success. Only transport-level statuses runTool itself produces
+ * (unknown tool, bad auth, bad input, conflicting/in-flight idempotency
+ * key, an inactive agent, or an unexpected server error) get a non-200
+ * status here.
+ */
+const STATUS_HTTP: Record<string, number> = {
+  NOT_FOUND: 404,
+  INVALID_REQUEST: 400,
+  UNAUTHORIZED: 401,
+  AGENT_NOT_ACTIVE: 403,
+  METHOD_NOT_ALLOWED: 405,
+  IDEMPOTENCY_CONFLICT: 409,
+  IDEMPOTENCY_IN_PROGRESS: 409,
+  INTERNAL_ERROR: 500,
+};
+
+/** Maps an envelope's `status` to the HTTP status it should be served with. */
+export function httpStatusForEnvelope(envelope: Envelope<unknown>): number {
+  return STATUS_HTTP[envelope.status] ?? 200;
+}

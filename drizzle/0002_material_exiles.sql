@@ -1,1 +1,0 @@
-ALTER TABLE "idempotency_keys" ADD COLUMN "http_status" integer NOT NULL;

@@ -50,7 +50,11 @@ const insertEventTool: ToolDef = {
   auth: "agent",
   mutating: true,
   readOnly: false,
-  input: z.object({ note: z.string().optional(), shouldThrow: z.boolean().optional() }),
+  input: z.object({
+    note: z.string().optional(),
+    shouldThrow: z.boolean().optional(),
+    amountCents: z.bigint().optional(),
+  }),
   output: z.object({}),
   handler: async (input, ctx) => {
     await ctx.tx.insert(events).values({
@@ -67,6 +71,17 @@ const insertEventTool: ToolDef = {
 
     return ok({}, { status: "OK", summary: "inserted" });
   },
+};
+
+/**
+ * Test-only mutating tool with `auth: 'none'` (like Task 4's
+ * `register_agent`): no agent, so idempotency must be ignored entirely for
+ * it, while still running the handler inside a transaction.
+ */
+const insertEventNoAuthTool: ToolDef = {
+  ...insertEventTool,
+  name: "insert_event_no_auth_tool",
+  auth: "none",
 };
 
 async function countEvents(db: Db, worldId: string): Promise<number> {
@@ -182,5 +197,127 @@ describe("runTool idempotency + per-call transaction", () => {
     expect(first.httpStatus).toBe(200);
     expect(second.envelope).toEqual(first.envelope);
     expect(await countEvents(db, worldId)).toBe(1);
+  });
+
+  it("hashes a bigint field in the input without throwing, and still detects a conflict", async () => {
+    const db = await createTestDb();
+    const { worldId, key } = await createTestAgent(db);
+
+    const first = await runTool(insertEventTool, insertEventTool.name, { amountCents: 500n }, {
+      getDb: async () => db,
+      authorization: `Bearer ${key}`,
+      idempotencyKey: "idem-bigint",
+    });
+    const replay = await runTool(insertEventTool, insertEventTool.name, { amountCents: 500n }, {
+      getDb: async () => db,
+      authorization: `Bearer ${key}`,
+      idempotencyKey: "idem-bigint",
+    });
+    const conflict = await runTool(insertEventTool, insertEventTool.name, { amountCents: 600n }, {
+      getDb: async () => db,
+      authorization: `Bearer ${key}`,
+      idempotencyKey: "idem-bigint",
+    });
+
+    expect(first.httpStatus).toBe(200);
+    expect(replay.envelope).toEqual(first.envelope);
+    expect(conflict.httpStatus).toBe(409);
+    expect(await countEvents(db, worldId)).toBe(1);
+  });
+
+  it("header and idempotency_key arg disagreeing returns 400 INVALID_REQUEST idempotency_key_mismatch", async () => {
+    const db = await createTestDb();
+    const { key } = await createTestAgent(db);
+
+    const result = await runTool(
+      insertEventTool,
+      insertEventTool.name,
+      { note: "a", idempotency_key: "from-arg" },
+      { getDb: async () => db, authorization: `Bearer ${key}`, idempotencyKey: "from-header" },
+    );
+
+    expect(result.httpStatus).toBe(400);
+    expect(result.envelope.status).toBe("INVALID_REQUEST");
+    expect(result.envelope.reason_codes).toContain("idempotency_key_mismatch");
+  });
+
+  it("a mutating tool with an inactive agent returns 403 AGENT_NOT_ACTIVE", async () => {
+    const db = await createTestDb();
+    const { worldId, key } = await createTestAgent(db);
+    await db.update(agents).set({ status: "suspended" }).where(eq(agents.worldId, worldId));
+
+    const result = await runTool(insertEventTool, insertEventTool.name, {}, {
+      getDb: async () => db,
+      authorization: `Bearer ${key}`,
+    });
+
+    expect(result.httpStatus).toBe(403);
+    expect(result.envelope.status).toBe("AGENT_NOT_ACTIVE");
+    expect(result.envelope.reason_codes).toContain("agent_not_active");
+    expect(await countEvents(db, worldId)).toBe(0);
+  });
+
+  it("auth: 'none' mutating tool: idempotency is ignored entirely, key or no key", async () => {
+    const db = await createTestDb();
+    const { worldId } = await ensureMainWorld(db);
+
+    const first = await runTool(insertEventNoAuthTool, insertEventNoAuthTool.name, { note: "a" }, {
+      getDb: async () => db,
+      idempotencyKey: "idem-noauth",
+    });
+    const second = await runTool(insertEventNoAuthTool, insertEventNoAuthTool.name, { note: "a" }, {
+      getDb: async () => db,
+      idempotencyKey: "idem-noauth",
+    });
+
+    expect(first.httpStatus).toBe(200);
+    expect(second.httpStatus).toBe(200);
+    // Not a replay: the handler ran twice (no agent to attribute a stored
+    // idempotency row to), so two events rows were written.
+    expect(await countEvents(db, worldId)).toBe(2);
+    expect(await countIdempotencyRows(db, worldId)).toBe(0);
+  });
+
+  it("auth: 'none' mutating tool still runs inside a transaction (throw rolls back)", async () => {
+    const db = await createTestDb();
+    const { worldId } = await ensureMainWorld(db);
+
+    const result = await runTool(
+      insertEventNoAuthTool,
+      insertEventNoAuthTool.name,
+      { shouldThrow: true },
+      { getDb: async () => db },
+    );
+
+    expect(result.httpStatus).toBe(500);
+    expect(await countEvents(db, worldId)).toBe(0);
+  });
+
+  it("concurrent calls sharing a fresh idempotency key never 500 and only run the handler once", async () => {
+    const db = await createTestDb();
+    const { worldId, key } = await createTestAgent(db);
+
+    const [first, second] = await Promise.all([
+      runTool(insertEventTool, insertEventTool.name, { note: "concurrent" }, {
+        getDb: async () => db,
+        authorization: `Bearer ${key}`,
+        idempotencyKey: "idem-concurrent",
+      }),
+      runTool(insertEventTool, insertEventTool.name, { note: "concurrent" }, {
+        getDb: async () => db,
+        authorization: `Bearer ${key}`,
+        idempotencyKey: "idem-concurrent",
+      }),
+    ]);
+
+    for (const result of [first, second]) {
+      expect(result.httpStatus).not.toBe(500);
+      expect(["OK", "IDEMPOTENCY_CONFLICT", "IDEMPOTENCY_IN_PROGRESS"]).toContain(result.envelope.status);
+    }
+    // Same input on both calls, so a 409 here (if any) must be a transient
+    // IN_PROGRESS read, never a hash CONFLICT.
+    expect([first.envelope.status, second.envelope.status]).not.toContain("IDEMPOTENCY_CONFLICT");
+    expect(await countEvents(db, worldId)).toBe(1);
+    expect(await countIdempotencyRows(db, worldId)).toBe(1);
   });
 });

@@ -67,12 +67,17 @@ export const registry: ToolDef[] = [];
 /**
  * Registers a tool definition and returns it unchanged.
  *
- * Enforces two invariants that `runTool` relies on:
- * - `readOnly` must be the exact opposite of `mutating`.
- * - a `mutating` tool must require `auth: 'agent'` — idempotency rows are
- *   attributed to an agent (`idempotency_keys.agent_id` is `NOT NULL`), so a
- *   mutating tool with no authenticated agent could never be made
- *   idempotent.
+ * Enforces the one invariant `runTool`'s REST `GET` dispatch relies on:
+ * `readOnly` must be the exact opposite of `mutating`, so a tool can't
+ * accidentally be both (or neither).
+ *
+ * A `mutating` tool is NOT required to have `auth: 'agent'` — e.g. Task 4's
+ * `register_agent` is `auth: 'none'` and mutating (it creates the very
+ * agent that would authenticate later calls). `runTool` handles this: a
+ * mutating tool with no authenticated agent still runs inside a
+ * transaction, but idempotency is skipped entirely for it — there is no
+ * agent to attribute an `idempotency_keys` row to, and that column is
+ * `NOT NULL`.
  */
 export function defineTool<
   Input extends z.ZodObject<z.ZodRawShape>,
@@ -81,11 +86,6 @@ export function defineTool<
   if (def.readOnly === def.mutating) {
     throw new Error(
       `Tool "${def.name}": readOnly must be the opposite of mutating.`,
-    );
-  }
-  if (def.mutating && def.auth !== "agent") {
-    throw new Error(
-      `Tool "${def.name}": mutating tools must require auth: 'agent'.`,
     );
   }
   registry.push(def as unknown as ToolDef);

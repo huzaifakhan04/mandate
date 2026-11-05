@@ -500,8 +500,14 @@ export const idempotencyKeys = pgTable(
       .references(() => agents.id),
     key: text("key").notNull(),
     requestHash: text("request_hash").notNull(),
+    // Nullable: a claim-first insert writes the row with `response`/
+    // `http_status` both null to reserve `(world_id, agent_id, key)` before
+    // the handler runs, then fills them in with an UPDATE in the same
+    // transaction once the handler succeeds. A row is never visible to
+    // another transaction until it commits with both fields set — see
+    // runTool.ts's claim-first idempotency comment for the full protocol.
     response: jsonb("response"),
-    httpStatus: integer("http_status").notNull(),
+    httpStatus: integer("http_status"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
