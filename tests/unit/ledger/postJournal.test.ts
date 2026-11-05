@@ -1,10 +1,11 @@
+import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { worlds, journalEntries } from "@/server/db/schema";
+import { worlds, journalEntries, postings } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import type { Db } from "@/server/db/client";
 import { ensureChartOfAccounts } from "@/server/ledger/accounts";
-import { postJournal } from "@/server/ledger/postJournal";
+import { insertEntryIdempotent, postJournal } from "@/server/ledger/postJournal";
 import { trialBalance } from "@/server/ledger/trialBalance";
 import {
   EmptyJournalError,
@@ -148,5 +149,83 @@ describe("postJournal", () => {
 
     const rows = await db.select().from(journalEntries);
     expect(rows).toHaveLength(1);
+  });
+
+  it("insertEntryIdempotent: a second insert with the same idempotencyKey returns replayed:true for the first row, with exactly one row written", async () => {
+    const values = {
+      memo: "conflict branch",
+      sourceType: "loan",
+      sourceId: "00000000-0000-0000-0000-000000000006",
+      simAt: new Date("2026-01-01T00:00:00Z"),
+      idempotencyKey: "conflict-branch-1",
+    };
+
+    // Two direct calls to the exported helper, bypassing postJournal
+    // entirely, so this exercises the `ON CONFLICT DO NOTHING` branch
+    // itself rather than postJournal's higher-level replay behavior.
+    const first = await insertEntryIdempotent(db, worldId, values);
+    const second = await insertEntryIdempotent(db, worldId, values);
+
+    expect(first.replayed).toBe(false);
+    expect(second.replayed).toBe(true);
+    expect(second.entry.id).toBe(first.entry.id);
+
+    const rows = await db
+      .select()
+      .from(journalEntries)
+      .where(eq(journalEntries.idempotencyKey, "conflict-branch-1"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("postJournal: replays without duplicating postings when the entry row was already written by someone else", async () => {
+    // Simulate a concurrent writer that already committed the entry
+    // row (e.g. another request that raced past the ON CONFLICT check
+    // first) by inserting it directly, bypassing postJournal.
+    const [preExisting] = await db
+      .insert(journalEntries)
+      .values({
+        worldId,
+        memo: "written by a concurrent caller",
+        sourceType: "loan",
+        sourceId: "00000000-0000-0000-0000-000000000007",
+        simAt: new Date("2026-01-01T00:00:00Z"),
+        idempotencyKey: "raced-1",
+      })
+      .returning();
+    if (!preExisting) {
+      throw new Error("expected the pre-existing entry to be inserted");
+    }
+
+    const result = await postJournal(db, {
+      worldId,
+      memo: "my attempt",
+      sourceType: "loan",
+      sourceId: "00000000-0000-0000-0000-000000000007",
+      simAt: new Date("2026-01-01T00:00:00Z"),
+      idempotencyKey: "raced-1",
+      postings: [
+        { accountCode: "cash_paypal", amountCents: 500n },
+        { accountCode: "notes_payable", amountCents: -500n },
+      ],
+    });
+
+    expect(result.replayed).toBe(true);
+    expect(result.entryId).toBe(preExisting.id);
+
+    const entryRows = await db
+      .select()
+      .from(journalEntries)
+      .where(eq(journalEntries.idempotencyKey, "raced-1"));
+    expect(entryRows).toHaveLength(1);
+
+    // The "someone else" writer in this test never inserted postings,
+    // so postJournal must not have inserted any either on the replayed
+    // path — it must not duplicate (or originate) postings for an
+    // entry it didn't create.
+    const postingRows = await db
+      .select()
+      .from(postings)
+      .where(eq(postings.entryId, preExisting.id));
+    expect(postingRows).toHaveLength(0);
   });
 });

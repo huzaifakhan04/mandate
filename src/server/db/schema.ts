@@ -9,6 +9,7 @@ import {
   pgTable,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
@@ -399,11 +400,16 @@ export const ledgerAccounts = pgTable(
       .defaultNow(),
   },
   (table) => [
-    uniqueIndex("ledger_accounts_world_code_owner_idx").on(
-      table.worldId,
-      table.code,
-      table.ownerRef,
-    ),
+    // NULLS NOT DISTINCT: without it, Postgres treats every NULL
+    // owner_ref as distinct, so two concurrent "create this top-level
+    // account if it doesn't exist" calls could each insert a row for
+    // the same (world_id, code, NULL) instead of the second one hitting
+    // a conflict. A plain uniqueIndex() can't express NULLS NOT
+    // DISTINCT in this drizzle-orm version, so this is a `unique(...)`
+    // table constraint instead (same effective columns/name).
+    unique("ledger_accounts_world_code_owner_idx")
+      .on(table.worldId, table.code, table.ownerRef)
+      .nullsNotDistinct(),
   ],
 );
 

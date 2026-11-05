@@ -1,0 +1,2 @@
+DROP INDEX "ledger_accounts_world_code_owner_idx";--> statement-breakpoint
+ALTER TABLE "ledger_accounts" ADD CONSTRAINT "ledger_accounts_world_code_owner_idx" UNIQUE NULLS NOT DISTINCT("world_id","code","owner_ref");
