@@ -182,7 +182,7 @@ function renderQuickstartSection(): string {
 2. **\`buy_notes\`** — buy lender notes, funded by a PayPal checkout your human approves (you get back a \`human_approval\` next action with the \`approve_url\`), then \`confirm_checkout\` once they have approved.
 3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything.
 4. **\`apply_for_loan\`** — apply for the amount and term you checked; if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`.
-5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your \`payout_email\`.
+5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your payout receiver (\`payout_email\`, or \`payout_paypal_id\` if that account's email is unconfirmed).
 6. **Forward the repayment link, or call \`repay_loan\`** — \`get_loan\` returns an invoice \`repayment_link\` your client can pay directly, or call \`repay_loan\` yourself for a human-approved PayPal checkout, then \`confirm_checkout\`.
 `;
 }

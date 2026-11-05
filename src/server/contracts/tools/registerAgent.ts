@@ -4,15 +4,29 @@ import { ok } from "../envelope";
 import { defineTool } from "../registry";
 import { registerAgent as registerAgentService } from "../../services/agents";
 
-const inputSchema = z.object({
-  name: z.string().min(2).max(60),
-  operator: z.string().optional(),
-  model: z.string().optional(),
-  payout_email: z
-    .string()
-    .email()
-    .describe("The PayPal account that receives loans and redemptions."),
-});
+const inputSchema = z
+  .object({
+    name: z.string().min(2).max(60),
+    operator: z.string().optional(),
+    model: z.string().optional(),
+    payout_email: z
+      .string()
+      .email()
+      .optional()
+      .describe("The PayPal account (by email) that receives loans and redemptions. Give this or payout_paypal_id."),
+    payout_paypal_id: z
+      .string()
+      .regex(/^[A-Z0-9]{13}$/, "a PayPal payer ID is 13 uppercase letters/digits")
+      .optional()
+      .describe(
+        "The PayPal account (by payer ID) that receives loans and redemptions, instead of payout_email — " +
+          "use it when that account's email is unconfirmed (payouts to an unconfirmed email go UNCLAIMED).",
+      ),
+  })
+  .refine((input) => !input.payout_email !== !input.payout_paypal_id, {
+    message: "Give exactly one of payout_email or payout_paypal_id.",
+    path: ["payout_email"],
+  });
 
 const outputSchema = z.object({
   agent_id: z.string(),
@@ -50,6 +64,7 @@ export const registerAgentTool = defineTool({
       operator: input.operator,
       model: input.model,
       payoutEmail: input.payout_email,
+      payoutPaypalId: input.payout_paypal_id,
     });
 
     const data = {

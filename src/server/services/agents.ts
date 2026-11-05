@@ -23,7 +23,15 @@ export interface RegisterAgentInput {
   name: string;
   operator?: string;
   model?: string;
-  payoutEmail: string;
+  /**
+   * The payout receiver: exactly one of an email or a PayPal payer ID.
+   * Task 10: a payer ID is what real PayPal sandbox needs for accounts
+   * whose email is unconfirmed — a payout to that email goes UNCLAIMED
+   * (`RECEIVER_UNCONFIRMED`), while one to the same account's payer ID
+   * succeeds.
+   */
+  payoutEmail?: string;
+  payoutPaypalId?: string;
 }
 
 export interface RegisterAgentResult {
@@ -73,6 +81,11 @@ export async function registerAgent(
     );
   }
 
+  if (!input.payoutEmail === !input.payoutPaypalId) {
+    // Defensive only: the register_agent input schema enforces this.
+    throw new Error("registerAgent needs exactly one of payoutEmail / payoutPaypalId");
+  }
+
   const [agent] = await scoped(tx, worldId).insert(agents, {
     name: input.name,
     operator: input.operator ?? "unknown",
@@ -81,8 +94,8 @@ export async function registerAgent(
     // placeholder so the NOT NULL column is satisfiable in P1.
     codeManifestHash: "unverified",
     status: "active",
-    payoutReceiver: input.payoutEmail,
-    payoutReceiverType: "email",
+    payoutReceiver: input.payoutEmail ?? input.payoutPaypalId,
+    payoutReceiverType: input.payoutEmail ? "email" : "paypal_id",
   });
   if (!agent) {
     throw new Error("Expected an agent row to be inserted");
@@ -96,6 +109,14 @@ export async function registerAgent(
   });
 
   return { agentId: agent.id, apiKey: generated.key, status: "active" };
+}
+
+/**
+ * `get_status`'s masked payout receiver: an email as `maskPayoutEmail`; a
+ * PayPal payer ID as `PAYPAL_ID:` + its first two characters + `***`.
+ */
+export function maskPayoutReceiver(receiver: string, receiverType: string | null): string {
+  return receiverType === "paypal_id" ? `PAYPAL_ID:${receiver.slice(0, 2)}***` : maskPayoutEmail(receiver);
 }
 
 /** First character + `***@` + the domain, e.g. `"m***@example.com"`. */
@@ -184,7 +205,7 @@ export async function getAgentStatus(
       name: agentRow.name,
       status: agentRow.status,
       payoutEmailMasked: agentRow.payoutReceiver
-        ? maskPayoutEmail(agentRow.payoutReceiver)
+        ? maskPayoutReceiver(agentRow.payoutReceiver, agentRow.payoutReceiverType)
         : null,
     },
     balances: {

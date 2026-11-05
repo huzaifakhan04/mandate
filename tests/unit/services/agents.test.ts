@@ -8,12 +8,19 @@ import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
 import { agents } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
-import { getAgentStatus, maskPayoutEmail, registerAgent } from "@/server/services/agents";
+import { getAgentStatus, maskPayoutEmail, maskPayoutReceiver, registerAgent } from "@/server/services/agents";
 import { ensureMainWorld } from "@/server/services/worlds";
 
 describe("maskPayoutEmail", () => {
   it("keeps the first character and the domain, masking the rest of the local part", () => {
     expect(maskPayoutEmail("mandy@example.com")).toBe("m***@example.com");
+  });
+});
+
+describe("maskPayoutReceiver", () => {
+  it("masks an email like maskPayoutEmail and a PayPal payer ID to its first two characters", () => {
+    expect(maskPayoutReceiver("mandy@example.com", "email")).toBe("m***@example.com");
+    expect(maskPayoutReceiver("ABCDEFGHJK234", "paypal_id")).toBe("PAYPAL_ID:AB***");
   });
 });
 
@@ -190,5 +197,46 @@ describe("register_agent / get_status tools (via runTool)", () => {
       "buy_notes",
       "check_eligibility",
     ]);
+  });
+
+  // Task 10 (real sandbox): a payout to a sandbox account's unconfirmed
+  // email goes UNCLAIMED (RECEIVER_UNCONFIRMED) and is cancelled, so the
+  // disbursement fails; the same account's payer ID receives it (SUCCESS).
+  it("register_agent accepts payout_paypal_id instead of payout_email and stores a paypal_id receiver", async () => {
+    const db = await createTestDb();
+    const registered = await runTool(
+      findTool("register_agent"),
+      "register_agent",
+      { name: "Scout", payout_paypal_id: "ABCDEFGHJK234" },
+      { getDb: async () => db },
+    );
+    expect(registered.httpStatus).toBe(200);
+    const data = registered.envelope.data as Record<string, unknown>;
+    const [row] = await db.select().from(agents).where(eq(agents.id, data.agent_id as string));
+    expect(row?.payoutReceiver).toBe("ABCDEFGHJK234");
+    expect(row?.payoutReceiverType).toBe("paypal_id");
+
+    const status = await runTool(
+      findTool("get_status"),
+      "get_status",
+      {},
+      { getDb: async () => db, authorization: `Bearer ${data.api_key as string}` },
+    );
+    expect(((status.envelope.data as Record<string, unknown>).agent as Record<string, unknown>).payout_email_masked).toBe(
+      "PAYPAL_ID:AB***",
+    );
+  });
+
+  it("register_agent rejects both or neither of payout_email / payout_paypal_id, and a malformed payer ID", async () => {
+    const db = await createTestDb();
+    for (const input of [
+      { name: "Scout" },
+      { name: "Scout", payout_email: "scout@example.com", payout_paypal_id: "ABCDEFGHJK234" },
+      { name: "Scout", payout_paypal_id: "not-a-payer-id" },
+    ]) {
+      const result = await runTool(findTool("register_agent"), "register_agent", input, { getDb: async () => db });
+      expect(result.httpStatus).toBe(400);
+    }
+    expect(await db.select().from(agents)).toHaveLength(0);
   });
 });
