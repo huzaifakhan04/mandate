@@ -1,0 +1,92 @@
+import { z } from "zod";
+
+import { ok } from "../envelope";
+import { defineTool } from "../registry";
+import { createLoanOffer } from "../../services/loans";
+
+const invoiceSchema = z.object({
+  client_email: z.email(),
+  amount_cents: z.number().int().min(1),
+  due_in_days: z.number().int().min(1).max(60),
+  description: z.string().min(1).max(500),
+});
+
+const inputSchema = z
+  .object({
+    amount_cents: z.number().int().min(1),
+    term_days: z.number().int().min(1),
+    purpose: z.string().min(5).max(200),
+    invoice: invoiceSchema.optional(),
+  })
+  .refine((input) => !input.invoice || input.invoice.amount_cents >= input.amount_cents, {
+    message: "invoice.amount_cents must be at least amount_cents",
+    path: ["invoice", "amount_cents"],
+  });
+
+const outputSchema = z.object({}).passthrough();
+
+export const applyForLoanTool = defineTool({
+  name: "apply_for_loan",
+  title: "Apply for Loan",
+  description:
+    "Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank " +
+    "will collect via a payment link). Returns either DECLINED with reason codes, or OFFERED with " +
+    "a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then " +
+    "call accept_offer with offer_id and disclosure_hash, or decline_offer.",
+  auth: "agent",
+  mutating: true,
+  readOnly: false,
+  input: inputSchema,
+  output: outputSchema,
+  handler: async (input, ctx) => {
+    if (!ctx.agentId) {
+      throw new Error("apply_for_loan requires an authenticated agent");
+    }
+
+    const result = await createLoanOffer(ctx.tx, ctx.worldId, ctx.agentId, {
+      amountCents: BigInt(input.amount_cents),
+      termDays: input.term_days,
+      purpose: input.purpose,
+      invoice: input.invoice
+        ? {
+            clientEmail: input.invoice.client_email,
+            amountCents: BigInt(input.invoice.amount_cents),
+            dueInDays: input.invoice.due_in_days,
+            description: input.invoice.description,
+          }
+        : null,
+    });
+
+    if (result.outcome === "declined") {
+      return ok(
+        { application_id: result.applicationId, reasons: result.reasons },
+        {
+          status: "DECLINED",
+          summary: `Application declined: ${result.reasons.join(", ")}.`,
+          reason_codes: result.reasons,
+          next_actions: [{ tool: "check_eligibility", args: {} }],
+        },
+      );
+    }
+
+    return ok(
+      {
+        application_id: result.applicationId,
+        offer_id: result.offerId,
+        disclosure: result.disclosure,
+        disclosure_hash: result.disclosureHash,
+        expires_sim_at: result.expiresSimAt.toISOString(),
+      },
+      {
+        status: "OFFERED",
+        summary:
+          `Offer: ${result.disclosure.funding_provided_cents} cents for ${result.disclosure.term_days} days, ` +
+          `fee ${result.disclosure.fee_cents} cents. Accept with the disclosure_hash before it expires.`,
+        next_actions: [
+          { tool: "accept_offer", args: { offer_id: result.offerId, disclosure_hash: result.disclosureHash } },
+          { tool: "decline_offer", args: { offer_id: result.offerId } },
+        ],
+      },
+    );
+  },
+});

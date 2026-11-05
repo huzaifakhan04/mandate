@@ -1,0 +1,2 @@
+ALTER TABLE "loans" ADD COLUMN "disbursed_sim_at" timestamp with time zone;--> statement-breakpoint
+CREATE UNIQUE INDEX "loans_one_open_per_agent_idx" ON "loans" USING btree ("world_id","agent_id") WHERE "loans"."status" in ('accepted', 'disbursing', 'active');

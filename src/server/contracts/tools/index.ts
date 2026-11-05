@@ -11,3 +11,8 @@ import "../../services/notes"; // registers the note_purchase capture handler be
 import "./buyNotes";
 import "./confirmCheckout";
 import "./redeemNotes";
+import "./checkEligibility";
+import "./applyForLoan";
+import "./acceptOffer";
+import "./declineOffer";
+import "./getLoan";

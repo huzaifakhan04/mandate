@@ -291,36 +291,51 @@ export const offers = pgTable("offers", {
     .defaultNow(),
 });
 
-export const loans = pgTable("loans", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  offerId: uuid("offer_id")
-    .notNull()
-    .references(() => offers.id),
-  agentId: uuid("agent_id")
-    .notNull()
-    .references(() => agents.id),
-  principalId: uuid("principal_id").references(() => principals.id),
-  principalCents: bigint("principal_cents", { mode: "bigint" }).notNull(),
-  feeCents: bigint("fee_cents", { mode: "bigint" }).notNull(),
-  lateFeesCents: bigint("late_fees_cents", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  outstandingCents: bigint("outstanding_cents", { mode: "bigint" }).notNull(),
-  dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
-  status: text("status").notNull().default("active"),
-  dpd: integer("dpd").notNull().default(0),
-  riskGrade: text("risk_grade"),
-  disbursementOpId: uuid("disbursement_op_id").references(
-    () => paypalOperations.id,
-  ),
-  chargedOffAt: timestamp("charged_off_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const loans = pgTable(
+  "loans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    offerId: uuid("offer_id")
+      .notNull()
+      .references(() => offers.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    principalId: uuid("principal_id").references(() => principals.id),
+    principalCents: bigint("principal_cents", { mode: "bigint" }).notNull(),
+    feeCents: bigint("fee_cents", { mode: "bigint" }).notNull(),
+    lateFeesCents: bigint("late_fees_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    outstandingCents: bigint("outstanding_cents", { mode: "bigint" }).notNull(),
+    dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("active"),
+    dpd: integer("dpd").notNull().default(0),
+    riskGrade: text("risk_grade"),
+    disbursementOpId: uuid("disbursement_op_id").references(
+      () => paypalOperations.id,
+    ),
+    chargedOffAt: timestamp("charged_off_at", { withTimezone: true }),
+    // Task 6: when the disbursement payout SUCCEEDED (sim time). `due_sim_at`
+    // is re-based on it (disbursed + term) at activation.
+    disbursedSimAt: timestamp("disbursed_sim_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Task 6: DB backstop for "one open loan per agent" (P1), under the
+    // application-level check `accept_offer` makes while holding the note
+    // series row lock. Keep the status list in sync with
+    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts.
+    uniqueIndex("loans_one_open_per_agent_idx")
+      .on(table.worldId, table.agentId)
+      .where(sql`${table.status} in ('accepted', 'disbursing', 'active')`),
+  ],
+);
 
 export const repaymentLinks = pgTable("repayment_links", {
   id: uuid("id").primaryKey().defaultRandom(),

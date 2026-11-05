@@ -90,6 +90,11 @@ const STATUS_HTTP: Record<string, number> = {
   // Fix round 1.
   CHECKOUT_FAILED: 400,
   PAYOUT_RECEIVER_MISSING: 400,
+  // Task 6 (lending).
+  DISCLOSURE_MISMATCH: 400,
+  OFFER_EXPIRED: 400,
+  INVALID_TRANSITION: 409,
+  OPEN_LOAN_EXISTS: 409,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */
