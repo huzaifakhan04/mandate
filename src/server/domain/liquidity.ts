@@ -1,7 +1,7 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { loans, noteTransactions } from "../db/schema";
+import { ledgerAccounts, loans, noteTransactions, postings } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { getAccountBalance } from "../ledger/trialBalance";
 
@@ -26,7 +26,31 @@ export async function availableLiquidity(
   const cashCents = await getAccountBalance(db, worldId, "cash_paypal", null);
   const disbursingPrincipalCents = await sumDisbursingLoanPrincipal(db, worldId);
   const pendingRedemptionCents = await sumPendingRedemptions(db, worldId);
-  return cashCents - disbursingPrincipalCents - pendingRedemptionCents;
+  const owedToBorrowersCents = await sumOwedToBorrowers(db, worldId);
+  return cashCents - disbursingPrincipalCents - pendingRedemptionCents - owedToBorrowersCents;
+}
+
+/**
+ * Task 7: invoice remainders the bank holds for borrowers (Σ
+ * `payable_to_borrower[*]`, a credit balance) — cash that sits in
+ * `cash_paypal` until the remainder payout succeeds (or forever, if it
+ * failed) but belongs to the borrower, not the pool, so it must never be
+ * lent out or redeemed. (An addition to the plan's formula, which
+ * predates remainders.)
+ */
+async function sumOwedToBorrowers(db: Db, worldId: string): Promise<bigint> {
+  const accounts = await scoped(db, worldId).select(ledgerAccounts, eq(ledgerAccounts.code, "payable_to_borrower"));
+  if (accounts.length === 0) {
+    return 0n;
+  }
+  const rows = await scoped(db, worldId).select(
+    postings,
+    inArray(
+      postings.accountId,
+      accounts.map((account) => account.id),
+    ),
+  );
+  return -rows.reduce((sum, row) => sum + row.amountCents, 0n);
 }
 
 async function sumDisbursingLoanPrincipal(

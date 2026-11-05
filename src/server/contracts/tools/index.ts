@@ -8,6 +8,7 @@ import "./getBankGuide";
 import "./registerAgent";
 import "./getStatus";
 import "../../services/notes"; // registers the note_purchase capture handler before confirm_checkout can dispatch to it
+import "../../services/repayments"; // registers the repayment_link/repayment_direct capture handlers and the invoice-link activation hook
 import "./buyNotes";
 import "./confirmCheckout";
 import "./redeemNotes";
@@ -16,3 +17,5 @@ import "./applyForLoan";
 import "./acceptOffer";
 import "./declineOffer";
 import "./getLoan";
+import "./repayLoan";
+import "./getStatement";

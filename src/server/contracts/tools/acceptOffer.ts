@@ -8,6 +8,7 @@ import {
   disbursementFailureReasonCodes,
   getLoanView,
 } from "../../services/loans";
+import { refreshRepaymentLink } from "../../services/repayments";
 
 const inputSchema = z.object({
   offer_id: z.uuid(),
@@ -18,6 +19,7 @@ const outputSchema = z.object({
   loan_id: z.string(),
   status: z.string(),
   disbursement: z.object({ status: z.string() }),
+  repayment_link: z.object({ url: z.string(), amount_cents: z.number() }).optional(),
 });
 
 /** Bookkeeping passed from `handler` to `finalize` via `ctx.setFinalizeState` (never the envelope). */
@@ -38,7 +40,11 @@ function disbursingEnvelope(loanId: string): Envelope<unknown> {
 }
 
 /** The envelope for the loan's current state, read back after the payout attempt. */
-async function loanStateEnvelope(ctx: FinalizeCtx, loanId: string): Promise<Envelope<unknown>> {
+async function loanStateEnvelope(
+  ctx: FinalizeCtx,
+  loanId: string,
+  link: { url: string; orderId: string; amountCents: bigint } | null,
+): Promise<Envelope<unknown>> {
   if (!ctx.agentId) {
     return disbursingEnvelope(loanId);
   }
@@ -63,14 +69,35 @@ async function loanStateEnvelope(ctx: FinalizeCtx, loanId: string): Promise<Enve
     );
   }
 
+  // Task 7: an invoice loan's payment link goes to the client — the
+  // human-approval action comes first (Global Constraints).
+  const forwardLink =
+    link && view.state === "ACTIVE"
+      ? [
+          {
+            tool: "human_approval",
+            args: {
+              url: link.url,
+              who: "client",
+              then: { tool: "confirm_checkout", args: { checkout_id: link.orderId } },
+            },
+          },
+        ]
+      : [];
   return ok(
-    { loan_id: loanId, status: view.state, disbursement: { status: "SUCCEEDED" } },
+    {
+      loan_id: loanId,
+      status: view.state,
+      disbursement: { status: "SUCCEEDED" },
+      ...(link ? { repayment_link: { url: link.url, amount_cents: Number(link.amountCents) } } : {}),
+    },
     {
       status: view.state,
       summary:
         `Loan ${view.state}: ${view.loan.principalCents.toString()} cents sent to your payout receiver; ` +
-        `${view.loan.outstandingCents.toString()} cents due ${view.loan.dueSimAt.toISOString()}.`,
-      next_actions: [{ tool: "get_loan", args: { loan_id: loanId } }],
+        `${view.loan.outstandingCents.toString()} cents due ${view.loan.dueSimAt.toISOString()}.` +
+        (link ? ` Forward the repayment link to your client; their payment repays the loan.` : ""),
+      next_actions: [...forwardLink, { tool: "get_loan", args: { loan_id: loanId } }],
     },
   );
 }
@@ -145,6 +172,15 @@ export const acceptOfferTool = defineTool({
       return envelope;
     }
     await applyPayoutOutcome(ctx.db, pending.payoutOperationId);
-    return loanStateEnvelope(ctx, pending.loanId);
+    // Task 7: the activation enqueued the invoice link's order.create (if
+    // any); execute it now, after commit, so the response carries its URL.
+    const link = await refreshRepaymentLink(ctx.db, ctx.worldId, pending.loanId, { ignoreBackoff: true });
+    return loanStateEnvelope(
+      ctx,
+      pending.loanId,
+      link?.approveUrl && link.paypalOrderId
+        ? { url: link.approveUrl, orderId: link.paypalOrderId, amountCents: link.amountCents }
+        : null,
+    );
   },
 });

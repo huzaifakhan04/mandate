@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
+import { getSimNow } from "../clock/clock";
 import type { NextAction } from "../contracts/envelope";
 import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
@@ -352,8 +353,17 @@ async function dispatchCapturedResult(
   };
 }
 
+interface SettleCheckoutArgs {
+  checkoutPurpose: OperationPurpose;
+  createSourceId: string;
+  orderId: string;
+  rail: OperationRail;
+}
+
 /**
- * The post-commit half of `confirm_checkout`. Fix round 1 (M3): if the
+ * The settlement core shared by `confirm_checkout` (after its ownership
+ * check) and the agent-less `settleCheckoutByOrderId` (Ruling S — webhook
+ * and reconcile cron). Fix round 1 (M3): if the
  * capture operation already exists and succeeded (a replay — including
  * two different `confirm_checkout` calls racing each other), its stored
  * result is reused directly with no new `order.get`/capture attempt. If
@@ -370,16 +380,11 @@ async function dispatchCapturedResult(
  * checkout outright, same as a terminally failed capture. Never call
  * this inside a transaction.
  */
-export async function finalizeConfirmCheckout(
+async function settleCheckout(
   db: Db,
   worldId: string,
   simNow: Date,
-  args: {
-    checkoutPurpose: OperationPurpose;
-    createSourceId: string;
-    orderId: string;
-    rail: OperationRail;
-  },
+  args: SettleCheckoutArgs,
 ): Promise<FinalizeConfirmCheckoutResult> {
   const handler = getCaptureHandler(args.checkoutPurpose);
   const capturePurpose = CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE[args.checkoutPurpose];
@@ -473,4 +478,65 @@ export async function finalizeConfirmCheckout(
     reasonCodes: [],
     data: { checkout_id: args.orderId },
   };
+}
+
+/**
+ * The post-commit half of `confirm_checkout`: `beginConfirmCheckout`
+ * already verified (inside the call's transaction) that the calling agent
+ * owns this checkout, so this is exactly the agent-less settlement
+ * `settleCheckoutByOrderId` runs (Ruling S) — the same code path for an
+ * agent confirming, a webhook, and the reconcile cron. Never call inside a
+ * transaction.
+ */
+export async function finalizeConfirmCheckout(
+  db: Db,
+  worldId: string,
+  simNow: Date,
+  args: SettleCheckoutArgs,
+): Promise<FinalizeConfirmCheckoutResult> {
+  return settleCheckout(db, worldId, simNow, args);
+}
+
+/**
+ * Ruling S: agent-less settlement of a checkout by its PayPal/sim order id
+ * — for Task 8's webhook (`CHECKOUT.ORDER.APPROVED` /
+ * `PAYMENT.CAPTURE.COMPLETED`) and reconcile cron, and Review Focus 3 (the
+ * client pays an invoice link while no agent is online). Finds the
+ * `order.create` operation that created the order, then runs the same
+ * settlement as `confirm_checkout`: GET the order first (an unapproved
+ * order is never captured — `AWAITING_APPROVAL`), capture once APPROVED,
+ * gate on the capture status (only `COMPLETED` applies the handler's
+ * effect; `PENDING` stays `PENDING`; anything else → `applyFailure`), and
+ * fail closed (`NOT_FOUND`) for an unknown order or a checkout purpose
+ * with no registered handler. Idempotent and safe to call concurrently
+ * and repeatedly (the capture operation id is derived from the order id,
+ * and every handler applies its effect exactly once). Never call inside
+ * a transaction.
+ */
+export async function settleCheckoutByOrderId(
+  db: Db,
+  worldId: string,
+  orderId: string,
+): Promise<FinalizeConfirmCheckoutResult> {
+  const notFound: FinalizeConfirmCheckoutResult = {
+    status: "NOT_FOUND",
+    summary: "No checkout found for that order id.",
+    reasonCodes: ["checkout_not_found"],
+    data: { checkout_id: orderId },
+  };
+  const createOp = await findCreateOpByOrderId(db, worldId, orderId);
+  if (!createOp?.purpose || !createOp.sourceId) {
+    return notFound;
+  }
+  const checkoutPurpose = createOp.purpose as OperationPurpose;
+  if (!getCaptureHandler(checkoutPurpose) || !CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE[checkoutPurpose]) {
+    return notFound;
+  }
+  const simNow = await getSimNow(db, worldId);
+  return settleCheckout(db, worldId, simNow, {
+    checkoutPurpose,
+    createSourceId: createOp.sourceId,
+    orderId,
+    rail: createOp.rail as OperationRail,
+  });
 }

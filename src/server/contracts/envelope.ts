@@ -95,6 +95,8 @@ const STATUS_HTTP: Record<string, number> = {
   OFFER_EXPIRED: 400,
   INVALID_TRANSITION: 409,
   OPEN_LOAN_EXISTS: 409,
+  // Task 7 (repayment).
+  AMOUNT_EXCEEDS_OUTSTANDING: 400,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

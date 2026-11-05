@@ -530,7 +530,11 @@ export async function applyRedemptionPayoutOutcome(
         notePositions,
         {
           units: lockedPosition.units - noteTx.amountCents,
-          costCents: lockedPosition.costCents - noteTx.amountCents,
+          // Task 7: units include earned interest (credited on repayment)
+          // but the cost basis doesn't, so redeeming the interest must not
+          // drive the cost basis below zero.
+          costCents:
+            lockedPosition.costCents > noteTx.amountCents ? lockedPosition.costCents - noteTx.amountCents : 0n,
         },
         eq(notePositions.id, lockedPosition.id),
       );

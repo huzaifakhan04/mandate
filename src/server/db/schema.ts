@@ -337,23 +337,45 @@ export const loans = pgTable(
   ],
 );
 
-export const repaymentLinks = pgTable("repayment_links", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  loanId: uuid("loan_id")
-    .notNull()
-    .references(() => loans.id),
-  paypalOrderId: text("paypal_order_id").notNull(),
-  kind: text("kind").notNull(),
-  amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
-  payerHint: text("payer_hint"),
-  status: text("status").notNull().default("pending"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+/**
+ * Task 7: a repayment checkout for a loan — `kind` `invoice` (the payment
+ * link the borrower's client pays; one per loan, created on activation,
+ * its `order.create` keyed by the loan id) or `direct` (one per
+ * `repay_loan` call, its `order.create` keyed by this row's id).
+ * `status`: `pending` (order not created yet) → `open` (approve URL
+ * known) → `paid` (capture applied) | `review` (captured amount mismatch)
+ * | `failed`.
+ */
+export const repaymentLinks = pgTable(
+  "repayment_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    // Task 7: null until the queued `order.create` has executed.
+    paypalOrderId: text("paypal_order_id"),
+    kind: text("kind").notNull(),
+    amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
+    payerHint: text("payer_hint"),
+    status: text("status").notNull().default("pending"),
+    createOpId: uuid("create_op_id").references(() => paypalOperations.id),
+    approveUrl: text("approve_url"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One invoice link per loan (DB backstop under the activation hook,
+    // which only runs once per activation).
+    uniqueIndex("repayment_links_one_invoice_per_loan_idx")
+      .on(table.worldId, table.loanId)
+      .where(sql`${table.kind} = 'invoice'`),
+  ],
+);
 
 export const repayments = pgTable("repayments", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -380,10 +402,24 @@ export const repayments = pgTable("repayments", {
   remainderPayoutOpId: uuid("remainder_payout_op_id").references(
     () => paypalOperations.id,
   ),
+  // Task 7: the PayPal capture this repayment applied — unique per world,
+  // so one capture can never be applied twice (ALREADY_CAPTURED recovery
+  // returns an existing capture as a success).
+  captureId: text("capture_id"),
+  linkId: uuid("link_id").references(() => repaymentLinks.id),
+  /**
+   * Task 7: `none` (no remainder) | `pending` (payout queued/in flight,
+   * or UNCLAIMED being cancelled) | `paid` | `failed` (stays owed in
+   * `payable_to_borrower[agent]`) | `held` (no payout receiver on file).
+   */
+  remainderStatus: text("remainder_status").notNull().default("none"),
+  remainderFailureReason: text("remainder_failure_reason"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("repayments_world_capture_idx").on(table.worldId, table.captureId),
+]);
 
 export const noteSeries = pgTable(
   "note_series",

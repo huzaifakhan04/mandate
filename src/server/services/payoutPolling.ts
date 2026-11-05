@@ -13,6 +13,7 @@ import {
 } from "../paypal/operations";
 import { applyPayoutOutcome } from "./loans";
 import { applyRedemptionPayoutOutcome } from "./notes";
+import { applyRemainderPayoutOutcome, refreshRepaymentLink, remainderPayoutNeedsPolling } from "./repayments";
 import { railForWorld } from "./worlds";
 
 const MINUTE_MS = 60_000;
@@ -50,6 +51,9 @@ async function sourceNeedsPolling(db: Db, worldId: string, purpose: string, sour
     const loan = await scoped(db, worldId).findOne(loans, eq(loans.id, sourceId));
     return loan?.status === "disbursing";
   }
+  if (purpose === "remainder_payout") {
+    return remainderPayoutNeedsPolling(db, worldId, sourceId);
+  }
   const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, sourceId));
   return noteTx?.kind === "redeem" && noteTx.status === "pending";
 }
@@ -59,8 +63,9 @@ async function sourceNeedsPolling(db: Db, worldId: string, purpose: string, sour
  * Task 8's reconcile cron, which should log the returned `reason`. Never
  * call inside a transaction. Bounded (fix round 2):
  *
- * 1. Not a `payout.send`, or a purpose with no applier yet (e.g. Task 7's
- *    `remainder_payout`) → nothing.
+ * 1. Not a `payout.send`, or a purpose with no applier → nothing. Task 7
+ *    adds `remainder_payout` (and, after a disbursement's applier, executes
+ *    the loan's queued invoice-link create).
  * 2. The source (loan / redemption) is already settled → nothing enqueued.
  * 3. The send hasn't succeeded yet (no batch id) → no read; the applier
  *    (re-)executes the send itself, respecting its backoff.
@@ -81,12 +86,26 @@ export async function pollPayoutStatus(
   if (!record || record.kind !== "payout.send" || !record.sourceId) {
     return { polled: false, reason: "not_a_payout_send" };
   }
-  const apply =
+  const applyOutcome =
     record.purpose === "loan_disbursement"
       ? applyPayoutOutcome
       : record.purpose === "note_redemption"
         ? applyRedemptionPayoutOutcome
-        : null;
+        : record.purpose === "remainder_payout"
+          ? applyRemainderPayoutOutcome
+          : null;
+  const worldId = record.worldId;
+  const sourceId = record.sourceId;
+  // Task 7: an activation enqueues the invoice link's order.create —
+  // execute it right after the applier (no-op if there's no link).
+  const apply = applyOutcome
+    ? async (database: Db, opId: string) => {
+        await applyOutcome(database, opId);
+        if (record.purpose === "loan_disbursement") {
+          await refreshRepaymentLink(database, worldId, sourceId);
+        }
+      }
+    : null;
   if (!apply || !record.purpose) {
     return { polled: false, reason: "unsupported_purpose" };
   }
