@@ -22,6 +22,7 @@ import {
   parseGetOrderResponse,
 } from "./orders";
 import {
+  buildGetPayoutRequest,
   parseCancelPayoutItemResponse,
   parseGetPayoutResponse,
   parseSendPayoutResponse,
@@ -743,9 +744,41 @@ export async function latestPayoutGetForSend(
         gte(paypalOperations.createdAt, sendRow.createdAt),
       ),
     )
-    .orderBy(desc(paypalOperations.createdAt))
+    // No completion-time column exists; newest enqueue wins, id breaks ties deterministically.
+    .orderBy(desc(paypalOperations.createdAt), desc(paypalOperations.id))
     .limit(1);
   return read ? (read.response as OperationResultByKind["payout.get"]) : null;
+}
+
+/**
+ * For throttling `pollPayoutStatus`: when the `payout.send` was enqueued,
+ * and when the newest `payout.get` of its batch was enqueued — in ANY
+ * status (matched on the request path, since a read only records its
+ * `paypal_id` on success), so failing reads throttle too. `null` when the
+ * operation isn't a send with a batch id.
+ */
+export async function payoutPollTimes(
+  db: Db,
+  sendOperationId: string,
+): Promise<{ sendCreatedAt: Date; lastReadCreatedAt: Date | null } | null> {
+  const [sendRow] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, sendOperationId));
+  if (!sendRow || sendRow.kind !== "payout.send" || !sendRow.paypalId) {
+    return null;
+  }
+  const path = buildGetPayoutRequest(sendRow.paypalId).path;
+  const [read] = await db
+    .select({ createdAt: paypalOperations.createdAt })
+    .from(paypalOperations)
+    .where(
+      and(
+        eq(paypalOperations.worldId, sendRow.worldId),
+        eq(paypalOperations.kind, "payout.get"),
+        sql`${paypalOperations.executableRequest}->>'path' = ${path}`,
+      ),
+    )
+    .orderBy(desc(paypalOperations.createdAt), desc(paypalOperations.id))
+    .limit(1);
+  return { sendCreatedAt: sendRow.createdAt, lastReadCreatedAt: read?.createdAt ?? null };
 }
 
 async function readOperationRow(db: Db, operationId: string): Promise<OperationRow> {

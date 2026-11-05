@@ -787,5 +787,7 @@ export function disbursementFailureReasonCodes(reason: string | null): string[] 
   if (!reason) {
     return ["payout_failed"];
   }
-  return ["payout_failed", reason.startsWith("payout_error:") ? reason.toLowerCase() : `payout_${reason.toLowerCase()}`];
+  const specific = reason.startsWith("payout_error:") ? reason.toLowerCase() : `payout_${reason.toLowerCase()}`;
+  // De-duplicated: an item status of FAILED would otherwise repeat `payout_failed`.
+  return [...new Set(["payout_failed", specific])];
 }

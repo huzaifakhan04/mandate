@@ -145,6 +145,9 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const result = await applyFor(db, key, 25000, 14);
     expect(result.httpStatus).toBe(200);
     expect(result.envelope.status).toBe("DECLINED");
+    expect(result.envelope.next_actions).toEqual([
+      { tool: "check_eligibility", args: { amount_cents: 25000, term_days: 14 } },
+    ]);
     expect(result.envelope.reason_codes).toEqual(["insufficient_liquidity"]);
     expect((result.envelope.data as Data).application_id).toBeTruthy();
     expect(await db.select().from(offers).where(eq(offers.worldId, worldId))).toHaveLength(0);
@@ -457,7 +460,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(await availableLiquidity(db, worldId)).toBe(30000n);
 
     const got = await call(db, "get_loan", key, { loan_id: loanId });
-    expect(got.envelope.reason_codes).toEqual(["payout_failed", "payout_failed"]);
+    expect(got.envelope.reason_codes).toEqual(["payout_failed"]);
     expect((got.envelope.data as Data).outstanding_cents).toBe(0);
   });
 
@@ -739,3 +742,107 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(((status.envelope.data as Data).open_loan as Data).status).toBe("ACTIVE");
   });
 });
+
+describe("Fix round 2: pollPayoutStatus is bounded", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  async function payoutGetRows(worldId: string) {
+    return db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.kind, "payout.get")));
+  }
+
+  async function disbursingLoan(receiver: string) {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const { key } = await createTestAgent(db, worldId, receiver);
+    const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
+    const accepted = await call(db, "accept_offer", key, {
+      offer_id: applied.offer_id,
+      disclosure_hash: applied.disclosure_hash,
+    });
+    const loanId = (accepted.envelope.data as Data).loan_id as string;
+    const [loan] = await db.select().from(loans).where(eq(loans.id, loanId));
+    return { worldId, loanId, sendOpId: loan!.disbursementOpId! };
+  }
+
+  it("a settled source → no poll, no new row", async () => {
+    const { worldId, sendOpId } = await disbursingLoan("borrower@example.com"); // ACTIVE immediately
+    const result = await pollPayoutStatus(db, sendOpId);
+    expect(result).toEqual({ polled: false, reason: "source_settled" });
+    expect(await payoutGetRows(worldId)).toHaveLength(0);
+  });
+
+  it("two immediate polls → one payout.get; after the interval → a second one", async () => {
+    // A live-shaped ("pending") send resolves SUCCESS on the first poll;
+    // the loan is put back to DISBURSING afterwards so later polls still
+    // have a source that needs polling, isolating the throttle.
+    const { worldId, loanId, sendOpId } = await disbursingLoan("pending-borrower@example.com");
+    const t0 = new Date();
+
+    const first = await pollPayoutStatus(db, sendOpId, { now: t0 });
+    expect(first).toEqual({ polled: true, reason: "polled" });
+    await db.update(loans).set({ status: "disbursing" }).where(eq(loans.id, loanId));
+
+    const second = await pollPayoutStatus(db, sendOpId, { now: new Date(t0.getTime() + 1_000) });
+    expect(second).toEqual({ polled: false, reason: "throttled" });
+    expect(await payoutGetRows(worldId)).toHaveLength(1);
+
+    // < 10 min since the send → 1-minute interval.
+    const third = await pollPayoutStatus(db, sendOpId, { now: new Date(t0.getTime() + 61_000) });
+    expect(third).toEqual({ polled: true, reason: "polled" });
+    expect(await payoutGetRows(worldId)).toHaveLength(2);
+  });
+
+  it("the interval backs off with the age of the send", async () => {
+    const { pollIntervalMs } = await import("@/server/services/payoutPolling");
+    const min = 60_000;
+    expect(pollIntervalMs(5 * min)).toBe(1 * min);
+    expect(pollIntervalMs(30 * min)).toBe(5 * min);
+    expect(pollIntervalMs(5 * 60 * min)).toBe(30 * min);
+    expect(pollIntervalMs(48 * 60 * min)).toBe(6 * 60 * min);
+  });
+
+  it("latestPayoutGetForSend breaks a created_at tie deterministically (id desc)", async () => {
+    const { latestPayoutGetForSend } = await import("@/server/paypal/operations");
+    const { worldId, sendOpId } = await disbursingLoan("pending-borrower@example.com");
+    const [send] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, sendOpId));
+    const batchId = send!.paypalId!;
+    const at = new Date(send!.createdAt.getTime() + 5_000);
+    const row = (id: string, status: string) => ({
+      id,
+      worldId,
+      rail: "sim",
+      kind: "payout.get",
+      requestId: id,
+      status: "succeeded",
+      paypalId: batchId,
+      createdAt: at,
+      response: { batchId, batchStatus: "PENDING", items: [{ itemId: "I", transactionStatus: status }] },
+    });
+    await db.insert(paypalOperations).values([
+      row("00000000-0000-4000-8000-000000000001", "PENDING"),
+      row("ffffffff-ffff-4fff-bfff-ffffffffffff", "SUCCESS"),
+    ]);
+    const latest = await latestPayoutGetForSend(db, sendOpId);
+    expect(latest?.items[0]?.transactionStatus).toBe("SUCCESS");
+  });
+
+  it("a non-send operation → not polled", async () => {
+    const { sendOpId } = await disbursingLoan("borrower@example.com");
+    const { deriveOperationId } = await import("@/server/paypal/operations");
+    const result = await pollPayoutStatus(db, deriveOperationId("x", "payout_cancel", sendOpId));
+    expect(result).toEqual({ polled: false, reason: "not_a_payout_send" });
+  });
+});
+

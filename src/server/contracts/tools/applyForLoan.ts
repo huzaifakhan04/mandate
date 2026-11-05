@@ -91,7 +91,9 @@ export const applyForLoanTool = defineTool({
           status: "DECLINED",
           summary: `Application declined: ${result.reasons.join(", ")}.`,
           reason_codes: result.reasons,
-          next_actions: [{ tool: "check_eligibility", args: {} }],
+          next_actions: [
+            { tool: "check_eligibility", args: { amount_cents: input.amount_cents, term_days: input.term_days } },
+          ],
         },
       );
     }
