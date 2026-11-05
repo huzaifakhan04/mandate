@@ -392,27 +392,36 @@ export const noteSeries = pgTable(
   ],
 );
 
-export const notePositions = pgTable("note_positions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  seriesId: uuid("series_id")
-    .notNull()
-    .references(() => noteSeries.id),
-  agentId: uuid("agent_id")
-    .notNull()
-    .references(() => agents.id),
-  units: bigint("units", { mode: "bigint" }).notNull(),
-  costCents: bigint("cost_cents", { mode: "bigint" }).notNull(),
-  accruedCents: bigint("accrued_cents", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  status: text("status").notNull().default("active"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const notePositions = pgTable(
+  "note_positions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    seriesId: uuid("series_id")
+      .notNull()
+      .references(() => noteSeries.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    units: bigint("units", { mode: "bigint" }).notNull(),
+    costCents: bigint("cost_cents", { mode: "bigint" }).notNull(),
+    accruedCents: bigint("accrued_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One position per (series, agent) — lets `getOrCreatePosition`
+    // (Task 5) upsert with `ON CONFLICT DO NOTHING` instead of a
+    // select-then-insert race.
+    uniqueIndex("note_positions_series_agent_idx").on(table.seriesId, table.agentId),
+  ],
+);
 
 export const noteTransactions = pgTable("note_transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -425,6 +434,15 @@ export const noteTransactions = pgTable("note_transactions", {
   kind: text("kind").notNull(),
   amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
   opId: uuid("op_id").references(() => paypalOperations.id),
+  /**
+   * `pending | completed | failed` (Task 5). A `buy` starts `pending`
+   * and moves to `completed` exactly once, on the note-purchase
+   * capture's effect (conditional `pending -> completed` update, guarding
+   * the journal + position-units increment against a double-apply on
+   * replay). A `redeem` starts `pending` and moves to `completed` on a
+   * SUCCEEDED payout or `failed` on a FAILED/UNCLAIMED/etc. payout item.
+   */
+  status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

@@ -7,3 +7,7 @@
 import "./getBankGuide";
 import "./registerAgent";
 import "./getStatus";
+import "../../services/notes"; // registers the note_purchase capture handler before confirm_checkout can dispatch to it
+import "./buyNotes";
+import "./confirmCheckout";
+import "./redeemNotes";

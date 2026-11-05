@@ -85,6 +85,8 @@ const STATUS_HTTP: Record<string, number> = {
   IDEMPOTENCY_CONFLICT: 409,
   IDEMPOTENCY_IN_PROGRESS: 409,
   INTERNAL_ERROR: 500,
+  INSUFFICIENT_NOTE_BALANCE: 400,
+  INSUFFICIENT_LIQUIDITY: 400,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

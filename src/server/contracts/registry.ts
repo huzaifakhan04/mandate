@@ -35,6 +35,21 @@ export interface ToolCtx {
   afterCommit: (fn: () => Promise<void> | void) => void;
 }
 
+/**
+ * Context handed to an optional `finalize` hook (Ruling K): everything a
+ * post-commit step needs to execute a queued PayPal/sim operation and
+ * build the real response, but none of the per-call transaction (the
+ * commit already happened by the time `finalize` runs).
+ */
+export interface FinalizeCtx {
+  worldId: string;
+  simNow: Date;
+  agentId: string | null;
+  agent: AgentPrincipal | null;
+  requestId: string;
+  db: Db;
+}
+
 export interface ToolDef<
   Input extends z.ZodObject<z.ZodRawShape> = z.ZodObject<z.ZodRawShape>,
   Output extends z.ZodType = z.ZodType,
@@ -54,6 +69,20 @@ export interface ToolDef<
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;
+  /**
+   * Ruling K: a tool whose response depends on a PayPal/sim result that
+   * can only be produced after the per-call transaction commits (e.g.
+   * `buy_notes` needs the `order.create` operation's approve URL, and
+   * "never call PayPal inside a DB transaction" forbids getting that
+   * inside `handler`). When present, `runTool` calls `finalize` with the
+   * envelope `handler` returned (already committed) after every
+   * `ctx.afterCommit` callback has run, and uses whatever `finalize`
+   * returns as the call's real result. For a mutating, agent-scoped call
+   * made under an idempotency key, the *finalized* envelope — not
+   * `handler`'s — is what gets stored and replayed. Never runs on an
+   * idempotent replay (nothing new happened).
+   */
+  finalize?: (envelope: Envelope<unknown>, ctx: FinalizeCtx) => Promise<Envelope<unknown>>;
 }
 
 /**

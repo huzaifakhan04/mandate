@@ -676,6 +676,33 @@ async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): P
   return current;
 }
 
+/**
+ * The full stored record for an operation, for a caller that doesn't yet
+ * know the operation's `worldId` (e.g. an outcome applier that only has
+ * an operation id to start from). Services stay off `paypal_operations`
+ * directly (the world-isolation guard) by going through this instead of
+ * reading the table themselves.
+ */
+export interface OperationRecord extends OperationResult {
+  worldId: string;
+  purpose: OperationPurpose | null;
+  sourceId: string | null;
+}
+
+/** Looks up an operation by id with no world filter, or `undefined` if it doesn't exist. */
+export async function getOperation(db: Db, operationId: string): Promise<OperationRecord | undefined> {
+  const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, operationId));
+  if (!row) {
+    return undefined;
+  }
+  return {
+    ...toOperationResult(row),
+    worldId: row.worldId,
+    purpose: row.purpose as OperationPurpose | null,
+    sourceId: row.sourceId,
+  };
+}
+
 async function readOperationRow(db: Db, operationId: string): Promise<OperationRow> {
   const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, operationId));
   if (!row) {

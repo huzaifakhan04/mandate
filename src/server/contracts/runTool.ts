@@ -207,6 +207,11 @@ export async function runTool(
     }
 
     let envelope: Envelope<unknown>;
+    // Set only on the path that actually claimed an idempotency row and
+    // ran the handler in this call (never on a replay) — `finalize`
+    // (below) uses it to know which stored row, if any, to overwrite
+    // with the finalized envelope.
+    let claimedIdempotencyRowId: string | null = null;
 
     if (tool.mutating) {
       if (agent && effectiveIdempotencyKey) {
@@ -264,6 +269,7 @@ export async function runTool(
               .set({ response: result, httpStatus: httpStatusForEnvelope(result) })
               .where(eq(idempotencyKeys.id, claimedId));
 
+            claimedIdempotencyRowId = claimedId;
             return result;
           });
         } catch (err) {
@@ -351,6 +357,36 @@ export async function runTool(
         await callback();
       } catch (err) {
         console.error(`[runTool] ${toolName} afterCommit callback failed (requestId=${requestId}):`, err);
+      }
+    }
+
+    if (tool.finalize) {
+      try {
+        envelope = await tool.finalize(envelope, {
+          worldId,
+          simNow,
+          agentId: agent?.agentId ?? null,
+          agent,
+          requestId,
+          db,
+        });
+      } catch (err) {
+        console.error(`[runTool] ${toolName} finalize failed (requestId=${requestId}):`, err);
+        envelope = fail(
+          "INTERNAL_ERROR",
+          `Something went wrong finalizing this request. (request_id: ${requestId})`,
+          ["internal_error"],
+          { request_id: requestId },
+        );
+      }
+
+      // The finalized envelope, not handler's pre-finalize one, is what
+      // idempotent replays of this key must return.
+      if (claimedIdempotencyRowId) {
+        await db
+          .update(idempotencyKeys)
+          .set({ response: envelope, httpStatus: httpStatusForEnvelope(envelope) })
+          .where(eq(idempotencyKeys.id, claimedIdempotencyRowId));
       }
     }
 

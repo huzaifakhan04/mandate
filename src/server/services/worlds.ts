@@ -41,6 +41,22 @@ async function ensureNoteSeries(db: Db, worldId: string): Promise<void> {
     .onConflictDoNothing({ target: [noteSeries.worldId, noteSeries.name] });
 }
 
+/**
+ * Maps a world's `rail_mode` to the `OperationRail` money-moving tools
+ * must enqueue on (Ruling I, amended): `sim` worlds (tests/bots) stay
+ * `sim`; every other mode (`paypal`, or the not-yet-implemented `mixed`)
+ * uses the real PayPal rail. Reads `worlds` directly — this file, like
+ * the rest of `worlds.ts`, is allowlisted bootstrap infrastructure (see
+ * the world-isolation guard test).
+ */
+export async function railForWorld(db: Db, worldId: string): Promise<"paypal" | "sim"> {
+  const [world] = await db.select().from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  if (!world) {
+    throw new Error(`Expected world ${worldId} to exist`);
+  }
+  return world.railMode === "sim" ? "sim" : "paypal";
+}
+
 function slugify(name: string): string {
   return name
     .toLowerCase()

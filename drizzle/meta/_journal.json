@@ -36,6 +36,20 @@
       "when": 1793908579881,
       "tag": "0004_note_series_unique",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793909421497,
+      "tag": "0005_steady_punisher",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1793909794867,
+      "tag": "0006_unusual_goliath",
+      "breakpoints": true
     }
   ]
 }

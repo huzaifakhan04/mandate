@@ -1,7 +1,7 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { loans } from "../db/schema";
+import { loans, noteTransactions } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { getAccountBalance } from "../ledger/trialBalance";
 
@@ -41,17 +41,18 @@ async function sumDisbursingLoanPrincipal(
 }
 
 /**
- * Stub: no `note_redemption` operation exists yet (Task 5 adds note
- * redemption), so there is nothing to sum. Keeping this as its own
- * function, rather than inlining `0n` above, documents exactly what
- * Task 5/6 need to replace.
+ * Sums the requested amount of every `redeem` note transaction still
+ * `pending` (Task 5): money already promised to a holder but not yet
+ * paid out must not be double-committed to a loan or another
+ * redemption.
  */
-/* eslint-disable @typescript-eslint/no-unused-vars -- signature kept
-   stable for Task 5/6 to fill in; see the doc comment above. */
 async function sumPendingRedemptions(
   db: Db,
   worldId: string,
 ): Promise<bigint> {
-  return 0n;
+  const rows = await scoped(db, worldId).select(
+    noteTransactions,
+    and(eq(noteTransactions.kind, "redeem"), eq(noteTransactions.status, "pending")),
+  );
+  return rows.reduce((sum, row) => sum + row.amountCents, 0n);
 }
-/* eslint-enable @typescript-eslint/no-unused-vars */
