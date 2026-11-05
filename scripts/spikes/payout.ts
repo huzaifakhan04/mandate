@@ -6,7 +6,7 @@
  */
 import { randomUUID } from "crypto";
 
-import * as payouts from "@/server/paypal/payouts";
+import { paypalRail } from "@/server/rail/paypalRail";
 import { spikeDb, requireEnv, safeJson } from "./_helpers";
 
 function sleep(ms: number) {
@@ -18,8 +18,11 @@ async function main() {
   const { db, worldId } = await spikeDb();
 
   const t0 = Date.now();
-  const sent = await payouts.send(db, {
+  const rail = paypalRail(db);
+  const sent = await rail.sendPayout({
     worldId,
+    purpose: "note_redemption",
+    sourceId: `spike-${randomUUID()}`,
     receiver: owner,
     receiverType: "EMAIL",
     amountCents: 100n,
@@ -31,7 +34,7 @@ async function main() {
   const log: { t: number; status: string }[] = [];
   for (let i = 0; i < 10; i++) {
     await sleep(3000);
-    const got = await payouts.get(db, { worldId, batchId: sent.batchId });
+    const got = await rail.getPayout({ worldId, batchId: sent.batchId });
     log.push({ t: Date.now() - t0, status: got.batchStatus });
     console.log(`poll ${i + 1}: t=${Date.now() - t0}ms status=${got.batchStatus}`, safeJson(got.items));
   }

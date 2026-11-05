@@ -1,5 +1,10 @@
-import type { Db } from "../db/client";
-import { PayPalApiError, paypalFetch } from "./fetch";
+import type {
+  CaptureRecord,
+  ExecutableRequest,
+  OrderCaptureResult,
+  OrderCreateResult,
+  OrderGetResult,
+} from "./types";
 
 /** Thrown by `amountToCents`/`assertPositiveAmountCents` for malformed or non-positive amounts. */
 export class InvalidAmountError extends Error {
@@ -10,11 +15,10 @@ export class InvalidAmountError extends Error {
 }
 
 /**
- * Money-movement boundary guard, used by both rails (`orders.create` /
- * `payouts.send` here, and `simRail`): PayPal amounts are always
- * strictly positive integer cents. Zero or negative amounts are
- * rejected before any network call or `paypal_operations` row is
- * written.
+ * Money-movement boundary guard, applied by the request builders
+ * (`buildCreateOrderRequest` / `buildSendPayoutRequest`) for both rails:
+ * PayPal amounts are always strictly positive integer cents. Zero or
+ * negative amounts are rejected before any operation row is enqueued.
  */
 export function assertPositiveAmountCents(cents: bigint): void {
   if (cents <= 0n) {
@@ -57,69 +61,41 @@ export function amountToCents(value: string): bigint {
   return negative ? -cents : cents;
 }
 
-interface PayPalLink {
-  rel: string;
-  href: string;
+// ---------------------------------------------------------------------
+// Request builders + response parsers (Ruling F). They never call PayPal:
+// services build a request here, `enqueueOperation` stores it, and
+// `executeOperation` sends it (to PayPal or the sim rail) and parses the
+// response with the matching parser below — one code path for both rails.
+// ---------------------------------------------------------------------
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
 }
 
-interface PayPalOrderResponse {
-  id: string;
-  status: string;
-  links?: PayPalLink[];
+function requireString(value: unknown, what: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`PayPal response is missing ${what}`);
+  }
+  return value;
 }
 
-interface PayPalCapture {
-  id: string;
-  status: string;
-  amount?: { value: string };
-}
-
-interface PayPalCaptureResponse {
-  id: string;
-  status: string;
-  purchase_units?: {
-    payments?: {
-      captures?: PayPalCapture[];
-    };
-  }[];
-}
-
-export interface CreateOrderParams {
-  worldId: string;
+export interface CreateOrderRequestParams {
   amountCents: bigint;
   description: string;
   customId: string;
   payeeEmail?: string;
   returnUrl: string;
   cancelUrl: string;
-  /**
-   * Optional caller-supplied idempotency id (e.g. derived from a
-   * loan/note id). Reusing the same id for a retried call returns the
-   * original order instead of creating a second one. Omit to let
-   * `paypalFetch` mint a fresh id.
-   */
-  operationId?: string;
 }
 
-export interface CreateOrderResult {
-  orderId: string;
-  approveUrl: string;
-  status: string;
-  operationId: string;
-}
-
-/** Builds and submits an `intent: CAPTURE` USD order via PayPal Orders v2. */
-export async function create(
-  db: Db,
-  params: CreateOrderParams,
-): Promise<CreateOrderResult> {
+/** `POST /v2/checkout/orders` — an `intent: CAPTURE` USD order. Rejects non-positive amounts. */
+export function buildCreateOrderRequest(params: CreateOrderRequestParams): ExecutableRequest {
   assertPositiveAmountCents(params.amountCents);
 
   const purchaseUnit: Record<string, unknown> = {
-    amount: {
-      currency_code: "USD",
-      value: centsToAmount(params.amountCents),
-    },
+    amount: { currency_code: "USD", value: centsToAmount(params.amountCents) },
     description: params.description,
     custom_id: params.customId,
   };
@@ -127,12 +103,9 @@ export async function create(
     purchaseUnit.payee = { email_address: params.payeeEmail };
   }
 
-  const { body, operationId } = await paypalFetch<PayPalOrderResponse>(db, {
-    worldId: params.worldId,
-    kind: "order.create",
+  return {
     method: "POST",
     path: "/v2/checkout/orders",
-    operationId: params.operationId,
     body: {
       intent: "CAPTURE",
       purchase_units: [purchaseUnit],
@@ -145,144 +118,86 @@ export async function create(
         },
       },
     },
-  });
-
-  const approveLink = body.links?.find(
-    (link) => link.rel === "approve" || link.rel === "payer-action",
-  );
-  if (!approveLink) {
-    throw new Error(
-      `PayPal order ${body.id} response had no approve/payer-action link`,
-    );
-  }
-
-  return {
-    orderId: body.id,
-    approveUrl: approveLink.href,
-    status: body.status,
-    operationId,
   };
 }
 
-export interface CaptureOrderParams {
-  worldId: string;
-  orderId: string;
-  /**
-   * Optional caller-supplied idempotency id — see
-   * `CreateOrderParams.operationId`. `executeOperation` always passes
-   * this (its own row's id), so a replayed capture reuses the same
-   * `PayPal-Request-Id` instead of minting a new one.
-   */
-  operationId?: string;
+function orderPath(orderId: string): string {
+  return `/v2/checkout/orders/${encodeURIComponent(orderId)}`;
 }
 
-export interface CaptureOrderResult {
-  status: string;
-  /** The capture's own status (e.g. "COMPLETED", "PENDING"), distinct from the order's status above. */
-  captureStatus: string;
-  captureId: string;
-  amountCents: bigint;
-  operationId: string;
+/** `POST /v2/checkout/orders/{id}/capture`. */
+export function buildCaptureOrderRequest(orderId: string): ExecutableRequest {
+  return { method: "POST", path: `${orderPath(orderId)}/capture` };
 }
 
-function extractCapture(body: PayPalCaptureResponse): PayPalCapture | undefined {
-  return body.purchase_units?.[0]?.payments?.captures?.[0];
+/** `GET /v2/checkout/orders/{id}`. */
+export function buildGetOrderRequest(orderId: string): ExecutableRequest {
+  return { method: "GET", path: orderPath(orderId) };
 }
 
-function buildCaptureResult(
-  orderId: string,
-  body: PayPalCaptureResponse,
-  operationId: string,
-): CaptureOrderResult {
-  const captured = extractCapture(body);
+const ORDER_PATH_RE = /^\/v2\/checkout\/orders\/([^/]+)(?:\/capture)?$/;
+
+/** The order id in a capture/get path built by the functions above. */
+export function orderIdFromPath(path: string): string {
+  const match = ORDER_PATH_RE.exec(path);
+  if (!match) {
+    throw new Error(`Not an order capture/get path: ${path}`);
+  }
+  return decodeURIComponent(match[1] as string);
+}
+
+export function parseCreateOrderResponse(body: unknown): OrderCreateResult {
+  const record = asRecord(body);
+  const orderId = requireString(record?.id, "the order id");
+  const links = Array.isArray(record?.links) ? record.links : [];
+  const approve = links
+    .map(asRecord)
+    .find((link) => link?.rel === "approve" || link?.rel === "payer-action");
+  return {
+    orderId,
+    status: requireString(record?.status, "the order status"),
+    approveUrl: requireString(approve?.href, `an approve/payer-action link on order ${orderId}`),
+  };
+}
+
+function firstCapture(body: unknown): CaptureRecord | null {
+  const unit = asRecord((asRecord(body)?.purchase_units as unknown[] | undefined)?.[0]);
+  const payments = asRecord(unit?.payments);
+  const captured = asRecord((payments?.captures as unknown[] | undefined)?.[0]);
   if (!captured) {
-    throw new Error(
-      `PayPal order ${orderId} capture response (status=${body.status}) had no capture record`,
-    );
+    return null;
   }
-  if (!captured.amount?.value) {
-    throw new Error(
-      `PayPal capture ${captured.id} for order ${orderId} had no amount value`,
-    );
-  }
-
+  const amount = asRecord(captured.amount);
   return {
-    status: body.status,
-    captureStatus: captured.status,
-    captureId: captured.id,
-    amountCents: amountToCents(captured.amount.value),
-    operationId,
+    captureId: requireString(captured.id, "the capture id"),
+    captureStatus: requireString(captured.status, "the capture status"),
+    amountCents: amountToCents(requireString(amount?.value, "the capture amount")).toString(),
   };
 }
 
-/**
- * Captures an approved order. If the order was already captured by an
- * earlier attempt (PayPal's `422 ORDER_ALREADY_CAPTURED`, e.g. a retried
- * call whose first attempt succeeded but whose response was lost), this
- * is treated as success: the order is fetched via `GET` and its
- * existing capture is returned instead of surfacing the 422 to the
- * caller. This is what makes repeated `executeOperation` attempts for
- * the same capture operation safe — a capture can never be double-sent.
- */
-export async function capture(
-  db: Db,
-  params: CaptureOrderParams,
-): Promise<CaptureOrderResult> {
-  try {
-    const { body, operationId } = await paypalFetch<PayPalCaptureResponse>(db, {
-      worldId: params.worldId,
-      kind: "order.capture",
-      method: "POST",
-      path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}/capture`,
-      operationId: params.operationId,
-    });
-    return buildCaptureResult(params.orderId, body, operationId);
-  } catch (err) {
-    if (err instanceof PayPalApiError && err.name === "ORDER_ALREADY_CAPTURED") {
-      const { body: orderBody, operationId: getOperationId } =
-        await paypalFetch<PayPalCaptureResponse>(db, {
-          worldId: params.worldId,
-          kind: "order.get",
-          method: "GET",
-          path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}`,
-        });
-      const captured = extractCapture(orderBody);
-      if (!captured) {
-        // Couldn't recover a capture record from the GET either — the
-        // 422 wasn't actually recoverable, so surface the original error.
-        throw err;
-      }
-      return buildCaptureResult(
-        params.orderId,
-        orderBody,
-        params.operationId ?? getOperationId,
-      );
-    }
-    throw err;
+/** Parses a capture response; `recovered` is set by the caller for the ORDER_ALREADY_CAPTURED path. */
+export function parseCaptureOrderResponse(
+  orderId: string,
+  body: unknown,
+  recovered = false,
+): OrderCaptureResult {
+  const capture = firstCapture(body);
+  if (!capture) {
+    throw new Error(`PayPal order ${orderId} response had no capture record`);
   }
+  return {
+    orderId,
+    status: requireString(asRecord(body)?.status, "the order status"),
+    ...capture,
+    recovered,
+  };
 }
 
-export interface GetOrderParams {
-  worldId: string;
-  orderId: string;
-}
-
-export interface GetOrderResult {
-  orderId: string;
-  status: string;
-  operationId: string;
-}
-
-export async function get(
-  db: Db,
-  params: GetOrderParams,
-): Promise<GetOrderResult> {
-  const { body, operationId } = await paypalFetch<PayPalOrderResponse>(db, {
-    worldId: params.worldId,
-    kind: "order.get",
-    method: "GET",
-    path: `/v2/checkout/orders/${encodeURIComponent(params.orderId)}`,
-  });
-
-  return { orderId: body.id, status: body.status, operationId };
+export function parseGetOrderResponse(body: unknown): OrderGetResult {
+  const record = asRecord(body);
+  return {
+    orderId: requireString(record?.id, "the order id"),
+    status: requireString(record?.status, "the order status"),
+    capture: firstCapture(body),
+  };
 }

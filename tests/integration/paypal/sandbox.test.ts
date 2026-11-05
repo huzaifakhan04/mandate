@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@/server/db/client";
 import { worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
-import * as orders from "@/server/paypal/orders";
+import { paypalRail } from "@/server/rail/paypalRail";
 import { getAccessToken } from "@/server/paypal/token";
 
 // Only runs when real sandbox credentials are present in the environment
@@ -39,8 +39,11 @@ describe.skipIf(!process.env.PAYPAL_CLIENT_ID)("PayPal sandbox integration", () 
   });
 
   it("creates a $1.00 order and reads it back", async () => {
-    const created = await orders.create(db, {
+    const rail = paypalRail(db);
+    const created = await rail.createCheckout({
       worldId,
+      purpose: "note_purchase",
+      sourceId: `sandbox-smoke-${randomUUID()}`,
       amountCents: 100n,
       description: "Sandbox smoke test",
       customId: "sandbox-smoke",
@@ -54,7 +57,7 @@ describe.skipIf(!process.env.PAYPAL_CLIENT_ID)("PayPal sandbox integration", () 
     // waiting on payer action — both are valid outcomes here.
     expect(["CREATED", "PAYER_ACTION_REQUIRED"]).toContain(created.status);
 
-    const fetched = await orders.get(db, {
+    const fetched = await rail.getCheckout({
       worldId,
       orderId: created.orderId,
     });

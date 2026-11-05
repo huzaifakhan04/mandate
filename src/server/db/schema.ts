@@ -90,6 +90,12 @@ export const paypalOperations = pgTable("paypal_operations", {
    * token is added by `paypalFetch` itself, never stored here).
    */
   executableRequest: jsonb("executable_request"),
+  /**
+   * The operation's parsed, JSON-safe result — one shape per kind (see
+   * `paypal/types.ts`, amounts as decimal strings) on success, or
+   * `{ error: … }` on failure. Exactly what `executeOperation` returns,
+   * on the first run and on every replay.
+   */
   response: jsonb("response"),
   httpStatus: integer("http_status"),
   latencyMs: integer("latency_ms"),
@@ -97,8 +103,9 @@ export const paypalOperations = pgTable("paypal_operations", {
   lastError: text("last_error"),
   /**
    * Set when `executeOperation` claims this row (`queued`/
-   * `failed_retryable` -> `in_flight`); a claim older than 2 minutes is
-   * treated as abandoned and can be re-claimed.
+   * `failed_retryable` -> `in_flight`) and cleared when the attempt
+   * records its outcome; an `in_flight` claim older than 2 minutes is
+   * treated as abandoned (crashed worker) and can be re-claimed.
    */
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
   /** Earliest time a `failed_retryable` row should be retried. */
@@ -107,6 +114,13 @@ export const paypalOperations = pgTable("paypal_operations", {
   purpose: text("purpose"),
   /** The domain row (note/loan/repayment id, …) this operation is for. */
   sourceId: text("source_id"),
+  /**
+   * Sim rail only: the simulated PayPal-side object this operation
+   * created (an order for `order.create`, a batch for `payout.send`) and
+   * its lifecycle state (`simApprove` / capture move it along). Kept
+   * apart from `response`, which is the operation's own immutable result.
+   */
+  simState: jsonb("sim_state"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

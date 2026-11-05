@@ -1,26 +1,62 @@
-import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { randomUUID } from "crypto";
+
+import { and, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
-import { PayPalApiError, PayPalOperationReuseError, paypalFetch } from "./fetch";
+import { simHandle } from "../rail/simHandler";
+import { classifyFailureStatus, computeNextAttemptAt } from "./classify";
+import { PayPalConfigError } from "./config";
+import {
+  PayPalApiError,
+  PayPalNetworkError,
+  PayPalOperationReuseError,
+  paypalFetch,
+} from "./fetch";
 import { deriveOperationId, type OperationPurpose } from "./operationId";
-import * as orders from "./orders";
+import {
+  buildGetOrderRequest,
+  orderIdFromPath,
+  parseCaptureOrderResponse,
+  parseCreateOrderResponse,
+  parseGetOrderResponse,
+} from "./orders";
+import { parseGetPayoutResponse, parseSendPayoutResponse, withSenderBatchId } from "./payouts";
 import { redact } from "./redact";
+import {
+  OPERATION_KINDS,
+  READ_KINDS,
+  type ExecutableRequest,
+  type OperationError,
+  type OperationKind,
+  type OperationResponse,
+  type OperationResultByKind,
+  type OperationStatus,
+} from "./types";
 
+// The service-facing API: services import from here only (never from
+// fetch/orders/payouts or the rails — see noTransactionCalls.test.ts).
 export type { OperationPurpose } from "./operationId";
+export { deriveOperationId, journalKey } from "./operationId";
+export type * from "./types";
+export {
+  amountToCents,
+  buildCaptureOrderRequest,
+  buildCreateOrderRequest,
+  buildGetOrderRequest,
+  centsToAmount,
+} from "./orders";
+export { buildGetPayoutRequest, buildSendPayoutRequest } from "./payouts";
+export { PayPalApiError, PayPalOperationReuseError };
 
 type OperationRow = typeof paypalOperations.$inferSelect;
 
-export interface ExecutableRequest {
-  method: "GET" | "POST" | "PATCH";
-  path: string;
-  body?: unknown;
-}
+export type OperationRail = "paypal" | "sim";
 
 export interface EnqueueOperationParams {
   worldId: string;
-  rail: "paypal" | "sim";
-  kind: string;
+  rail: OperationRail;
+  kind: OperationKind;
   purpose: OperationPurpose;
   sourceId: string;
   request: ExecutableRequest;
@@ -30,263 +66,626 @@ export interface EnqueueOperationResult {
   operationId: string;
 }
 
+/** The method + path each kind must use — a request that doesn't match its kind is a bug. */
+const KIND_ROUTES: Record<OperationKind, { method: ExecutableRequest["method"]; path: RegExp }> = {
+  "order.create": { method: "POST", path: /^\/v2\/checkout\/orders$/ },
+  "order.capture": { method: "POST", path: /^\/v2\/checkout\/orders\/[^/]+\/capture$/ },
+  "order.get": { method: "GET", path: /^\/v2\/checkout\/orders\/[^/]+$/ },
+  "payout.send": { method: "POST", path: /^\/v1\/payments\/payouts$/ },
+  "payout.get": { method: "GET", path: /^\/v1\/payments\/payouts\/[^/]+$/ },
+};
+
+function isOperationKind(kind: string): kind is OperationKind {
+  return (OPERATION_KINDS as readonly string[]).includes(kind);
+}
+
+function assertRequestMatchesKind(kind: OperationKind, request: ExecutableRequest): void {
+  const route = KIND_ROUTES[kind];
+  if (!route || request.method !== route.method || !route.path.test(request.path)) {
+    throw new Error(
+      `request ${request.method} ${request.path} does not match operation kind ${kind}`,
+    );
+  }
+}
+
+/** Per-kind request fix-ups that need the operation id (payouts: sender_batch_id = operation id). */
+function finalizeRequest(
+  kind: OperationKind,
+  request: ExecutableRequest,
+  operationId: string,
+): ExecutableRequest {
+  return kind === "payout.send" ? withSenderBatchId(request, operationId) : request;
+}
+
+async function insertQueuedRow(
+  db: Db,
+  values: {
+    id: string;
+    worldId: string;
+    rail: OperationRail;
+    kind: OperationKind;
+    purpose: OperationPurpose | null;
+    sourceId: string | null;
+    request: ExecutableRequest;
+  },
+): Promise<OperationRow | undefined> {
+  assertRequestMatchesKind(values.kind, values.request);
+  const request = finalizeRequest(values.kind, values.request, values.id);
+  const [inserted] = await db
+    .insert(paypalOperations)
+    .values({
+      id: values.id,
+      worldId: values.worldId,
+      rail: values.rail,
+      kind: values.kind,
+      requestId: values.id,
+      status: "queued",
+      purpose: values.purpose,
+      sourceId: values.sourceId,
+      attempts: 0,
+      request: redact(request),
+      executableRequest: request,
+    })
+    .onConflictDoNothing({ target: paypalOperations.id })
+    .returning();
+  return inserted;
+}
+
 /**
- * Inserts a `queued` `paypal_operations` row for a logical operation,
- * keyed by `deriveOperationId(worldId, purpose, sourceId)` rather than a
- * random id — so calling this twice for the same logical operation
- * (e.g. the same note purchase retried from an outer transaction)
- * always resolves to the same row instead of creating a second one.
+ * Inserts a `queued` operation row keyed by
+ * `deriveOperationId(worldId, purpose, sourceId)`, so enqueuing the same
+ * logical operation twice resolves to the same row. Never calls PayPal —
+ * call it with `ctx.tx` inside the domain transaction, then schedule
+ * `ctx.afterCommit(() => executeOperation(ctx.db, operationId))`.
  *
- * Must be called from inside the domain transaction that creates the
- * corresponding domain rows (e.g. the note/loan/repayment), and ONLY
- * from inside that transaction — `enqueueOperation` never calls PayPal
- * and is safe to run under `tx`. The caller then schedules the actual
- * PayPal call with `ctx.afterCommit(() => executeOperation(ctx.db,
- * operationId))`, after the transaction (and so the domain rows) have
- * committed.
+ * The request must match `kind` (method + path); build it with the
+ * `build*Request` helpers re-exported from this module. For
+ * `payout.send`, `sender_batch_id` is stamped with the operation id.
  *
- * A derived id that already names a row for a *different* `rail`/`kind`
- * throws `PayPalOperationReuseError` — that would mean two different
- * logical operations collided on the same `(worldId, purpose,
- * sourceId)`, which should never happen for distinct purposes/sourceIds
- * (see `operationId.ts`).
+ * A derived id that already names a row for a different `rail`/`kind`
+ * throws `PayPalOperationReuseError`.
  */
 export async function enqueueOperation(
   tx: Db,
   params: EnqueueOperationParams,
 ): Promise<EnqueueOperationResult> {
-  const operationId = deriveOperationId(
-    params.worldId,
-    params.purpose,
-    params.sourceId,
-  );
+  const operationId = deriveOperationId(params.worldId, params.purpose, params.sourceId);
 
-  const [inserted] = await tx
-    .insert(paypalOperations)
-    .values({
-      id: operationId,
-      worldId: params.worldId,
-      rail: params.rail,
-      kind: params.kind,
-      requestId: operationId,
-      status: "queued",
-      purpose: params.purpose,
-      sourceId: params.sourceId,
-      attempts: 0,
-      request: redact(params.request),
-      executableRequest: params.request,
-    })
-    .onConflictDoNothing({ target: paypalOperations.id })
-    .returning();
-
+  const inserted = await insertQueuedRow(tx, {
+    id: operationId,
+    worldId: params.worldId,
+    rail: params.rail,
+    kind: params.kind,
+    purpose: params.purpose,
+    sourceId: params.sourceId,
+    request: params.request,
+  });
   if (inserted) {
     return { operationId: inserted.id };
   }
 
-  // The row already existed — this is a re-enqueue of the same logical
-  // operation (same worldId/purpose/sourceId derive the same id).
   const [existing] = await tx
     .select()
     .from(paypalOperations)
     .where(
-      and(
-        eq(paypalOperations.id, operationId),
-        eq(paypalOperations.worldId, params.worldId),
-      ),
+      and(eq(paypalOperations.id, operationId), eq(paypalOperations.worldId, params.worldId)),
     );
 
   if (!existing) {
     throw new PayPalOperationReuseError(
-      `operationId ${operationId} belongs to a different world, or vanished after a conflicting insert — refusing to reuse it`,
+      `operationId ${operationId} belongs to a different world — refusing to reuse it`,
     );
   }
-
   if (existing.rail !== params.rail || existing.kind !== params.kind) {
     throw new PayPalOperationReuseError(
-      `operationId ${operationId} (derived from worldId=${params.worldId}, purpose=${params.purpose}, sourceId=${params.sourceId}) was already used for a different operation (rail=${existing.rail}, kind=${existing.kind}); refusing to reuse it for rail=${params.rail}, kind=${params.kind}`,
+      `operationId ${operationId} (worldId=${params.worldId}, purpose=${params.purpose}, sourceId=${params.sourceId}) is already a rail=${existing.rail}, kind=${existing.kind} operation; refusing to reuse it for rail=${params.rail}, kind=${params.kind}`,
     );
   }
-
   return { operationId: existing.id };
 }
 
-export interface OperationResult {
-  status: string;
-  body: unknown;
+/**
+ * Enqueues a read-only operation (`order.get` / `payout.get`) under a
+ * fresh random id — reads move no money, so they need no derived
+ * idempotency key. Rejects every money-moving kind.
+ */
+export async function enqueueReadOperation(
+  db: Db,
+  params: { worldId: string; rail: OperationRail; kind: OperationKind; request: ExecutableRequest },
+): Promise<EnqueueOperationResult> {
+  if (!READ_KINDS.includes(params.kind)) {
+    throw new Error(
+      `enqueueReadOperation only accepts read kinds; ${params.kind} must go through enqueueOperation`,
+    );
+  }
+  const id = randomUUID();
+  await insertQueuedRow(db, { ...params, id, purpose: null, sourceId: null });
+  return { operationId: id };
+}
+
+/**
+ * What `executeOperation` returns — built from the stored row, so the
+ * first run and every replay return the identical shape. `body` is the
+ * stored `response`: the kind's parsed result when `status` is
+ * `succeeded`, `{ error }` when failed, `null` while queued/in flight.
+ */
+export interface OperationResult<K extends OperationKind = OperationKind> {
+  operationId: string;
+  kind: K;
+  status: OperationStatus;
   httpStatus: number | null;
+  body: OperationResultByKind[K] | OperationError | null;
 }
 
 function toOperationResult(row: OperationRow): OperationResult {
-  return { status: row.status, body: row.response, httpStatus: row.httpStatus };
+  return {
+    operationId: row.id,
+    kind: row.kind as OperationKind,
+    status: row.status as OperationStatus,
+    httpStatus: row.httpStatus,
+    body: (row.response ?? null) as OperationResponse | null,
+  };
 }
 
-/** Extracts the `orderId` from an `order.capture` request path (`/v2/checkout/orders/{orderId}/capture`). */
-function extractOrderIdFromCapturePath(path: string): string | null {
-  const match = /\/v2\/checkout\/orders\/([^/]+)\/capture$/.exec(path);
-  return match ? decodeURIComponent(match[1] as string) : null;
+/** Narrows a succeeded result's body to the kind's result shape; throws if it didn't succeed. */
+export function successBody<K extends OperationKind>(
+  result: OperationResult,
+  kind: K,
+): OperationResultByKind[K] {
+  if (result.kind !== kind || result.status !== "succeeded" || result.body === null) {
+    throw new Error(
+      `operation ${result.operationId} (${result.kind}) is ${result.status}, not a succeeded ${kind}`,
+    );
+  }
+  return result.body as OperationResultByKind[K];
+}
+
+/** The `{ error }` body of a failed result, or `null`. */
+export function errorBody(result: OperationResult): OperationError["error"] | null {
+  const body = result.body as Partial<OperationError> | null;
+  return body?.error ?? null;
+}
+
+// ---------------------------------------------------------------------
+// Execution
+// ---------------------------------------------------------------------
+
+type FinalStatus = "succeeded" | "failed_retryable" | "failed_terminal";
+
+/** The outcome of one `executeOperation` run, written to the row in one UPDATE. */
+interface Outcome {
+  status: FinalStatus;
+  httpStatus: number | null;
+  response: OperationResponse;
+  paypalId: string | null;
+  lastError: string | null;
+  /** HTTP attempts made during this run (added to the row's cumulative count). */
+  attempts: number;
+  latencyMs: number;
+}
+
+type SendResult =
+  | { ok: true; httpStatus: number; body: unknown; attempts: number; latencyMs: number }
+  | { ok: false; error: OperationError; attempts: number; latencyMs: number };
+
+function operationError(
+  name: string,
+  fields: Partial<Omit<OperationError["error"], "name">> = {},
+): OperationError {
+  return {
+    error: {
+      name,
+      issue: fields.issue ?? null,
+      message: fields.message ?? null,
+      debugId: fields.debugId ?? null,
+      details: redact(fields.details ?? null),
+    },
+  };
+}
+
+/** Builds the stored `{ error }` from a non-2xx PayPal (or sim) response body. */
+function errorFromResponse(httpStatus: number, body: unknown): OperationError {
+  const record =
+    body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const details = Array.isArray(record.details) ? record.details : null;
+  const firstIssue = (details?.[0] as Record<string, unknown> | undefined)?.issue;
+  return operationError(typeof record.name === "string" ? record.name : `HTTP_${httpStatus}`, {
+    issue: typeof firstIssue === "string" ? firstIssue : null,
+    message: typeof record.message === "string" ? record.message : null,
+    debugId: typeof record.debug_id === "string" ? record.debug_id : null,
+    details: details ?? (typeof body === "string" ? body : null),
+  });
+}
+
+function errorCode(error: OperationError): string {
+  return error.error.issue ?? error.error.name;
 }
 
 /**
- * Executes the claimed PayPal-rail row. For most kinds this is a plain
- * `paypalFetch` replay of the stored `executable_request`. `order.capture`
- * gets special handling: a `422 ORDER_ALREADY_CAPTURED` (this capture, or
- * an earlier attempt for the same operation, already went through) is
- * recovered via `orders.capture`'s own GET-and-recover path and the
- * *original* row — which `paypalFetch` would otherwise have just marked
- * `failed_terminal` — is corrected to `succeeded` with the recovered
- * capture as its response. This is the capture-idempotency guarantee:
- * replaying an `order.capture` operation, however many times, never
- * re-sends money and always eventually reads back as `succeeded`.
+ * Sends one request for `row` over its rail: PayPal via `paypalFetch`
+ * (with `PayPal-Request-Id` = the operation id), or the sim rail's in-DB
+ * handler, which answers with the same PayPal-shaped `{httpStatus, body}`
+ * so everything after this point is rail-agnostic.
  */
-async function executePaypalOperation(db: Db, row: OperationRow): Promise<OperationResult> {
-  const executableRequest = row.executableRequest as ExecutableRequest | null;
-  if (!executableRequest) {
-    throw new Error(
-      `paypal_operations row ${row.id} has rail='paypal' but no executable_request to replay`,
-    );
-  }
+async function send(
+  db: Db,
+  row: OperationRow,
+  kind: OperationKind,
+  request: ExecutableRequest,
+): Promise<SendResult> {
+  const startedAt = Date.now();
 
-  if (row.kind === "order.capture") {
-    const orderId = extractOrderIdFromCapturePath(executableRequest.path);
-    if (orderId) {
-      try {
-        const result = await orders.capture(db, {
-          worldId: row.worldId,
-          orderId,
-          operationId: row.id,
-        });
-        // `orders.capture` already wrote the row to `succeeded` via
-        // `paypalFetch` on the normal (non-recovery) path. On the
-        // recovery path (ORDER_ALREADY_CAPTURED -> GET), `paypalFetch`
-        // left the *original* capture row `failed_terminal` — correct
-        // it here, since the capture did in fact succeed.
-        await db
-          .update(paypalOperations)
-          .set({ status: "succeeded", httpStatus: 200, response: redact(result) })
-          .where(and(eq(paypalOperations.id, row.id), ne(paypalOperations.status, "succeeded")));
-        return { status: "succeeded", body: result, httpStatus: 200 };
-      } catch (err) {
-        return readTerminalRowResult(db, row.id, err);
-      }
-    }
+  if (row.rail === "sim") {
+    const res = await simHandle(db, {
+      worldId: row.worldId,
+      operationId: row.id,
+      kind,
+      request,
+    });
+    return { ok: true, ...res, attempts: 1, latencyMs: Date.now() - startedAt };
   }
 
   try {
-    const result = await paypalFetch(db, {
-      worldId: row.worldId,
-      kind: row.kind,
-      method: executableRequest.method,
-      path: executableRequest.path,
-      body: executableRequest.body,
-      operationId: row.id,
-    });
-    return { status: "succeeded", body: result.body, httpStatus: result.status };
+    const res = await paypalFetch({ ...request, requestId: row.id });
+    return { ok: true, ...res };
   } catch (err) {
-    return readTerminalRowResult(db, row.id, err);
+    if (err instanceof PayPalNetworkError) {
+      return {
+        ok: false,
+        error: operationError("PayPalNetworkError", { message: err.message, details: err.details }),
+        attempts: err.attempts,
+        latencyMs: err.latencyMs,
+      };
+    }
+    if (err instanceof PayPalConfigError) {
+      // Nothing was sent. Retryable rather than terminal: once the
+      // deployment's credentials are fixed, the reconcile cron can still
+      // complete the operation.
+      return {
+        ok: false,
+        error: operationError("PayPalConfigError", { message: err.message }),
+        attempts: 0,
+        latencyMs: Date.now() - startedAt,
+      };
+    }
+    throw err;
   }
 }
 
+/** Parses a 2xx body into the kind's stored result shape. Throws if the body is malformed. */
+function parseSuccess(
+  kind: OperationKind,
+  request: ExecutableRequest,
+  body: unknown,
+): { response: OperationResponse; paypalId: string } {
+  switch (kind) {
+    case "order.create": {
+      const result = parseCreateOrderResponse(body);
+      return { response: result, paypalId: result.orderId };
+    }
+    case "order.capture": {
+      const orderId = orderIdFromPath(request.path);
+      return { response: parseCaptureOrderResponse(orderId, body), paypalId: orderId };
+    }
+    case "order.get": {
+      const result = parseGetOrderResponse(body);
+      return { response: result, paypalId: result.orderId };
+    }
+    case "payout.send": {
+      const result = parseSendPayoutResponse(body);
+      return { response: result, paypalId: result.batchId };
+    }
+    case "payout.get": {
+      const result = parseGetPayoutResponse(body);
+      return { response: result, paypalId: result.batchId };
+    }
+  }
+}
+
+function failure(
+  status: "failed_retryable" | "failed_terminal",
+  httpStatus: number | null,
+  error: OperationError,
+  attempts: number,
+  latencyMs: number,
+): Outcome {
+  return {
+    status,
+    httpStatus,
+    response: error,
+    paypalId: null,
+    lastError: errorCode(error),
+    attempts,
+    latencyMs,
+  };
+}
+
 /**
- * After a failing `paypalFetch`/`orders.capture` call, that call has
- * already written the row's terminal status (`failed_retryable` /
- * `failed_terminal`) and `next_attempt_at` — re-read it rather than
- * re-deriving the classification here, so there is exactly one place
- * (this module, via `paypalFetch`'s shared `classifyFailureStatus`)
- * that decides a row's terminal status.
+ * `ORDER_ALREADY_CAPTURED`: an earlier attempt (or another capture of the
+ * same order) already captured it. Recover the existing capture with a
+ * GET on the order and treat it as success. If the GET itself fails or
+ * shows no capture yet, the outcome is `failed_retryable` — never
+ * terminal, because the money *did* move and a later run must find it.
  */
-async function readTerminalRowResult(
+async function recoverAlreadyCaptured(
+  db: Db,
+  row: OperationRow,
+  request: ExecutableRequest,
+  captureAttempt: { httpStatus: number; error: OperationError; attempts: number; latencyMs: number },
+): Promise<Outcome> {
+  const orderId = orderIdFromPath(request.path);
+  const got = await send(db, row, "order.get", buildGetOrderRequest(orderId));
+  const attempts = captureAttempt.attempts + got.attempts;
+  const latencyMs = captureAttempt.latencyMs + got.latencyMs;
+
+  let recoveryProblem: unknown;
+  if (got.ok && got.httpStatus >= 200 && got.httpStatus < 300) {
+    try {
+      const result = parseCaptureOrderResponse(orderId, got.body, true);
+      return {
+        status: "succeeded",
+        httpStatus: got.httpStatus,
+        response: result,
+        paypalId: orderId,
+        lastError: null,
+        attempts,
+        latencyMs,
+      };
+    } catch (err) {
+      recoveryProblem = { message: err instanceof Error ? err.message : String(err) };
+    }
+  } else {
+    recoveryProblem = got.ok
+      ? { getHttpStatus: got.httpStatus, getError: errorFromResponse(got.httpStatus, got.body).error }
+      : { getError: got.error.error };
+  }
+
+  return failure(
+    "failed_retryable",
+    captureAttempt.httpStatus,
+    operationError(captureAttempt.error.error.name, {
+      issue: "ORDER_ALREADY_CAPTURED",
+      message: "Order already captured, but the recovery GET did not return the capture; will retry",
+      debugId: captureAttempt.error.error.debugId,
+      details: recoveryProblem,
+    }),
+    attempts,
+    latencyMs,
+  );
+}
+
+/** Runs one attempt for a claimed row and classifies it. Never writes `paypal_operations` status. */
+async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
+  const request = row.executableRequest as ExecutableRequest | null;
+  if (!isOperationKind(row.kind) || !request) {
+    return failure(
+      "failed_terminal",
+      null,
+      operationError("INVALID_OPERATION", {
+        message: `row has kind=${row.kind} and ${request ? "an" : "no"} executable_request`,
+      }),
+      0,
+      0,
+    );
+  }
+  const kind = row.kind;
+
+  const sent = await send(db, row, kind, request);
+  if (!sent.ok) {
+    return failure("failed_retryable", null, sent.error, sent.attempts, sent.latencyMs);
+  }
+
+  if (sent.httpStatus >= 200 && sent.httpStatus < 300) {
+    try {
+      const { response, paypalId } = parseSuccess(kind, request, sent.body);
+      return {
+        status: "succeeded",
+        httpStatus: sent.httpStatus,
+        response,
+        paypalId,
+        lastError: null,
+        attempts: sent.attempts,
+        latencyMs: sent.latencyMs,
+      };
+    } catch (err) {
+      // PayPal accepted the request, but the body isn't what this kind
+      // promises. Re-sending the same request id would replay the same
+      // body, so retrying can't help.
+      return failure(
+        "failed_terminal",
+        sent.httpStatus,
+        operationError("RESPONSE_UNPARSEABLE", {
+          message: err instanceof Error ? err.message : String(err),
+          details: sent.body,
+        }),
+        sent.attempts,
+        sent.latencyMs,
+      );
+    }
+  }
+
+  const error = errorFromResponse(sent.httpStatus, sent.body);
+  if (kind === "order.capture" && errorCode(error) === "ORDER_ALREADY_CAPTURED") {
+    return recoverAlreadyCaptured(db, row, request, {
+      httpStatus: sent.httpStatus,
+      error,
+      attempts: sent.attempts,
+      latencyMs: sent.latencyMs,
+    });
+  }
+  return failure(
+    classifyFailureStatus(sent.httpStatus),
+    sent.httpStatus,
+    error,
+    sent.attempts,
+    sent.latencyMs,
+  );
+}
+
+const STALE_CLAIM = sql`now() - interval '2 minutes'`;
+
+/**
+ * Atomically claims a row: a `queued`/`failed_retryable` row whose
+ * backoff has elapsed (or `ignoreBackoff`), or an `in_flight` row whose
+ * claim is older than 2 minutes (its worker died mid-call). `claimed_at`
+ * is truncated to milliseconds so the JS `Date` read back compares equal
+ * in `recordOutcome`'s claim guard.
+ */
+async function claim(
   db: Db,
   operationId: string,
-  fallbackErr: unknown,
-): Promise<OperationResult> {
+  ignoreBackoff: boolean,
+): Promise<OperationRow | undefined> {
+  const t = paypalOperations;
   const [row] = await db
-    .select()
-    .from(paypalOperations)
-    .where(eq(paypalOperations.id, operationId));
-  if (!row) {
-    throw fallbackErr;
-  }
-  return toOperationResult(row);
-}
-
-/**
- * Executes the claimed sim-rail row. Sim calls are deterministic and
- * synchronous — there is no real "in flight" period — so a claimed sim
- * row resolves immediately. Mirrors `paypalFetch`'s result shape so
- * callers (and `executeOperation`'s own return type) are rail-agnostic.
- */
-async function executeSimOperation(db: Db, row: OperationRow): Promise<OperationResult> {
-  const body = {
-    ...(typeof row.executableRequest === "object" && row.executableRequest !== null
-      ? (row.executableRequest as Record<string, unknown>)
-      : {}),
-    simulated: true,
-  };
-
-  await db
-    .update(paypalOperations)
-    .set({ status: "succeeded", httpStatus: 200, response: redact(body) })
-    .where(and(eq(paypalOperations.id, row.id), ne(paypalOperations.status, "succeeded")));
-
-  return { status: "succeeded", body, httpStatus: 200 };
-}
-
-/**
- * Executes (or re-attempts) a queued operation. Never call this from
- * inside a `db.transaction` — see the JSDoc on `paypalFetch` for why.
- *
- * 1. **Claim** the row atomically: only a `queued` or `failed_retryable`
- *    row whose `claimed_at` is unset or more than 2 minutes old is
- *    claimable. If this call doesn't win the claim (someone else's
- *    attempt is already in flight, or the row is already terminal),
- *    this just returns the row's current result — a safe replay, never
- *    a second PayPal call.
- * 2. **Call**: dispatches by the row's `rail` — `paypal` goes through
- *    `paypalFetch` with the stored `executable_request`; `sim` goes
- *    through the deterministic in-DB sim handler.
- * 3. **Classify**: `paypalFetch` (or the sim handler) already wrote the
- *    row's terminal status — `succeeded`, `failed_retryable` (with
- *    `next_attempt_at`), or `failed_terminal` — before returning or
- *    throwing; this function just reports it.
- */
-export async function executeOperation(db: Db, operationId: string): Promise<OperationResult> {
-  const claimed = await db
-    .update(paypalOperations)
-    .set({ status: "in_flight", claimedAt: sql`now()` })
+    .update(t)
+    .set({ status: "in_flight", claimedAt: sql`date_trunc('milliseconds', now())` })
     .where(
       and(
-        eq(paypalOperations.id, operationId),
-        inArray(paypalOperations.status, ["queued", "failed_retryable"]),
+        eq(t.id, operationId),
         or(
-          isNull(paypalOperations.claimedAt),
-          lt(paypalOperations.claimedAt, sql`now() - interval '2 minutes'`),
+          and(
+            inArray(t.status, ["queued", "failed_retryable"]),
+            ignoreBackoff ? undefined : or(isNull(t.nextAttemptAt), lte(t.nextAttemptAt, sql`now()`)),
+          ),
+          and(eq(t.status, "in_flight"), lt(t.claimedAt, STALE_CLAIM)),
         ),
       ),
     )
     .returning();
-
-  const row = claimed[0];
-
-  if (!row) {
-    // Didn't win the claim: either this operation is already
-    // succeeded/failed_terminal, or another attempt is currently (and
-    // recently) in flight for it. Either way, replay its current state
-    // rather than calling PayPal again.
-    const [current] = await db
-      .select()
-      .from(paypalOperations)
-      .where(eq(paypalOperations.id, operationId));
-    if (!current) {
-      throw new Error(`No paypal_operations row found for operationId ${operationId}`);
-    }
-    return toOperationResult(current);
-  }
-
-  if (row.rail === "sim") {
-    return executeSimOperation(db, row);
-  }
-
-  return executePaypalOperation(db, row);
+  return row;
 }
 
-export { PayPalApiError, PayPalOperationReuseError };
+/**
+ * The single place that writes an attempt's outcome (Ruling H):
+ * `attempts` accumulates (`attempts + n`), `claimed_at` is cleared,
+ * `next_attempt_at` uses the cumulative count.
+ *
+ * - A success may land on any non-final row (`queued`/`in_flight`/
+ *   `failed_retryable`) — even if our claim went stale and someone else
+ *   reclaimed it, a success is the truth (same request id, same result).
+ * - A failure only lands while *our* claim still holds (`in_flight` with
+ *   our `claimed_at`), so a slow, stale attempt can never overwrite a
+ *   newer attempt's outcome.
+ * - Neither ever touches a `succeeded` or `failed_terminal` row.
+ *
+ * When the guarded write loses, only the attempts are counted and the
+ * row's current state is returned.
+ */
+async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): Promise<OperationRow> {
+  const t = paypalOperations;
+  const common = {
+    status: outcome.status,
+    httpStatus: outcome.httpStatus,
+    response: outcome.response,
+    latencyMs: outcome.latencyMs,
+    lastError: outcome.lastError,
+    attempts: sql`${t.attempts} + ${outcome.attempts}`,
+    claimedAt: null,
+  };
+
+  const [written] =
+    outcome.status === "succeeded"
+      ? await db
+          .update(t)
+          .set({ ...common, paypalId: outcome.paypalId, nextAttemptAt: null })
+          .where(
+            and(
+              eq(t.id, claimed.id),
+              inArray(t.status, ["queued", "in_flight", "failed_retryable"]),
+            ),
+          )
+          .returning()
+      : await db
+          .update(t)
+          .set({
+            ...common,
+            nextAttemptAt:
+              outcome.status === "failed_retryable"
+                ? computeNextAttemptAt(claimed.attempts + outcome.attempts)
+                : null,
+          })
+          .where(
+            and(
+              eq(t.id, claimed.id),
+              eq(t.status, "in_flight"),
+              claimed.claimedAt ? eq(t.claimedAt, claimed.claimedAt) : isNull(t.claimedAt),
+            ),
+          )
+          .returning();
+
+  if (written) {
+    return written;
+  }
+
+  const [current] = await db
+    .update(t)
+    .set({ attempts: sql`${t.attempts} + ${outcome.attempts}` })
+    .where(eq(t.id, claimed.id))
+    .returning();
+  if (!current) {
+    throw new Error(`paypal_operations row ${claimed.id} vanished mid-execution`);
+  }
+  return current;
+}
+
+async function readOperationRow(db: Db, operationId: string): Promise<OperationRow> {
+  const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, operationId));
+  if (!row) {
+    throw new Error(`No paypal_operations row found for operationId ${operationId}`);
+  }
+  return row;
+}
+
+export interface ExecuteOperationOptions {
+  /**
+   * Skip the `next_attempt_at` backoff check when claiming — for a caller
+   * that runs a row inline right after creating it (or a direct rail
+   * facade call). The reconcile cron must not pass this.
+   */
+  ignoreBackoff?: boolean;
+}
+
+/**
+ * Executes (or re-attempts) a queued operation. Never call it inside a
+ * `db.transaction` — see `paypalFetch`'s JSDoc.
+ *
+ * 1. **Claim** atomically (see `claim`). Not claimable (already final,
+ *    backing off, or freshly in flight elsewhere) → return the row's
+ *    current result without calling anything.
+ * 2. **Call** over the row's rail with `PayPal-Request-Id` = operation id
+ *    (sim rail: the in-DB handler, dispatched by kind).
+ * 3. **Classify**: 2xx → `succeeded` (parsed result stored); 4xx other
+ *    than 401/409/429 → `failed_terminal`; 5xx, 401/409/429, network
+ *    error or timeout → `failed_retryable` with `next_attempt_at` =
+ *    now + 30s·2^attempts (cumulative, capped at 10 min). An
+ *    `order.capture` answered `ORDER_ALREADY_CAPTURED` recovers the
+ *    capture via GET (`succeeded`), or is `failed_retryable` if that GET
+ *    fails. An unexpected exception is recorded as `failed_retryable`.
+ * 4. **Return** `toOperationResult(row)` — identical on replay.
+ */
+export async function executeOperation(
+  db: Db,
+  operationId: string,
+  options: ExecuteOperationOptions = {},
+): Promise<OperationResult> {
+  const claimed = await claim(db, operationId, options.ignoreBackoff ?? false);
+  if (!claimed) {
+    return toOperationResult(await readOperationRow(db, operationId));
+  }
+
+  let outcome: Outcome;
+  try {
+    outcome = await runClaimed(db, claimed);
+  } catch (err) {
+    outcome = failure(
+      "failed_retryable",
+      null,
+      operationError("INTERNAL_ERROR", { message: err instanceof Error ? err.message : String(err) }),
+      0,
+      0,
+    );
+  }
+
+  return toOperationResult(await recordOutcome(db, claimed, outcome));
+}

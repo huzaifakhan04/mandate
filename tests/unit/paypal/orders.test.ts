@@ -1,156 +1,121 @@
-import { randomUUID } from "crypto";
+import { describe, expect, it } from "vitest";
 
-import { http, HttpResponse } from "msw";
-import { setupServer } from "msw/node";
 import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
+  InvalidAmountError,
+  buildCaptureOrderRequest,
+  buildCreateOrderRequest,
+  buildGetOrderRequest,
+  orderIdFromPath,
+  parseCaptureOrderResponse,
+  parseCreateOrderResponse,
+  parseGetOrderResponse,
+} from "@/server/paypal/orders";
 
-import type { Db } from "@/server/db/client";
-import { worlds } from "@/server/db/schema";
-import { createTestDb } from "@/server/db/testing";
-import * as orders from "@/server/paypal/orders";
-import { __resetTokenCacheForTests } from "@/server/paypal/token";
+const createParams = {
+  amountCents: 1234n,
+  description: "test",
+  customId: "custom-1",
+  returnUrl: "https://example.com/return",
+  cancelUrl: "https://example.com/cancel",
+};
 
-const BASE_URL = "https://api-m.paypal.test";
-const server = setupServer();
-
-beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
-
-describe("orders", () => {
-  let db: Db;
-  let worldId: string;
-
-  beforeEach(async () => {
-    process.env.PAYPAL_BASE_URL = BASE_URL;
-    process.env.PAYPAL_CLIENT_ID = "test-client-id";
-    process.env.PAYPAL_CLIENT_SECRET = "test-client-secret-value";
-    __resetTokenCacheForTests();
-
-    server.use(
-      http.post(`${BASE_URL}/v1/oauth2/token`, () =>
-        HttpResponse.json({
-          access_token: `token-${randomUUID()}`,
-          expires_in: 32400,
-        }),
-      ),
-    );
-
-    db = await createTestDb();
-    const [world] = await db
-      .insert(worlds)
-      .values({ slug: `world-${randomUUID()}`, name: "World", railMode: "paypal" })
-      .returning();
-    if (!world) {
-      throw new Error("expected a world to be inserted");
-    }
-    worldId = world.id;
+describe("orders request builders / response parsers", () => {
+  it("builds an intent:CAPTURE USD order with an exact amount string", () => {
+    const request = buildCreateOrderRequest({ ...createParams, payeeEmail: "bank@example.com" });
+    expect(request).toMatchObject({
+      method: "POST",
+      path: "/v2/checkout/orders",
+      body: {
+        intent: "CAPTURE",
+        purchase_units: [
+          {
+            amount: { currency_code: "USD", value: "12.34" },
+            custom_id: "custom-1",
+            payee: { email_address: "bank@example.com" },
+          },
+        ],
+      },
+    });
   });
 
-  const createParams = () => ({
-    worldId,
-    amountCents: 100n,
-    description: "test",
-    customId: "custom-1",
-    returnUrl: "https://example.com/return",
-    cancelUrl: "https://example.com/cancel",
-  });
-
-  it("throws if the create response has no approve/payer-action link", async () => {
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, () =>
-        HttpResponse.json({ id: "ORDER-1", status: "CREATED", links: [] }),
-      ),
+  it("rejects a zero/negative amountCents when building", () => {
+    expect(() => buildCreateOrderRequest({ ...createParams, amountCents: 0n })).toThrow(
+      InvalidAmountError,
     );
-
-    await expect(orders.create(db, createParams())).rejects.toThrow(
-      /approve\/payer-action/,
+    expect(() => buildCreateOrderRequest({ ...createParams, amountCents: -5n })).toThrow(
+      InvalidAmountError,
     );
   });
 
-  it("rejects a zero/negative amountCents before any request is sent", async () => {
-    let called = false;
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, () => {
-        called = true;
-        return HttpResponse.json({ id: "x", status: "CREATED" });
+  it("URL-encodes the orderId in capture/get paths and round-trips it", () => {
+    const capture = buildCaptureOrderRequest("A/B C");
+    const get = buildGetOrderRequest("A/B C");
+    expect(capture).toEqual({ method: "POST", path: "/v2/checkout/orders/A%2FB%20C/capture" });
+    expect(get).toEqual({ method: "GET", path: "/v2/checkout/orders/A%2FB%20C" });
+    expect(orderIdFromPath(capture.path)).toBe("A/B C");
+    expect(orderIdFromPath(get.path)).toBe("A/B C");
+  });
+
+  it("parses a create response, accepting a payer-action link", () => {
+    expect(
+      parseCreateOrderResponse({
+        id: "ORDER-1",
+        status: "PAYER_ACTION_REQUIRED",
+        links: [{ rel: "payer-action", href: "https://paypal.test/approve" }],
       }),
-    );
-
-    await expect(
-      orders.create(db, { ...createParams(), amountCents: 0n }),
-    ).rejects.toBeInstanceOf(orders.InvalidAmountError);
-    expect(called).toBe(false);
+    ).toEqual({
+      orderId: "ORDER-1",
+      status: "PAYER_ACTION_REQUIRED",
+      approveUrl: "https://paypal.test/approve",
+    });
   });
 
-  it("returns captureStatus distinct from the order status, with a real captureId/amountCents", async () => {
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-2/capture`, () =>
-        HttpResponse.json({
-          id: "ORDER-2",
-          status: "COMPLETED",
-          purchase_units: [
-            {
-              payments: {
-                captures: [
-                  { id: "CAPTURE-1", status: "COMPLETED", amount: { value: "1.00" } },
-                ],
-              },
-            },
-          ],
-        }),
-      ),
+  it("throws if the create response has no approve/payer-action link", () => {
+    expect(() => parseCreateOrderResponse({ id: "ORDER-1", status: "CREATED", links: [] })).toThrow(
+      /approve/,
     );
-
-    const result = await orders.capture(db, { worldId, orderId: "ORDER-2" });
-    expect(result.status).toBe("COMPLETED");
-    expect(result.captureStatus).toBe("COMPLETED");
-    expect(result.captureId).toBe("CAPTURE-1");
-    expect(result.amountCents).toBe(100n);
   });
 
-  it("throws if the capture response has no capture record", async () => {
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-3/capture`, () =>
-        HttpResponse.json({ id: "ORDER-3", status: "VOIDED" }),
-      ),
-    );
-
-    await expect(
-      orders.capture(db, { worldId, orderId: "ORDER-3" }),
-    ).rejects.toThrow(/no capture record/);
+  it("parses a capture: captureStatus distinct from order status, amount as a cents string", () => {
+    const result = parseCaptureOrderResponse("ORDER-1", {
+      id: "ORDER-1",
+      status: "COMPLETED",
+      purchase_units: [
+        { payments: { captures: [{ id: "CAP-1", status: "PENDING", amount: { value: "10.05" } }] } },
+      ],
+    });
+    expect(result).toEqual({
+      orderId: "ORDER-1",
+      status: "COMPLETED",
+      captureId: "CAP-1",
+      captureStatus: "PENDING",
+      amountCents: "1005",
+      recovered: false,
+    });
+    // JSON-safe: survives a jsonb round trip unchanged.
+    expect(JSON.parse(JSON.stringify(result))).toEqual(result);
   });
 
-  it("URL-encodes the orderId when building capture/get paths", async () => {
-    let capturedUrl: string | undefined;
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders/:orderId/capture`, ({ request }) => {
-        capturedUrl = request.url;
-        return HttpResponse.json({
-          id: "ORDER with spaces",
-          status: "COMPLETED",
-          purchase_units: [
-            {
-              payments: {
-                captures: [
-                  { id: "CAPTURE-2", status: "COMPLETED", amount: { value: "1.00" } },
-                ],
-              },
-            },
-          ],
-        });
-      }),
-    );
+  it("throws if the capture response has no capture record", () => {
+    expect(() =>
+      parseCaptureOrderResponse("ORDER-1", { id: "ORDER-1", status: "COMPLETED" }),
+    ).toThrow(/no capture record/);
+  });
 
-    await orders.capture(db, { worldId, orderId: "ORDER with spaces" });
-    expect(capturedUrl).toContain("ORDER%20with%20spaces");
+  it("parses a get response with and without a capture", () => {
+    expect(parseGetOrderResponse({ id: "O", status: "APPROVED" })).toEqual({
+      orderId: "O",
+      status: "APPROVED",
+      capture: null,
+    });
+    expect(
+      parseGetOrderResponse({
+        id: "O",
+        status: "COMPLETED",
+        purchase_units: [
+          { payments: { captures: [{ id: "C", status: "COMPLETED", amount: { value: "1.00" } }] } },
+        ],
+      }).capture,
+    ).toEqual({ captureId: "C", captureStatus: "COMPLETED", amountCents: "100" });
   });
 });

@@ -1,5 +1,5 @@
 {
-  "id": "c2ba4dfd-bcca-491e-9acd-90da8d258cb9",
+  "id": "1b1e049a-1330-43ee-9330-113002a3a961",
   "prevId": "c5c6f789-1db1-4dcf-a1ed-fe152c70504f",
   "version": "7",
   "dialect": "postgresql",
@@ -2153,6 +2153,12 @@
         "source_id": {
           "name": "source_id",
           "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sim_state": {
+          "name": "sim_state",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },

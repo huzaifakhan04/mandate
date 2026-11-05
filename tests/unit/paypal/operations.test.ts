@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { http, HttpResponse } from "msw";
 import { setupServer } from "msw/node";
 import {
@@ -16,10 +16,7 @@ import {
 import type { Db } from "@/server/db/client";
 import { paypalOperations, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
-import {
-  __resetBackoffMsForTests,
-  __setBackoffMsForTests,
-} from "@/server/paypal/fetch";
+import { __resetBackoffMsForTests, __setBackoffMsForTests } from "@/server/paypal/fetch";
 import { deriveOperationId, journalKey } from "@/server/paypal/operationId";
 import {
   enqueueOperation,
@@ -35,14 +32,14 @@ beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+// paypalFetch's *inline* retry delays (300ms/900ms between its own 3
+// attempts) are zeroed; the operation-level backoff (next_attempt_at) is
+// what these tests assert on, and it is unaffected by this hook.
 beforeAll(() => __setBackoffMsForTests([0, 0]));
 afterAll(() => __resetBackoffMsForTests());
 
 async function readOperation(db: Db, id: string) {
-  const [row] = await db
-    .select()
-    .from(paypalOperations)
-    .where(eq(paypalOperations.id, id));
+  const [row] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, id));
   if (!row) {
     throw new Error(`expected a paypal_operations row for ${id}`);
   }
@@ -51,44 +48,30 @@ async function readOperation(db: Db, id: string) {
 
 describe("deriveOperationId / journalKey", () => {
   it("is stable for the same inputs", () => {
-    const a = deriveOperationId("world-1", "note_purchase", "note-1");
-    const b = deriveOperationId("world-1", "note_purchase", "note-1");
-    expect(a).toBe(b);
+    expect(deriveOperationId("world-1", "note_purchase", "note-1")).toBe(
+      deriveOperationId("world-1", "note_purchase", "note-1"),
+    );
   });
 
-  it("is distinct per purpose for the same worldId/sourceId", () => {
-    const purchase = deriveOperationId("world-1", "note_purchase", "note-1");
-    const redemption = deriveOperationId("world-1", "note_redemption", "note-1");
-    expect(purchase).not.toBe(redemption);
-  });
-
-  it("is distinct per sourceId for the same worldId/purpose", () => {
-    const a = deriveOperationId("world-1", "note_purchase", "note-1");
-    const b = deriveOperationId("world-1", "note_purchase", "note-2");
-    expect(a).not.toBe(b);
-  });
-
-  it("is distinct per worldId for the same purpose/sourceId", () => {
-    const a = deriveOperationId("world-1", "note_purchase", "note-1");
-    const b = deriveOperationId("world-2", "note_purchase", "note-1");
-    expect(a).not.toBe(b);
+  it("is distinct per purpose, sourceId and worldId", () => {
+    const base = deriveOperationId("world-1", "note_purchase", "note-1");
+    expect(deriveOperationId("world-1", "note_redemption", "note-1")).not.toBe(base);
+    expect(deriveOperationId("world-1", "note_purchase", "note-2")).not.toBe(base);
+    expect(deriveOperationId("world-2", "note_purchase", "note-1")).not.toBe(base);
   });
 
   it("is a well-formed UUIDv5 (version nibble 5, RFC 4122 variant)", () => {
-    const id = deriveOperationId("world-1", "note_purchase", "note-1");
-    expect(id).toMatch(
+    expect(deriveOperationId("world-1", "note_purchase", "note-1")).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
     );
   });
 
   it("journalKey is '<purpose>:<sourceId>'", () => {
-    expect(journalKey("loan_disbursement", "loan-1")).toBe(
-      "loan_disbursement:loan-1",
-    );
+    expect(journalKey("loan_disbursement", "loan-1")).toBe("loan_disbursement:loan-1");
   });
 });
 
-describe("enqueueOperation / executeOperation", () => {
+describe("enqueueOperation / executeOperation (paypal rail)", () => {
   let db: Db;
   let worldId: string;
 
@@ -104,10 +87,7 @@ describe("enqueueOperation / executeOperation", () => {
 
     server.use(
       http.post(`${BASE_URL}/v1/oauth2/token`, () =>
-        HttpResponse.json({
-          access_token: `token-${randomUUID()}`,
-          expires_in: 32400,
-        }),
+        HttpResponse.json({ access_token: `token-${randomUUID()}`, expires_in: 32400 }),
       ),
     );
 
@@ -121,44 +101,66 @@ describe("enqueueOperation / executeOperation", () => {
     worldId = world.id;
   });
 
+  const ORDER_CREATED = {
+    id: "ORDER-1",
+    status: "PAYER_ACTION_REQUIRED",
+    links: [{ rel: "payer-action", href: "https://paypal.test/approve?token=ORDER-1" }],
+  };
+
+  function enqueueCreate(sourceId = `note-${randomUUID()}`) {
+    return enqueueOperation(db, {
+      worldId,
+      rail: "paypal",
+      kind: "order.create",
+      purpose: "note_purchase",
+      sourceId,
+      request: {
+        method: "POST",
+        path: "/v2/checkout/orders",
+        body: { intent: "CAPTURE", purchase_units: [{ amount: { currency_code: "USD", value: "1.00" } }] },
+      },
+    });
+  }
+
+  function enqueueCapture(orderId: string) {
+    return enqueueOperation(db, {
+      worldId,
+      rail: "paypal",
+      kind: "order.capture",
+      purpose: "note_purchase_capture",
+      sourceId: `note-${randomUUID()}`,
+      request: { method: "POST", path: `/v2/checkout/orders/${orderId}/capture` },
+    });
+  }
+
+  /** Records the PayPal-Request-Id of every POST /v2/checkout/orders, answering with `respond(n)`. */
+  function mockCreate(respond: (call: number) => Response) {
+    const seen: (string | null)[] = [];
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, ({ request }) => {
+        seen.push(request.headers.get("PayPal-Request-Id"));
+        return respond(seen.length);
+      }),
+    );
+    return seen;
+  }
+
   it("enqueuing the same logical operation twice resolves to the same row", async () => {
-    const first = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-1",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
-    });
-    const second = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-1",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
-    });
+    const first = await enqueueCreate("note-1");
+    const second = await enqueueCreate("note-1");
 
     expect(second.operationId).toBe(first.operationId);
-
+    expect(first.operationId).toBe(deriveOperationId(worldId, "note_purchase", "note-1"));
     const rows = await db
       .select()
       .from(paypalOperations)
       .where(eq(paypalOperations.id, first.operationId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]?.status).toBe("queued");
+    expect(rows[0]).toMatchObject({ status: "queued", purpose: "note_purchase", sourceId: "note-1" });
   });
 
-  it("enqueuing a derived id for a different rail/kind throws PayPalOperationReuseError", async () => {
-    await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-reuse",
-      request: { method: "POST", path: "/v2/checkout/orders", body: {} },
-    });
-
+  it("throws PayPalOperationReuseError when the derived id is reused for a different kind", async () => {
+    await enqueueCreate("note-reuse");
     await expect(
       enqueueOperation(db, {
         worldId,
@@ -171,205 +173,349 @@ describe("enqueueOperation / executeOperation", () => {
     ).rejects.toBeInstanceOf(PayPalOperationReuseError);
   });
 
-  it("executes a queued operation: 200 -> succeeded, and a second execute makes no new HTTP call", async () => {
-    let callCount = 0;
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, () => {
-        callCount += 1;
-        return HttpResponse.json({ id: "ORDER-OPS-1", status: "CREATED" });
+  it("rejects a request whose method/path doesn't match its kind", async () => {
+    await expect(
+      enqueueOperation(db, {
+        worldId,
+        rail: "paypal",
+        kind: "order.capture",
+        purpose: "note_purchase_capture",
+        sourceId: "x",
+        request: { method: "POST", path: "/v1/payments/payouts" },
       }),
-    );
+    ).rejects.toThrow(/does not match operation kind/);
+  });
 
-    const { operationId } = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-exec-1",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
-    });
+  it("200 → succeeded with the parsed result; a replay makes no HTTP call and returns the identical result", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
 
     const first = await executeOperation(db, operationId);
-    expect(first.status).toBe("succeeded");
-    expect(first.httpStatus).toBe(200);
-    expect(callCount).toBe(1);
+    const replay = await executeOperation(db, operationId);
 
-    const second = await executeOperation(db, operationId);
-    expect(second.status).toBe("succeeded");
-    expect(callCount).toBe(1);
+    expect(seen).toEqual([operationId]);
+    expect(first).toEqual({
+      operationId,
+      kind: "order.create",
+      status: "succeeded",
+      httpStatus: 201,
+      body: {
+        orderId: "ORDER-1",
+        status: "PAYER_ACTION_REQUIRED",
+        approveUrl: "https://paypal.test/approve?token=ORDER-1",
+      },
+    });
+    expect(replay).toEqual(first);
 
     const row = await readOperation(db, operationId);
-    expect(row.status).toBe("succeeded");
+    expect(row.response).toEqual(first.body);
+    expect(row).toMatchObject({ paypalId: "ORDER-1", attempts: 1, claimedAt: null });
   });
 
-  it("a 503 leaves the row failed_retryable with next_attempt_at set, then executing again later succeeds with the same PayPal-Request-Id", async () => {
-    let callCount = 0;
-    const seenRequestIds = new Set<string | null>();
-
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, ({ request }) => {
-        callCount += 1;
-        seenRequestIds.add(request.headers.get("PayPal-Request-Id"));
-        if (callCount <= 3) {
-          return HttpResponse.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 503 });
-        }
-        return HttpResponse.json({ id: "ORDER-OPS-2", status: "CREATED" });
-      }),
+  it("503 → failed_retryable with cumulative backoff; not retried before next_attempt_at; then succeeds with the same PayPal-Request-Id and attempts accumulate", async () => {
+    // paypalFetch makes 3 inline attempts per run, all 503 here; then 200.
+    const seen = mockCreate((n) =>
+      n <= 3
+        ? HttpResponse.json({ name: "SERVICE_UNAVAILABLE" }, { status: 503 })
+        : HttpResponse.json(ORDER_CREATED, { status: 201 }),
     );
+    const { operationId } = await enqueueCreate();
 
-    const { operationId } = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-exec-2",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
+    const before = Date.now();
+    const failed = await executeOperation(db, operationId);
+    expect(failed).toMatchObject({
+      status: "failed_retryable",
+      httpStatus: 503,
+      body: { error: { name: "SERVICE_UNAVAILABLE" } },
     });
+    let row = await readOperation(db, operationId);
+    expect(row.attempts).toBe(3);
+    expect(row.claimedAt).toBeNull();
+    // 30s · 2^3 = 240s after the failure.
+    const delayMs = (row.nextAttemptAt as Date).getTime() - before;
+    expect(delayMs).toBeGreaterThanOrEqual(239_000);
+    expect(delayMs).toBeLessThan(250_000);
 
-    const firstResult = await executeOperation(db, operationId);
-    expect(firstResult.status).toBe("failed_retryable");
-    // paypalFetch's own 3-attempt inline retry budget is exhausted here.
-    expect(callCount).toBe(3);
+    // Backoff not yet elapsed: no claim, no HTTP call, same result.
+    expect(await executeOperation(db, operationId)).toEqual(failed);
+    expect(seen).toHaveLength(3);
 
-    const rowAfterFailure = await readOperation(db, operationId);
-    expect(rowAfterFailure.status).toBe("failed_retryable");
-    expect(rowAfterFailure.nextAttemptAt).not.toBeNull();
+    // The reconcile cron runs again once the backoff has elapsed.
+    await db
+      .update(paypalOperations)
+      .set({ nextAttemptAt: sql`now() - interval '1 second'` })
+      .where(eq(paypalOperations.id, operationId));
+    const retried = await executeOperation(db, operationId);
 
-    // Simulate the reconcile cron retrying later: directly clear
-    // claimed_at the way a stale claim would naturally expire, and let
-    // this next call's own inline attempt succeed.
-    const secondResult = await executeOperation(db, operationId);
-    expect(secondResult.status).toBe("succeeded");
-
-    expect(seenRequestIds.size).toBe(1);
-    const [requestId] = seenRequestIds;
-    expect(requestId).toBe(operationId);
+    expect(retried.status).toBe("succeeded");
+    expect(seen).toHaveLength(4);
+    expect(new Set(seen)).toEqual(new Set([operationId]));
+    row = await readOperation(db, operationId);
+    expect(row.attempts).toBe(4);
+    expect(row.nextAttemptAt).toBeNull();
   });
 
-  it("a 422 (non-capture) leaves the row failed_terminal", async () => {
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, () =>
-        HttpResponse.json({ name: "UNPROCESSABLE_ENTITY" }, { status: 422 }),
-      ),
-    );
+  it("caps backoff at 10 minutes using the cumulative attempt count", async () => {
+    mockCreate(() => HttpResponse.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 500 }));
+    const { operationId } = await enqueueCreate();
 
-    const { operationId } = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-exec-3",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
-    });
+    await executeOperation(db, operationId);
+    await executeOperation(db, operationId, { ignoreBackoff: true });
+
+    const row = await readOperation(db, operationId);
+    expect(row.attempts).toBe(6);
+    const delayMs = (row.nextAttemptAt as Date).getTime() - Date.now();
+    expect(delayMs).toBeGreaterThan(590_000);
+    expect(delayMs).toBeLessThanOrEqual(600_000);
+  });
+
+  it("ignoreBackoff lets an inline caller retry a failed_retryable row immediately", async () => {
+    const seen = mockCreate((n) =>
+      n <= 3
+        ? HttpResponse.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 500 })
+        : HttpResponse.json(ORDER_CREATED, { status: 201 }),
+    );
+    const { operationId } = await enqueueCreate();
+    await executeOperation(db, operationId);
+
+    const result = await executeOperation(db, operationId, { ignoreBackoff: true });
+    expect(result.status).toBe("succeeded");
+    expect(seen).toHaveLength(4);
+  });
+
+  it("a network error (no response) → failed_retryable with the attempts counted", async () => {
+    mockCreate(() => HttpResponse.error());
+    const { operationId } = await enqueueCreate();
 
     const result = await executeOperation(db, operationId);
-    expect(result.status).toBe("failed_terminal");
-
-    const row = await readOperation(db, operationId);
-    expect(row.status).toBe("failed_terminal");
+    expect(result).toMatchObject({
+      status: "failed_retryable",
+      httpStatus: null,
+      body: { error: { name: "PayPalNetworkError" } },
+    });
+    expect((await readOperation(db, operationId)).attempts).toBe(3);
   });
 
-  it("two concurrent executeOperation calls for the same operation make exactly 1 HTTP call", async () => {
-    let callCount = 0;
-    server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders`, async () => {
-        callCount += 1;
-        return HttpResponse.json({ id: "ORDER-OPS-4", status: "CREATED" });
-      }),
-    );
+  it.each([409, 429])("%i → failed_retryable", async (status) => {
+    mockCreate(() => HttpResponse.json({ name: "X" }, { status }));
+    const { operationId } = await enqueueCreate();
+    expect((await executeOperation(db, operationId)).status).toBe("failed_retryable");
+  });
 
-    const { operationId } = await enqueueOperation(db, {
-      worldId,
-      rail: "paypal",
-      kind: "order.create",
-      purpose: "note_purchase",
-      sourceId: "note-exec-4",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { intent: "CAPTURE" } },
+  it("422 → failed_terminal, with PayPal's issue recorded; never re-sent", async () => {
+    const seen = mockCreate(() =>
+      HttpResponse.json(
+        { name: "UNPROCESSABLE_ENTITY", details: [{ issue: "PAYEE_NOT_ENABLED" }], debug_id: "dbg" },
+        { status: 422 },
+      ),
+    );
+    const { operationId } = await enqueueCreate();
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({
+      status: "failed_terminal",
+      httpStatus: 422,
+      body: { error: { name: "UNPROCESSABLE_ENTITY", issue: "PAYEE_NOT_ENABLED", debugId: "dbg" } },
     });
+    expect((await readOperation(db, operationId)).lastError).toBe("PAYEE_NOT_ENABLED");
+
+    expect(await executeOperation(db, operationId, { ignoreBackoff: true })).toEqual(result);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("two concurrent executeOperation calls make exactly 1 HTTP call", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
 
     const [a, b] = await Promise.all([
       executeOperation(db, operationId),
       executeOperation(db, operationId),
     ]);
 
-    expect(callCount).toBe(1);
-    const outcomes = [a.status, b.status];
-    expect(outcomes).toContain("succeeded");
+    expect(seen).toHaveLength(1);
+    expect([a.status, b.status]).toContain("succeeded");
   });
 
-  it("capture after ORDER_ALREADY_CAPTURED succeeds with the capture fetched via GET", async () => {
-    let captureCallCount = 0;
+  it("reclaims a stale in_flight row (worker died) and re-sends with the SAME PayPal-Request-Id", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
+    await db
+      .update(paypalOperations)
+      .set({ status: "in_flight", claimedAt: sql`now() - interval '3 minutes'`, attempts: 1 })
+      .where(eq(paypalOperations.id, operationId));
+
+    const result = await executeOperation(db, operationId);
+
+    expect(result.status).toBe("succeeded");
+    expect(seen).toEqual([operationId]);
+    const row = await readOperation(db, operationId);
+    expect(row).toMatchObject({ requestId: operationId, attempts: 2, claimedAt: null });
+  });
+
+  it("does not reclaim a fresh in_flight row (someone else's attempt is live)", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
+    await db
+      .update(paypalOperations)
+      .set({ status: "in_flight", claimedAt: sql`now() - interval '30 seconds'` })
+      .where(eq(paypalOperations.id, operationId));
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({ status: "in_flight", body: null });
+    expect(seen).toHaveLength(0);
+  });
+
+  it("never touches a succeeded or failed_terminal row", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    for (const status of ["succeeded", "failed_terminal"] as const) {
+      const { operationId } = await enqueueCreate();
+      await db
+        .update(paypalOperations)
+        .set({ status, response: { marker: status } })
+        .where(eq(paypalOperations.id, operationId));
+
+      const result = await executeOperation(db, operationId, { ignoreBackoff: true });
+      expect(result).toMatchObject({ status, body: { marker: status } });
+    }
+    expect(seen).toHaveLength(0);
+  });
+
+  it("ORDER_ALREADY_CAPTURED → GETs the order and succeeds with the existing capture; replay makes no HTTP call", async () => {
+    let captureCalls = 0;
+    let getCalls = 0;
     server.use(
-      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-ALREADY/capture`, () => {
-        captureCallCount += 1;
+      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-9/capture`, () => {
+        captureCalls += 1;
         return HttpResponse.json(
-          { name: "ORDER_ALREADY_CAPTURED" },
+          { name: "UNPROCESSABLE_ENTITY", details: [{ issue: "ORDER_ALREADY_CAPTURED" }] },
           { status: 422 },
         );
       }),
-      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-ALREADY`, () =>
-        HttpResponse.json({
-          id: "ORDER-ALREADY",
+      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-9`, () => {
+        getCalls += 1;
+        return HttpResponse.json({
+          id: "ORDER-9",
           status: "COMPLETED",
           purchase_units: [
-            {
-              payments: {
-                captures: [
-                  { id: "CAPTURE-ALREADY", status: "COMPLETED", amount: { value: "5.00" } },
-                ],
-              },
-            },
+            { payments: { captures: [{ id: "CAP-9", status: "COMPLETED", amount: { value: "15.00" } }] } },
           ],
-        }),
+        });
+      }),
+    );
+    const { operationId } = await enqueueCapture("ORDER-9");
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toEqual({
+      operationId,
+      kind: "order.capture",
+      status: "succeeded",
+      httpStatus: 200,
+      body: {
+        orderId: "ORDER-9",
+        status: "COMPLETED",
+        captureId: "CAP-9",
+        captureStatus: "COMPLETED",
+        amountCents: "1500",
+        recovered: true,
+      },
+    });
+    expect(await executeOperation(db, operationId)).toEqual(result);
+    expect(captureCalls).toBe(1);
+    expect(getCalls).toBe(1);
+    expect((await readOperation(db, operationId)).attempts).toBe(2);
+  });
+
+  it("ORDER_ALREADY_CAPTURED whose recovery GET fails → failed_retryable (never terminal)", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-10/capture`, () =>
+        HttpResponse.json(
+          { name: "UNPROCESSABLE_ENTITY", details: [{ issue: "ORDER_ALREADY_CAPTURED" }] },
+          { status: 422 },
+        ),
+      ),
+      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-10`, () =>
+        HttpResponse.json({ name: "SERVICE_UNAVAILABLE" }, { status: 503 }),
       ),
     );
+    const { operationId } = await enqueueCapture("ORDER-10");
 
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({
+      status: "failed_retryable",
+      body: { error: { issue: "ORDER_ALREADY_CAPTURED" } },
+    });
+    const row = await readOperation(db, operationId);
+    expect(row.nextAttemptAt).not.toBeNull();
+    expect(row.attempts).toBe(4); // 1 capture + 3 GET attempts
+  });
+
+  it("payout.send: sender_batch_id and PayPal-Request-Id are both the operation id", async () => {
+    let requestId: string | null = null;
+    let senderBatchId: unknown;
+    server.use(
+      http.post(`${BASE_URL}/v1/payments/payouts`, async ({ request }) => {
+        requestId = request.headers.get("PayPal-Request-Id");
+        const body = (await request.json()) as { sender_batch_header: { sender_batch_id: string } };
+        senderBatchId = body.sender_batch_header.sender_batch_id;
+        return HttpResponse.json(
+          { batch_header: { payout_batch_id: "BATCH-1", batch_status: "PENDING" } },
+          { status: 201 },
+        );
+      }),
+    );
     const { operationId } = await enqueueOperation(db, {
       worldId,
       rail: "paypal",
-      kind: "order.capture",
-      purpose: "note_purchase_capture",
-      sourceId: "note-capture-1",
+      kind: "payout.send",
+      purpose: "loan_disbursement",
+      sourceId: "loan-1",
       request: {
         method: "POST",
-        path: "/v2/checkout/orders/ORDER-ALREADY/capture",
+        path: "/v1/payments/payouts",
+        body: {
+          sender_batch_header: {},
+          items: [{ receiver: "a@example.com", amount: { value: "1.00", currency: "USD" } }],
+        },
       },
     });
 
     const result = await executeOperation(db, operationId);
-    expect(result.status).toBe("succeeded");
-    expect(result.httpStatus).toBe(200);
-    expect(captureCallCount).toBe(1);
-    expect(result.body).toMatchObject({
-      captureId: "CAPTURE-ALREADY",
-      captureStatus: "COMPLETED",
-      amountCents: 500n,
-    });
-
-    const row = await readOperation(db, operationId);
-    expect(row.status).toBe("succeeded");
-
-    // Idempotent: executing again replays without calling PayPal again.
-    const replay = await executeOperation(db, operationId);
-    expect(replay.status).toBe("succeeded");
-    expect(captureCallCount).toBe(1);
+    expect(result.body).toEqual({ batchId: "BATCH-1", batchStatus: "PENDING", item: null });
+    expect(requestId).toBe(operationId);
+    expect(senderBatchId).toBe(operationId);
   });
 
-  it("executes a queued sim-rail operation deterministically, without any HTTP call", async () => {
+  it("stores the request redacted, but keeps the executable request intact", async () => {
     const { operationId } = await enqueueOperation(db, {
       worldId,
-      rail: "sim",
+      rail: "paypal",
       kind: "order.create",
       purpose: "note_purchase",
-      sourceId: "note-sim-1",
-      request: { method: "POST", path: "/v2/checkout/orders", body: { amountCents: "100" } },
+      sourceId: "redact-1",
+      request: {
+        method: "POST",
+        path: "/v2/checkout/orders",
+        body: { intent: "CAPTURE", purchase_units: [{ payee: { email_address: "bank@example.com" } }] },
+      },
     });
-
-    const result = await executeOperation(db, operationId);
-    expect(result.status).toBe("succeeded");
-
     const row = await readOperation(db, operationId);
-    expect(row.rail).toBe("sim");
-    expect(row.status).toBe("succeeded");
+    expect(JSON.stringify(row.request)).not.toContain("bank@example.com");
+    expect(JSON.stringify(row.executableRequest)).toContain("bank@example.com");
+  });
+
+  it("a config error (no credentials) → failed_retryable, nothing sent, row not left in_flight", async () => {
+    const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
+    delete process.env.PAYPAL_CLIENT_ID;
+    try {
+      const result = await executeOperation(db, operationId);
+      expect(result).toMatchObject({
+        status: "failed_retryable",
+        body: { error: { name: "PayPalConfigError" } },
+      });
+    } finally {
+      process.env.PAYPAL_CLIENT_ID = "test-client-id";
+    }
+    expect(seen).toHaveLength(0);
   });
 });

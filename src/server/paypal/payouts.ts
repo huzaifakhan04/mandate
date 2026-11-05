@@ -1,133 +1,102 @@
-import { randomUUID } from "crypto";
-
-import type { Db } from "../db/client";
 import { assertPositiveAmountCents, centsToAmount } from "./orders";
-import { paypalFetch } from "./fetch";
+import type {
+  ExecutableRequest,
+  PayoutGetResult,
+  PayoutItemResult,
+  PayoutSendResult,
+} from "./types";
 
-interface PayPalPayoutItem {
-  payout_item_id?: string;
-  transaction_status?: string;
-}
+/**
+ * Request builders + response parsers for PayPal Payouts (Ruling F).
+ * They never call PayPal — see the note in `orders.ts`.
+ */
 
-interface PayPalPayoutBatchHeader {
-  payout_batch_id: string;
-  batch_status: string;
-}
-
-interface PayPalPayoutResponse {
-  batch_header: PayPalPayoutBatchHeader;
-  items?: PayPalPayoutItem[];
-}
-
-export interface SendPayoutParams {
-  worldId: string;
+export interface SendPayoutRequestParams {
   receiver: string;
   receiverType: "EMAIL" | "PAYPAL_ID";
   amountCents: bigint;
   note?: string;
   senderItemId: string;
-  /**
-   * Optional caller-supplied idempotency id (e.g. derived from a
-   * loan/note id). Reusing the same id for a retried call replays the
-   * original payout's result instead of sending money twice — it also
-   * becomes the batch's `sender_batch_id`. Omit to let this function
-   * mint a fresh id.
-   *
-   * NOTE: this only covers an exact-id replay. A duplicate
-   * `sender_batch_id` collision from two *different* operationIds that
-   * happen to target the same loan/note (e.g. a reconciler re-deriving
-   * an id slightly differently) is a P1 reconciliation concern, not
-   * handled here.
-   */
-  operationId?: string;
-}
-
-export interface SendPayoutResult {
-  batchId: string;
-  itemId?: string;
-  batchStatus: string;
-  operationId: string;
 }
 
 /**
- * Submits a single-item PayPal Payouts batch. The batch's
- * `sender_batch_id` is the same id used as the `PayPal-Request-Id` /
- * `paypal_operations.id` for this call, generated (or taken from
- * `params.operationId`) up front so it can be embedded in the request
- * body before the request is sent.
+ * `POST /v1/payments/payouts` — a single-item batch. The batch's
+ * `sender_batch_id` is left out here on purpose: `enqueueOperation`
+ * stamps it with the operation's own (derived) id, so it always equals
+ * the `PayPal-Request-Id` and PayPal itself rejects a duplicate batch.
+ * Rejects non-positive amounts.
  */
-export async function send(
-  db: Db,
-  params: SendPayoutParams,
-): Promise<SendPayoutResult> {
+export function buildSendPayoutRequest(params: SendPayoutRequestParams): ExecutableRequest {
   assertPositiveAmountCents(params.amountCents);
-
-  const operationId = params.operationId ?? randomUUID();
-
-  const { body, operationId: confirmedOperationId } =
-    await paypalFetch<PayPalPayoutResponse>(db, {
-      worldId: params.worldId,
-      kind: "payout.send",
-      method: "POST",
-      path: "/v1/payments/payouts",
-      operationId,
-      body: {
-        sender_batch_header: {
-          sender_batch_id: operationId,
+  return {
+    method: "POST",
+    path: "/v1/payments/payouts",
+    body: {
+      sender_batch_header: {},
+      items: [
+        {
+          recipient_type: params.receiverType,
+          amount: { value: centsToAmount(params.amountCents), currency: "USD" },
+          receiver: params.receiver,
+          note: params.note,
+          sender_item_id: params.senderItemId,
         },
-        items: [
-          {
-            recipient_type: params.receiverType,
-            amount: {
-              value: centsToAmount(params.amountCents),
-              currency: "USD",
-            },
-            receiver: params.receiver,
-            note: params.note,
-            sender_item_id: params.senderItemId,
-          },
-        ],
-      },
-    });
-
-  const item = body.items?.[0];
-
-  return {
-    batchId: body.batch_header.payout_batch_id,
-    itemId: item?.payout_item_id,
-    batchStatus: body.batch_header.batch_status,
-    operationId: confirmedOperationId,
+      ],
+    },
   };
 }
 
-export interface GetPayoutParams {
-  worldId: string;
-  batchId: string;
-}
-
-export interface GetPayoutResult {
-  batchStatus: string;
-  items: { itemId?: string; transactionStatus: string }[];
-  operationId: string;
-}
-
-export async function get(
-  db: Db,
-  params: GetPayoutParams,
-): Promise<GetPayoutResult> {
-  const { body, operationId } = await paypalFetch<PayPalPayoutResponse>(db, {
-    worldId: params.worldId,
-    kind: "payout.get",
-    method: "GET",
-    path: `/v1/payments/payouts/${encodeURIComponent(params.batchId)}`,
-  });
-
+/** Returns a copy of a payout-send request body with `sender_batch_id` set. */
+export function withSenderBatchId(request: ExecutableRequest, senderBatchId: string): ExecutableRequest {
+  const body = (request.body ?? {}) as Record<string, unknown>;
+  const header = (body.sender_batch_header ?? {}) as Record<string, unknown>;
   return {
-    batchStatus: body.batch_header.batch_status,
-    items: (body.items ?? []).map((item) => ({
-      itemId: item.payout_item_id,
-      transactionStatus: item.transaction_status ?? "UNKNOWN",
-    })),
-    operationId,
+    ...request,
+    body: { ...body, sender_batch_header: { ...header, sender_batch_id: senderBatchId } },
   };
+}
+
+/** `GET /v1/payments/payouts/{batchId}`. */
+export function buildGetPayoutRequest(batchId: string): ExecutableRequest {
+  return { method: "GET", path: `/v1/payments/payouts/${encodeURIComponent(batchId)}` };
+}
+
+const PAYOUT_PATH_RE = /^\/v1\/payments\/payouts\/([^/]+)$/;
+
+export function batchIdFromPath(path: string): string {
+  const match = PAYOUT_PATH_RE.exec(path);
+  if (!match) {
+    throw new Error(`Not a payout get path: ${path}`);
+  }
+  return decodeURIComponent(match[1] as string);
+}
+
+interface PayPalPayoutBody {
+  batch_header?: { payout_batch_id?: unknown; batch_status?: unknown };
+  items?: { payout_item_id?: unknown; transaction_status?: unknown }[];
+}
+
+function parseHeader(body: unknown): { batchId: string; batchStatus: string } {
+  const header = (body as PayPalPayoutBody | undefined)?.batch_header;
+  if (typeof header?.payout_batch_id !== "string" || typeof header.batch_status !== "string") {
+    throw new Error("PayPal payout response is missing batch_header.payout_batch_id/batch_status");
+  }
+  return { batchId: header.payout_batch_id, batchStatus: header.batch_status };
+}
+
+function parseItems(body: unknown): PayoutItemResult[] {
+  const items = (body as PayPalPayoutBody | undefined)?.items;
+  return (Array.isArray(items) ? items : []).map((item) => ({
+    itemId: typeof item.payout_item_id === "string" ? item.payout_item_id : null,
+    transactionStatus:
+      typeof item.transaction_status === "string" ? item.transaction_status : "UNKNOWN",
+  }));
+}
+
+export function parseSendPayoutResponse(body: unknown): PayoutSendResult {
+  return { ...parseHeader(body), item: parseItems(body)[0] ?? null };
+}
+
+export function parseGetPayoutResponse(body: unknown): PayoutGetResult {
+  return { ...parseHeader(body), items: parseItems(body) };
 }

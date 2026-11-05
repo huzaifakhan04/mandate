@@ -5,7 +5,9 @@
  *
  * Run: npx tsx --env-file=.env.local scripts/spikes/token-and-order.ts
  */
-import * as orders from "@/server/paypal/orders";
+import { randomUUID } from "crypto";
+
+import { paypalRail } from "@/server/rail/paypalRail";
 import { spikeDb, requireEnv, safeJson } from "./_helpers";
 
 async function main() {
@@ -13,8 +15,10 @@ async function main() {
   const { db, worldId } = await spikeDb();
 
   const started = Date.now();
-  const result = await orders.create(db, {
+  const result = await paypalRail(db).createCheckout({
     worldId,
+    purpose: "note_purchase",
+    sourceId: `spike-${randomUUID()}`,
     amountCents: 500n,
     description: "Spike: token-and-order",
     customId: "spike-token-and-order",

@@ -1,0 +1,112 @@
+/**
+ * Shared shapes for queued PayPal operations: the stored executable
+ * request and the parsed, JSON-safe result stored in
+ * `paypal_operations.response` (one shape per kind — Ruling H). Every
+ * amount is integer cents as a decimal *string* (jsonb can't hold a
+ * bigint); convert with `BigInt(...)` at the edge.
+ */
+
+export type OperationKind =
+  | "order.create"
+  | "order.capture"
+  | "order.get"
+  | "payout.send"
+  | "payout.get";
+
+export const OPERATION_KINDS: readonly OperationKind[] = [
+  "order.create",
+  "order.capture",
+  "order.get",
+  "payout.send",
+  "payout.get",
+];
+
+/** Read-only kinds: never move money, so they may run under an ad-hoc (random) id. */
+export const READ_KINDS: readonly OperationKind[] = ["order.get", "payout.get"];
+
+export type OperationStatus =
+  | "queued"
+  | "in_flight"
+  | "succeeded"
+  | "failed_retryable"
+  | "failed_terminal";
+
+/** Stored unredacted in `executable_request` and re-sent on every attempt. */
+export interface ExecutableRequest {
+  method: "GET" | "POST" | "PATCH";
+  path: string;
+  body?: unknown;
+}
+
+export interface OrderCreateResult {
+  orderId: string;
+  status: string;
+  approveUrl: string;
+}
+
+export interface CaptureRecord {
+  captureId: string;
+  captureStatus: string;
+  amountCents: string;
+}
+
+export interface OrderCaptureResult extends CaptureRecord {
+  orderId: string;
+  /** The order's status (distinct from `captureStatus`). */
+  status: string;
+  /**
+   * True when PayPal answered `ORDER_ALREADY_CAPTURED` and the existing
+   * capture was recovered with a GET on the order.
+   */
+  recovered: boolean;
+}
+
+export interface OrderGetResult {
+  orderId: string;
+  status: string;
+  /** The order's first capture, once it has one. */
+  capture: CaptureRecord | null;
+}
+
+export interface PayoutItemResult {
+  itemId: string | null;
+  transactionStatus: string;
+}
+
+export interface PayoutSendResult {
+  batchId: string;
+  batchStatus: string;
+  /** Present when PayPal (or the sim) already reports the item; PayPal's live POST usually doesn't. */
+  item: PayoutItemResult | null;
+}
+
+export interface PayoutGetResult {
+  batchId: string;
+  batchStatus: string;
+  items: PayoutItemResult[];
+}
+
+export interface OperationResultByKind {
+  "order.create": OrderCreateResult;
+  "order.capture": OrderCaptureResult;
+  "order.get": OrderGetResult;
+  "payout.send": PayoutSendResult;
+  "payout.get": PayoutGetResult;
+}
+
+/** Stored `response` of a failed operation (redacted). */
+export interface OperationError {
+  error: {
+    /** PayPal's top-level `name`, or `PayPalNetworkError` / `PayPalConfigError` / `RESPONSE_UNPARSEABLE` / `INTERNAL_ERROR`. */
+    name: string;
+    /** PayPal's `details[0].issue` (e.g. `ORDER_NOT_APPROVED`), when present. */
+    issue: string | null;
+    message: string | null;
+    debugId: string | null;
+    details: unknown;
+  };
+}
+
+export type OperationResponse =
+  | OperationResultByKind[OperationKind]
+  | OperationError;
