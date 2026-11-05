@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { ledgerAccounts, postings } from "../db/schema";
@@ -56,4 +56,48 @@ export async function trialBalance(
   );
 
   return { accounts: resultAccounts, totalCents };
+}
+
+/**
+ * Sums postings for a single `(worldId, code, ownerRef)` account. Returns
+ * `0n` when the account doesn't exist yet (unlike `getOrCreateAccount`,
+ * this never creates it — a readOnly handler like `get_status` must not
+ * write rows), which is also the correct balance for an account that has
+ * never been touched.
+ */
+export async function getAccountBalance(
+  db: Db,
+  worldId: string,
+  code: AccountCode,
+  ownerRef: string | null,
+): Promise<bigint> {
+  const ownerCondition =
+    ownerRef === null
+      ? isNull(ledgerAccounts.ownerRef)
+      : eq(ledgerAccounts.ownerRef, ownerRef);
+
+  const [account] = await db
+    .select()
+    .from(ledgerAccounts)
+    .where(
+      and(
+        eq(ledgerAccounts.worldId, worldId),
+        eq(ledgerAccounts.code, code),
+        ownerCondition,
+      ),
+    )
+    .limit(1);
+
+  if (!account) {
+    return 0n;
+  }
+
+  const [sum] = await db
+    .select({ total: sql<string>`sum(${postings.amountCents})` })
+    .from(postings)
+    .where(
+      and(eq(postings.worldId, worldId), eq(postings.accountId, account.id)),
+    );
+
+  return sum?.total ? BigInt(sum.total) : 0n;
 }

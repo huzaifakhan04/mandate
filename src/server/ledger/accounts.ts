@@ -14,6 +14,7 @@ export const ACCOUNT_CODES = [
   "fee_income",
   "late_fee_income",
   "provision_expense",
+  "note_interest_expense",
   "bank_equity",
   "suspense",
 ] as const;
@@ -39,6 +40,9 @@ export const CHART_OF_ACCOUNTS: Record<AccountCode, AccountType> = {
   fee_income: "income",
   late_fee_income: "income",
   provision_expense: "expense",
+  // Task 4 (Note economics): holders' 80% share of each repayment's fee
+  // is booked Dr `note_interest_expense` / Cr `notes_payable[holder_i]`.
+  note_interest_expense: "expense",
   bank_equity: "equity",
   suspense: "asset",
 } as const;

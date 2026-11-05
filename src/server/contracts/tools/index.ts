@@ -5,3 +5,5 @@
  * is populated the same way everywhere.
  */
 import "./getBankGuide";
+import "./registerAgent";
+import "./getStatus";

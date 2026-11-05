@@ -369,18 +369,28 @@ export const repayments = pgTable("repayments", {
     .defaultNow(),
 });
 
-export const noteSeries = pgTable("note_series", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  name: text("name").notNull(),
-  poolType: text("pool_type").notNull(),
-  disclosure: jsonb("disclosure"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const noteSeries = pgTable(
+  "note_series",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    name: text("name").notNull(),
+    poolType: text("pool_type").notNull(),
+    disclosure: jsonb("disclosure"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One series per (world, name) — lets `ensureNoteSeries` (Task 4) seed
+    // the world's single "Mandate Pool A" series with an `ON CONFLICT DO
+    // NOTHING` insert that's race-safe the same way `worlds.slug` and
+    // `clock.worldId` already are.
+    uniqueIndex("note_series_world_name_idx").on(table.worldId, table.name),
+  ],
+);
 
 export const notePositions = pgTable("note_positions", {
   id: uuid("id").primaryKey().defaultRandom(),

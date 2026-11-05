@@ -100,6 +100,14 @@ function locate(text: string, index: number): { line: number; snippet: string } 
  *   - `.query.<worldTable>.` — Drizzle's relational query API
  *     (`db.query.loans.findMany()` etc.), a second way to read a table
  *     that bypasses `scoped()` just as much as `.from()` does.
+ * Excluded: `scoped(tx, worldId).insert(<worldTable>, ...)` and the same
+ * for `.update`/`.delete` — `scoped()`'s own methods happen to share
+ * their names with Drizzle's query-builder entry points, and passing a
+ * world table as their first argument is exactly how `scoped()` is
+ * meant to be called (Ruling A — services must use it). A negative
+ * lookbehind excludes only this specific receiver shape, so a *bare*
+ * `db.insert(<worldTable>)`/`tx.insert(<worldTable>)` etc. is still
+ * caught.
  * `relativeTo` is the base that allowlist paths are resolved against.
  */
 function scanForDirectWorldTableAccess(
@@ -113,9 +121,11 @@ function scanForDirectWorldTableAccess(
 
   const tableGroup = worldTables.join("|");
   // `\s*` around the identifier (and between the paren and it) tolerates
-  // the call being wrapped across lines by a formatter.
+  // the call being wrapped across lines by a formatter. The leading
+  // negative lookbehind excludes `scoped(...).insert/update/delete(` —
+  // see the comment above.
   const builderPattern = new RegExp(
-    `\\.\\s*(?:from|insert|update|delete)\\s*\\(\\s*(?:${tableGroup})\\b`,
+    `(?<!scoped\\([^()]*\\)\\s*)\\.\\s*(?:from|insert|update|delete)\\s*\\(\\s*(?:${tableGroup})\\b`,
     "g",
   );
   const relationalPattern = new RegExp(`\\.\\s*query\\s*\\.\\s*(?:${tableGroup})\\s*\\.`, "g");
@@ -231,6 +241,33 @@ describe("world-isolation guard", () => {
       );
 
       expect(violations.map((v) => v.line)).toEqual([5, 6, 7]);
+    });
+
+    it("does not flag scoped(tx, worldId).insert/update/delete(<worldTable>, ...)", () => {
+      fixtureDir = mkdtempSync(join(tmpdir(), "world-guard-fixture-"));
+      const fixtureFile = join(fixtureDir, "scoped-writes.ts");
+      writeFileSync(
+        fixtureFile,
+        [
+          'import { scoped } from "../db/scoped";',
+          'import { agents } from "../db/schema";',
+          "",
+          "export async function write(tx: unknown, worldId: string) {",
+          "  await scoped(tx, worldId).insert(agents, {});",
+          "  await scoped(tx, worldId).update(agents, {});",
+          "  await scoped(tx, worldId).delete(agents, undefined as never);",
+          "}",
+          "",
+        ].join("\n"),
+      );
+
+      const violations = scanForDirectWorldTableAccess(
+        fixtureDir,
+        fixtureDir,
+        worldTables,
+      );
+
+      expect(violations).toEqual([]);
     });
 
     it("fails on a `.from(<worldTable>)` call broken across multiple lines", () => {

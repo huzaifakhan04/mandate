@@ -1,13 +1,44 @@
 import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { clock, worlds } from "../db/schema";
+import { clock, noteSeries, worlds } from "../db/schema";
 import { ensureChartOfAccounts } from "../ledger/accounts";
 
 export interface CreateWorldInput {
   name: string;
   ownerPrincipalId: string | null;
   railMode: "paypal" | "sim" | "mixed";
+}
+
+/**
+ * The plan's single per-world note series name (plan: "one note series
+ * per world, `Mandate Pool A`"). `poolType: "general"` is this task's
+ * only choice — the plan doesn't define a pool-type vocabulary yet, and
+ * P1 has no second pool to distinguish it from.
+ */
+const MANDATE_POOL_A_NAME = "Mandate Pool A";
+const MANDATE_POOL_A_TYPE = "general";
+
+/**
+ * Seeds the world's single note series ("Mandate Pool A") if it doesn't
+ * already exist. Idempotent and race-safe the same way `worlds.slug`/
+ * `clock.worldId` are: `ON CONFLICT (world_id, name) DO NOTHING` against
+ * `note_series_world_name_idx`, so two concurrent callers for the same
+ * world can never create two series rows.
+ *
+ * This writes `worldId` directly (not through `scoped()`) because this
+ * file, like the rest of `worlds.ts`, is allowlisted bootstrap
+ * infrastructure called before a `scoped()` world context exists.
+ */
+async function ensureNoteSeries(db: Db, worldId: string): Promise<void> {
+  await db
+    .insert(noteSeries)
+    .values({
+      worldId,
+      name: MANDATE_POOL_A_NAME,
+      poolType: MANDATE_POOL_A_TYPE,
+    })
+    .onConflictDoNothing({ target: [noteSeries.worldId, noteSeries.name] });
 }
 
 function slugify(name: string): string {
@@ -66,6 +97,7 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
       .onConflictDoNothing({ target: clock.worldId });
 
     await ensureChartOfAccounts(tx, world.id);
+    await ensureNoteSeries(tx, world.id);
 
     return { worldId: world.id };
   });
@@ -157,6 +189,7 @@ export async function createWorld(
     });
 
     await ensureChartOfAccounts(tx, world.id);
+    await ensureNoteSeries(tx, world.id);
 
     return { worldId: world.id, slug: world.slug };
   });
