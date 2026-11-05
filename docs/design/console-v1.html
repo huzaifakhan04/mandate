@@ -1,0 +1,241 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mandate · Bank console (v1, stacked)</title>
+<style>
+  :root{
+    --bg:#FFFFFF; --surface:#F6F7F9; --ink:#15181D; --muted:#5B6472; --faint:#8A93A1;
+    --line:#E3E6EB; --accent:#1D4ED8; --accent-soft:#EEF2FD; --green:#0F9D58; --green-soft:#E8F5EE;
+    --red:#D93025; --red-soft:#FCEDEC; --amber:#B26A00; --amber-soft:#FFF4E0;
+    --q-line:#DDE2EB; --q-head:#F8F8F8;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .num{font-variant-numeric:tabular-nums}
+  code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  button,select{font:inherit;cursor:pointer}
+  .brand{display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px;letter-spacing:-.01em;white-space:nowrap}
+  .brand i{width:26px;height:26px;border-radius:8px;background:var(--accent);display:grid;place-items:center;color:#fff;font-style:normal;font-size:14px}
+  .brand em{font-style:normal;font-weight:500;color:var(--muted)}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:11px;font-weight:700;letter-spacing:.03em;padding:2px 9px;border-radius:999px;white-space:nowrap;line-height:18px}
+  .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor}
+  .pill.ok{color:var(--green);background:var(--green-soft)}
+  .pill.warn{color:var(--amber);background:var(--amber-soft)}
+  .pill.risk{color:var(--red);background:var(--red-soft)}
+  .pill.blue{color:var(--accent);background:var(--accent-soft)}
+  .pill.grey{color:var(--muted);background:var(--surface)}
+  .tag{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:10px;font-weight:600;padding:1px 6px;border-radius:5px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+  .tag.sb{background:var(--accent-soft);color:var(--accent)}
+  .tag.sim{background:#F1EAFB;color:#6B3FB3}
+  .seg{display:inline-flex;background:var(--surface);border-radius:10px;padding:3px;gap:2px}
+  .seg button{border:0;background:none;padding:5px 12px;border-radius:8px;color:var(--muted);font-weight:600;font-size:13px;white-space:nowrap}
+  .seg button.on{background:#fff;color:var(--ink);box-shadow:0 1px 2px rgba(21,24,29,.1)}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:9px;padding:6px 12px;font-weight:600;color:var(--ink);font-size:13px;white-space:nowrap}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  .btn.risk{color:var(--red)}
+
+  /* AG Grid Quartz-like static table */
+  .q{border:1px solid var(--q-line);border-radius:8px;overflow-x:auto;background:#fff}
+  .q table{border-collapse:collapse;width:100%;min-width:760px;font-size:13px}
+  .q th{background:var(--q-head);text-align:left;font-weight:600;color:#181D1F;height:42px;padding:0 14px;border-bottom:1px solid var(--q-line);white-space:nowrap;position:relative}
+  .q th + th::before{content:"";position:absolute;left:0;top:30%;height:40%;width:1px;background:var(--q-line)}
+  .q th.r,.q td.r{text-align:right}
+  .q th .s{color:var(--faint);font-weight:400;margin-left:4px}
+  .q td{height:42px;padding:0 14px;border-bottom:1px solid #EEF0F3;white-space:nowrap;color:#181D1F}
+  .q tr:last-child td{border-bottom:0}
+  .q tbody tr:hover td{background:#EEF2FD}
+  .q td.r{font-variant-numeric:tabular-nums}
+  .q td.dim{color:var(--faint)}
+  .q td.cr{color:var(--green)}
+  .q .grp td{border-top:1px solid var(--q-line)}
+  .q .mono{font-size:12px}
+  .q-foot{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:12px;padding:10px 2px 0}
+
+  .tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin-bottom:14px;overflow-x:auto}
+  .tabs button{border:0;background:none;padding:10px 14px;color:var(--muted);font-weight:600;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+  .tabs button.on{color:var(--accent);border-color:var(--accent)}
+  .tabs button small{font-weight:500;color:var(--faint);margin-left:4px}
+  .pane{display:none}.pane.on{display:block}
+
+  /* flow diagram */
+  .flow-wrap{overflow-x:auto}
+  .flow{display:block;width:100%;min-width:640px;height:auto}
+  .flow text{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif}
+  .flow .lane{fill:none;stroke-width:2}
+  .flow .in{stroke:#0F9D58;stroke-opacity:.35}
+  .flow .out{stroke:#1D4ED8;stroke-opacity:.35}
+  .flow .tok-in{fill:#0F9D58}
+  .flow .tok-out{fill:#1D4ED8}
+  @media (prefers-reduced-motion: reduce){ .flow .tok{display:none} .live-dot{animation:none!important} }
+
+  /* paypal log */
+  .log{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;margin:0;padding:0;list-style:none}
+  .log li{display:grid;grid-template-columns:72px 1fr auto;gap:10px;padding:6px 12px;border-bottom:1px solid #EEF0F3;align-items:baseline}
+  .log li:last-child{border-bottom:0}
+  .log time{color:var(--faint)}
+  .log .m{font-weight:700}
+  .log .s2{color:var(--green);font-weight:700}
+  .log .s4{color:var(--red);font-weight:700}
+  .log .wh{color:#6B3FB3;font-weight:700}
+  .log .ref{color:var(--faint)}
+  .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 1.6s ease-in-out infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  .legal{color:var(--faint);font-size:11px}
+
+  .top{display:flex;align-items:center;gap:16px;height:60px;padding:0 28px;border-bottom:1px solid var(--line);position:sticky;top:0;background:rgba(255,255,255,.94);backdrop-filter:blur(8px);z-index:5}
+  .top .pub{margin-left:auto;display:flex;gap:12px;align-items:center}
+  .wrap{max-width:1240px;margin:0 auto;padding:28px 28px 40px}
+  h1{font-size:26px;letter-spacing:-.02em;margin:0}
+  .lede{color:var(--muted);margin:4px 0 20px}
+  .kpis{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:12px}
+  .kpi{border:1px solid var(--line);border-radius:14px;padding:14px 16px;background:#fff}
+  .kpi span{color:var(--muted);font-size:12px;font-weight:500}
+  .kpi b{display:block;font-size:26px;letter-spacing:-.02em;margin:2px 0}
+  .kpi small{font-size:12px;color:var(--faint)}
+  .kpi small.up{color:var(--green)}
+  .kpi small.risk{color:var(--red)}
+  .clock{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin:16px 0 24px;padding:12px 16px;background:var(--surface);border-radius:14px}
+  .clock .day{display:flex;align-items:baseline;gap:8px}
+  .clock .day b{font-size:22px;letter-spacing:-.02em}
+  .clock .day span{color:var(--muted);font-size:12px}
+  .clock .ctl{display:flex;gap:8px}
+  .clock .spacer{flex:1}
+  .card{border:1px solid var(--line);border-radius:16px;background:#fff;padding:18px 20px;margin-bottom:24px}
+  .card h2{font-size:16px;margin:0 0 4px;display:flex;align-items:center;gap:10px}
+  .card .hint{color:var(--muted);font-size:13px;margin:0 0 12px}
+  .loghead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .loghead h2{margin:0}
+  .logbox{border:1px solid var(--q-line);border-radius:8px;max-height:260px;overflow:auto;background:#FBFCFD}
+  .logbox .log{min-width:620px}
+  footer{padding-top:8px}
+  @media (max-width:1100px){ .kpis{grid-template-columns:repeat(3,minmax(0,1fr))} }
+  @media (max-width:640px){
+    .top{padding:0 16px}
+    .top .pub .tag{display:none}
+    .wrap{padding:20px 16px 32px}
+    h1{font-size:22px}
+    .kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+    .kpi b{font-size:20px}
+    .clock .spacer{display:none}
+    .card{padding:14px}
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="brand"><i>M</i>Mandate <em>· Bank console</em></div>
+  <div class="pub"><span class="tag sb">public · read-only</span><span class="live-dot" title="live"></span></div>
+</header>
+<main class="wrap">
+  <h1>Mission control</h1>
+  <p class="lede">A live view of a sandbox bank run by and for AI agents. Every number below is derived from the double-entry ledger.</p>
+
+  <section class="kpis num" aria-label="Key figures">
+    <div class="kpi"><span>Pool</span><b>$12,400</b><small class="up">+$500 today</small></div><div class="kpi"><span>Utilization</span><b>62%</b><small class="">target 55–75%</small></div><div class="kpi"><span>Base rate</span><b>4.10%</b><small class="">simulated</small></div><div class="kpi"><span>Inflation (CPI)</span><b>2.80%</b><small class="">real rate +1.30%</small></div><div class="kpi"><span>NIM</span><b>3.90%</b><small class="up">+0.10 pp · 7d</small></div><div class="kpi"><span>Default rate</span><b>1.20%</b><small class="risk">2 of 64 loans</small></div>
+  </section>
+
+  <section class="clock" aria-label="Bank clock">
+    <div class="day"><span>BANK CLOCK</span><b class="num">Day 23</b><span>Nov 5 · 14:02 sim time</span></div>
+    <div class="ctl"><button class="btn">+1d</button><button class="btn">+7d</button><button class="btn risk">Stress ▾</button></div>
+    <div class="spacer"></div>
+    <div class="seg" aria-label="World"><button class="on">Main world</button><button>My private world</button></div>
+  </section>
+
+  <section class="card">
+    <h2>Money flow <span class="pill blue">live</span></h2>
+    <p class="hint">Dots are payments moving right now. Hover a lane in the real app to see the ledger entries behind it.</p>
+    <div class="flow-wrap"><svg class="flow" viewBox="0 0 1000 330" role="img" aria-label="Money flow: lender agents buy notes from the bank, the bank lends to borrower agents, repayments flow back to the bank and distributions to note holders">
+<defs><filter id="sh" x="-10%" y="-10%" width="120%" height="140%"><feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#15181D" flood-opacity=".08"/></filter></defs>
+<text x="110" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#8A93A1" letter-spacing="1">LENDER AGENTS</text>
+<text x="500" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#8A93A1" letter-spacing="1">BANK</text>
+<text x="890" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#8A93A1" letter-spacing="1">BORROWER AGENTS</text>
+<path id="l0in" class="lane in" d="M200,64 C294.5,64 315.5,131 410,131"/>
+<path id="l0out" class="lane out" d="M410,141 C315.5,141 294.5,76 200,76"/>
+<path id="l1in" class="lane in" d="M200,154 C294.5,154 315.5,145 410,145"/>
+<path id="l1out" class="lane out" d="M410,155 C315.5,155 294.5,166 200,166"/>
+<path id="l2in" class="lane in" d="M200,244 C294.5,244 315.5,159 410,159"/>
+<path id="l2out" class="lane out" d="M410,169 C315.5,169 294.5,256 200,256"/>
+<path id="b0out" class="lane out" d="M590,131 C684.5,131 705.5,64 800,64"/>
+<path id="b0in" class="lane in" d="M800,76 C705.5,76 684.5,141 590,141"/>
+<path id="b1out" class="lane out" d="M590,145 C684.5,145 705.5,154 800,154"/>
+<path id="b1in" class="lane in" d="M800,166 C705.5,166 684.5,155 590,155"/>
+<path id="b2out" class="lane out" d="M590,159 C684.5,159 705.5,244 800,244"/>
+<path id="b2in" class="lane in" d="M800,256 C705.5,256 684.5,169 590,169"/>
+<g filter="url(#sh)"><rect x="20" y="42" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="32" y="56" width="28" height="28" rx="8" fill="#0F9D58"/><text x="46" y="75" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">O</text><text x="70" y="68" font-size="14" font-weight="700" fill="#15181D">Orion</text><text x="70" y="85" font-size="11.5" fill="#5B6472">$4,200 in notes</text>
+<g filter="url(#sh)"><rect x="20" y="132" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="32" y="146" width="28" height="28" rx="8" fill="#0F9D58"/><text x="46" y="165" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">V</text><text x="70" y="158" font-size="14" font-weight="700" fill="#15181D">Vega</text><text x="70" y="175" font-size="11.5" fill="#5B6472">$3,100 in notes</text>
+<g filter="url(#sh)"><rect x="20" y="222" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="32" y="236" width="28" height="28" rx="8" fill="#0F9D58"/><text x="46" y="255" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">L</text><text x="70" y="248" font-size="14" font-weight="700" fill="#15181D">Lyra</text><text x="70" y="265" font-size="11.5" fill="#5B6472">$5,100 in notes</text>
+<g filter="url(#sh)"><rect x="800" y="42" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="812" y="56" width="28" height="28" rx="8" fill="#1D4ED8"/><text x="826" y="75" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">N</text><text x="850" y="68" font-size="14" font-weight="700" fill="#15181D">Nova</text><text x="850" y="85" font-size="11.5" fill="#5B6472">B · $250 active</text>
+<g filter="url(#sh)"><rect x="800" y="132" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="812" y="146" width="28" height="28" rx="8" fill="#1D4ED8"/><text x="826" y="165" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">K</text><text x="850" y="158" font-size="14" font-weight="700" fill="#15181D">Kite</text><text x="850" y="175" font-size="11.5" fill="#5B6472">A · repaid $120</text>
+<g filter="url(#sh)"><rect x="800" y="222" width="180" height="56" rx="12" fill="#fff" stroke="#E3E6EB"/></g><rect x="812" y="236" width="28" height="28" rx="8" fill="#D93025"/><text x="826" y="255" text-anchor="middle" font-size="13" font-weight="700" fill="#fff">P</text><text x="850" y="248" font-size="14" font-weight="700" fill="#15181D">Pixel</text><text x="850" y="265" font-size="11.5" fill="#5B6472">C · $80 late</text>
+<g filter="url(#sh)"><rect x="410" y="60" width="180" height="180" rx="18" fill="#fff" stroke="#1D4ED8" stroke-width="1.5"/></g>
+<rect x="480" y="78" width="40" height="40" rx="11" fill="#1D4ED8"/><text x="500" y="105" text-anchor="middle" font-size="18" font-weight="700" fill="#fff">M</text>
+<text x="500" y="142" text-anchor="middle" font-size="14" font-weight="700" fill="#15181D">Mandate bank</text>
+<text x="500" y="166" text-anchor="middle" font-size="20" font-weight="700" fill="#15181D" style="font-variant-numeric:tabular-nums">$12,400</text>
+<text x="500" y="184" text-anchor="middle" font-size="11.5" fill="#5B6472">pool · 62% lent out</text>
+<rect x="440" y="198" width="120" height="7" rx="3.5" fill="#EEF0F3"/><rect x="440" y="198" width="74.4" height="7" rx="3.5" fill="#1D4ED8"/>
+<text x="500" y="226" text-anchor="middle" font-size="11" fill="#8A93A1">reserve (CECL) $310</text>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.2s" begin="0.00s" repeatCount="indefinite"><mpath href="#l0in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.2s" begin="-1.60s" repeatCount="indefinite"><mpath href="#l0in"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.0s" begin="0.00s" repeatCount="indefinite"><mpath href="#l0out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.0s" begin="-2.00s" repeatCount="indefinite"><mpath href="#l0out"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.7s" begin="0.00s" repeatCount="indefinite"><mpath href="#l1in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.7s" begin="-1.85s" repeatCount="indefinite"><mpath href="#l1in"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.4s" begin="0.00s" repeatCount="indefinite"><mpath href="#l1out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.4s" begin="-2.20s" repeatCount="indefinite"><mpath href="#l1out"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.2s" begin="0.00s" repeatCount="indefinite"><mpath href="#l2in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.2s" begin="-2.10s" repeatCount="indefinite"><mpath href="#l2in"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.8s" begin="0.00s" repeatCount="indefinite"><mpath href="#l2out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.8s" begin="-2.40s" repeatCount="indefinite"><mpath href="#l2out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="3.0s" begin="0.00s" repeatCount="indefinite"><mpath href="#b0out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="3.0s" begin="-1.50s" repeatCount="indefinite"><mpath href="#b0out"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.6s" begin="0.00s" repeatCount="indefinite"><mpath href="#b0in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="3.6s" begin="-1.80s" repeatCount="indefinite"><mpath href="#b0in"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="3.6s" begin="0.00s" repeatCount="indefinite"><mpath href="#b1out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="3.6s" begin="-1.80s" repeatCount="indefinite"><mpath href="#b1out"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.1s" begin="0.00s" repeatCount="indefinite"><mpath href="#b1in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.1s" begin="-2.05s" repeatCount="indefinite"><mpath href="#b1in"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.2s" begin="0.00s" repeatCount="indefinite"><mpath href="#b2out"/></animateMotion></circle>
+<circle class="tok tok-out" r="4"><animateMotion dur="4.2s" begin="-2.10s" repeatCount="indefinite"><mpath href="#b2out"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.6s" begin="0.00s" repeatCount="indefinite"><mpath href="#b2in"/></animateMotion></circle>
+<circle class="tok tok-in" r="4"><animateMotion dur="4.6s" begin="-2.30s" repeatCount="indefinite"><mpath href="#b2in"/></animateMotion></circle>
+<text x="260.0" y="298" text-anchor="middle" font-size="12" fill="#5B6472"><tspan fill="#0F9D58" font-weight="700">●</tspan> note purchases  <tspan fill="#1D4ED8" font-weight="700" dx="8">●</tspan> distributions</text>
+<text x="740.0" y="298" text-anchor="middle" font-size="12" fill="#5B6472"><tspan fill="#1D4ED8" font-weight="700">●</tspan> loan payouts  <tspan fill="#0F9D58" font-weight="700" dx="8">●</tspan> repayments + fees</text>
+<text x="500" y="322" text-anchor="middle" font-size="11" fill="#8A93A1">green = money into the bank · blue = money out of the bank</text>
+</svg></div>
+  </section>
+
+  <section class="card">
+    <div class="tabs" data-tabs="grid-panes" role="tablist"><button class="on" data-t="t-ledger">Ledger<small>2,014</small></button><button data-t="t-loans">Loans<small>64</small></button><button data-t="t-notes">Notes<small>23</small></button><button data-t="t-agents">Agents<small>31</small></button></div>
+    <div id="grid-panes"><div class="pane on" id="t-ledger"><div class="q"><table><thead><tr><th>Entry</th><th>Day</th><th>Type</th><th>Account</th><th class="r">Debit</th><th class="r">Credit</th><th>Reference</th><th>Rail</th></tr></thead><tbody><tr class="grp"><td class="mono">JE-2207</td><td class="num">23</td><td class="mono">note_purchase</td><td class="mono" style="padding-left:14px">cash_paypal</td><td class="r">500.00</td><td class="r"></td><td>N-0077 · Orion</td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">notes_payable</td><td class="r"></td><td class="r">500.00</td><td></td><td></td></tr><tr class="grp"><td class="mono">JE-2206</td><td class="num">23</td><td class="mono">repayment</td><td class="mono" style="padding-left:14px">cash_paypal</td><td class="r">121.84</td><td class="r"></td><td>L-0398 · Kite</td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">loans_receivable</td><td class="r"></td><td class="r">120.00</td><td></td><td></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">fee_income</td><td class="r"></td><td class="r">1.84</td><td></td><td></td></tr><tr class="grp"><td class="mono">JE-2203</td><td class="num">22</td><td class="mono">note_distribution</td><td class="mono" style="padding-left:14px">notes_payable</td><td class="r">60.00</td><td class="r"></td><td>N-0061 · Vega (2 of 2)</td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:14px">interest_expense_notes</td><td class="r">0.74</td><td class="r"></td><td></td><td></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">cash_paypal</td><td class="r"></td><td class="r">60.74</td><td></td><td></td></tr><tr class="grp"><td class="mono">JE-2198</td><td class="num">18</td><td class="mono">loan_disbursement</td><td class="mono" style="padding-left:14px">loans_receivable</td><td class="r">250.00</td><td class="r"></td><td>L-0412 · Nova</td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">cash_paypal</td><td class="r"></td><td class="r">250.00</td><td></td><td></td></tr><tr class="grp"><td class="mono">JE-2199</td><td class="num">18</td><td class="mono">fee_accrual</td><td class="mono" style="padding-left:14px">fees_receivable</td><td class="r">4.12</td><td class="r"></td><td>L-0412 · Nova</td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono"></td><td class="num"></td><td class="mono"></td><td class="mono" style="padding-left:34px">fee_income_unearned</td><td class="r"></td><td class="r">4.12</td><td></td><td></td></tr></tbody></table></div><div class="q-foot"><span>12 lines · 5 entries · every entry balances (Σ debit = Σ credit)</span><span class="num">Page 1 of 41</span></div></div><div class="pane" id="t-loans"><div class="q"><table><thead><tr><th>Loan</th><th>Agent</th><th>Grade</th><th class="r">Principal</th><th class="r">Fee</th><th class="r">Term</th><th class="r">Day</th><th class="r">Est. APR</th><th>Status</th><th>Rail</th></tr></thead><tbody><tr><td class="mono">L-0412</td><td><b>Nova</b></td><td>B</td><td class="r">250.00</td><td class="r">4.12</td><td class="r">14d</td><td class="r">6 / 14</td><td class="r">~43%</td><td><span class="pill ok">ACTIVE</span></td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono">L-0415</td><td><b>Wren</b></td><td>A</td><td class="r">450.00</td><td class="r">5.92</td><td class="r">21d</td><td class="r">—</td><td class="r">~23%</td><td><span class="pill blue">DISBURSING</span></td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono">L-0414</td><td><b>Rook</b></td><td>B</td><td class="r">300.00</td><td class="r">6.10</td><td class="r">30d</td><td class="r">—</td><td class="r">~25%</td><td><span class="pill blue">OFFERED</span></td><td><span class="tag sim">simulated</span></td></tr><tr><td class="mono">L-0398</td><td><b>Kite</b></td><td>A</td><td class="r">120.00</td><td class="r">1.84</td><td class="r">10d</td><td class="r">repaid</td><td class="r">~56%</td><td><span class="pill grey">REPAID</span></td><td><span class="tag sb">sandbox</span></td></tr><tr><td class="mono">L-0401</td><td><b>Pixel</b></td><td>C</td><td class="r">80.00</td><td class="r">2.40</td><td class="r">7d</td><td class="r">9 / 7</td><td class="r">~156%</td><td><span class="pill warn">LATE</span></td><td><span class="tag sim">simulated</span></td></tr><tr><td class="mono">L-0389</td><td><b>Quill</b></td><td>D</td><td class="r">60.00</td><td class="r">2.70</td><td class="r">14d</td><td class="r">26 / 14</td><td class="r">~117%</td><td><span class="pill risk">SUBSTANDARD</span></td><td><span class="tag sim">simulated</span></td></tr><tr><td class="mono">L-0377</td><td><b>Sable</b></td><td>D</td><td class="r">200.00</td><td class="r">8.00</td><td class="r">30d</td><td class="r">charged off</td><td class="r">~49%</td><td><span class="pill risk">CHARGED_OFF</span></td><td><span class="tag sim">simulated</span></td></tr><tr><td class="mono">L-0416</td><td><b>Juno</b></td><td>E</td><td class="r">40.00</td><td class="r">—</td><td class="r">7d</td><td class="r">—</td><td class="r">—</td><td><span class="pill grey">DECLINED</span></td><td><span class="tag sim">simulated</span></td></tr></tbody></table></div><div class="q-foot"><span>Est. APR annualises the flat fee; values above ~36% are flagged in the owner view (CA cap, unverified).</span><span class="num">8 of 64 loans</span></div></div><div class="pane" id="t-notes"><div class="q"><table><thead><tr><th>Note</th><th>Holder</th><th>Backed by</th><th class="r">Principal</th><th class="r">Target yield</th><th class="r">Paid to holder</th><th>Status</th><th>Label</th></tr></thead><tbody><tr><td class="mono">N-0077</td><td><b>Orion</b></td><td class="mono">L-0412</td><td class="r">150.00</td><td class="r">7.4%</td><td class="r">0.00</td><td><span class="pill ok">FUNDED</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0078</td><td><b>Vega</b></td><td class="mono">L-0412</td><td class="r">100.00</td><td class="r">7.4%</td><td class="r">0.00</td><td><span class="pill ok">FUNDED</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0074</td><td><b>Lyra</b></td><td class="mono">L-0415</td><td class="r">450.00</td><td class="r">6.1%</td><td class="r">0.00</td><td><span class="pill ok">FUNDED</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0061</td><td><b>Vega</b></td><td class="mono">L-0398</td><td class="r">120.00</td><td class="r">6.8%</td><td class="r">121.48</td><td><span class="pill grey">PAID_OUT</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0066</td><td><b>Orion</b></td><td class="mono">L-0401</td><td class="r">80.00</td><td class="r">9.9%</td><td class="r">0.00</td><td><span class="pill warn">AT_RISK</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0058</td><td><b>Lyra</b></td><td class="mono">L-0389</td><td class="r">60.00</td><td class="r">11.2%</td><td class="r">12.00</td><td><span class="pill risk">IMPAIRED</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0049</td><td><b>Orion</b></td><td class="mono">L-0377</td><td class="r">200.00</td><td class="r">10.5%</td><td class="r">38.00</td><td><span class="pill risk">WRITTEN_DOWN</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr><tr><td class="mono">N-0079</td><td><b>Lyra</b></td><td class="mono">pool</td><td class="r">500.00</td><td class="r">5.2%</td><td class="r">0.00</td><td><span class="pill blue">UNALLOCATED</span></td><td class="dim">not a deposit · not FDIC-insured</td></tr></tbody></table></div><div class="q-foot"><span>Notes are borrower-payment-dependent: holders earn only from repayments of the loans they back.</span><span class="num">8 of 23 notes</span></div></div><div class="pane" id="t-agents"><div class="q"><table><thead><tr><th>Agent</th><th>ID</th><th>Role</th><th>Operator</th><th class="r">Score</th><th>Grade</th><th class="r">Limit</th><th class="r">Exposure</th><th>Status</th></tr></thead><tbody><tr><td><b>Nova</b></td><td class="mono">agt_nova_7f3c</td><td>Borrower</td><td>Studio LLC</td><td class="r">74</td><td>B</td><td class="r">300.00</td><td class="r">250.00</td><td><span class="pill ok">ACTIVE</span></td></tr><tr><td><b>Atlas</b></td><td class="mono">agt_atlas_21be</td><td>Borrower</td><td>Studio LLC</td><td class="r">—</td><td>—</td><td class="r">—</td><td class="r">0.00</td><td><span class="pill warn">PENDING_CLAIM</span></td></tr><tr><td><b>Kite</b></td><td class="mono">agt_kite_0a19</td><td>Borrower</td><td>Kite Labs</td><td class="r">88</td><td>A</td><td class="r">500.00</td><td class="r">0.00</td><td><span class="pill ok">ACTIVE</span></td></tr><tr><td><b>Pixel</b></td><td class="mono">bot_pixel_33</td><td>Borrower · bot</td><td>SimRail</td><td class="r">61</td><td>C</td><td class="r">120.00</td><td class="r">80.00</td><td><span class="pill warn">LATE</span></td></tr><tr><td><b>Quill</b></td><td class="mono">bot_quill_08</td><td>Borrower · bot</td><td>SimRail</td><td class="r">52</td><td>D</td><td class="r">0.00</td><td class="r">60.00</td><td><span class="pill risk">FROZEN</span></td></tr><tr><td><b>Orion</b></td><td class="mono">bot_orion_01</td><td>Lender · bot</td><td>SimRail</td><td class="r">—</td><td>—</td><td class="r">—</td><td class="r">4,200.00</td><td><span class="pill ok">ACTIVE</span></td></tr><tr><td><b>Vega</b></td><td class="mono">agt_vega_5d2e</td><td>Lender</td><td>Vega Capital</td><td class="r">—</td><td>—</td><td class="r">—</td><td class="r">3,100.00</td><td><span class="pill ok">ACTIVE</span></td></tr><tr><td><b>Lyra</b></td><td class="mono">bot_lyra_02</td><td>Lender · bot</td><td>SimRail</td><td class="r">—</td><td>—</td><td class="r">—</td><td class="r">5,100.00</td><td><span class="pill ok">ACTIVE</span></td></tr></tbody></table></div><div class="q-foot"><span>Bots run on SimRail in private worlds; human and agent actions use PayPal sandbox.</span><span class="num">8 of 31 agents</span></div></div></div>
+  </section>
+
+  <section class="card">
+    <div class="loghead"><span class="live-dot"></span><h2>PayPal API log</h2><span class="hint" style="margin:0 0 0 auto">request bodies redacted</span></div>
+    <div class="logbox"><ul class="log"><li><time class="num">14:02:13</time><span><span class="wh">webhook</span> PAYMENT.PAYOUTS-ITEM.SUCCEEDED <span class="ref">payout_item=7QX…K2 · N-0061</span></span><span class="tag sb">sandbox</span></li><li><time class="num">14:02:11</time><span><span class="m">POST</span> /v2/checkout/orders <span class="ref">(payee=bank)</span> → <span class="s2">201</span> PAYER_ACTION_REQUIRED <span class="ref">L-0412</span></span><span class="tag sb">sandbox</span></li><li><time class="num">14:01:58</time><span><span class="m">POST</span> /v1/payments/payouts → <span class="s2">201</span> PENDING <span class="ref">batch=5UX…Q9 · $500.00</span></span><span class="tag sb">sandbox</span></li><li><time class="num">14:01:57</time><span><span class="m">POST</span> /v1/oauth2/token → <span class="s2">200</span> <span class="ref">token refreshed</span></span><span class="tag sb">sandbox</span></li><li><time class="num">14:01:40</time><span><span class="m">payout</span> bot_pixel_33 → SETTLED <span class="ref">$80.00 · L-0401</span></span><span class="tag sim">simulated</span></li><li><time class="num">14:00:22</time><span><span class="wh">webhook</span> PAYMENT.CAPTURE.COMPLETED <span class="ref">L-0398 · $121.84</span></span><span class="tag sb">sandbox</span></li><li><time class="num">14:00:19</time><span><span class="m">POST</span> /v2/checkout/orders/8RD…/capture → <span class="s2">201</span> COMPLETED</span><span class="tag sb">sandbox</span></li><li><time class="num">13:59:51</time><span><span class="m">POST</span> /v1/payments/payouts → <span class="s4">422</span> INSUFFICIENT_FUNDS <span class="ref">retry queued</span></span><span class="tag sim">simulated</span></li><li><time class="num">13:59:02</time><span><span class="wh">webhook</span> CHECKOUT.ORDER.APPROVED <span class="ref">order=8RD…</span></span><span class="tag sb">sandbox</span></li></ul></div>
+  </section>
+
+  <footer class="legal">Sandbox model · simulated money · notes are not deposits and not FDIC-insured</footer>
+</main>
+
+<script>
+  document.querySelectorAll('[data-tabs]').forEach(function(group){
+    var scope=document.getElementById(group.dataset.tabs);
+    group.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click',function(){
+        group.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)});
+        scope.querySelectorAll(':scope > .pane').forEach(function(p){p.classList.toggle('on',p.id===b.dataset.t)});
+      });
+    });
+  });
+  document.querySelectorAll('.seg').forEach(function(seg){
+    seg.querySelectorAll('button').forEach(function(b){
+      b.addEventListener('click',function(){seg.querySelectorAll('button').forEach(function(x){x.classList.toggle('on',x===b)})});
+    });
+  });
+</script>
+
+</body>
+</html>
