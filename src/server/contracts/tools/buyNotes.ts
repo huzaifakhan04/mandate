@@ -10,15 +10,19 @@ const inputSchema = z.object({
 });
 
 const outputSchema = z.object({
-  checkout_id: z.string().optional(),
+  checkout_id: z.string(),
   approve_url: z.string().optional(),
   amount_cents: z.number(),
   disclosure: z.string(),
-  note_tx_id: z.string().optional(),
 });
 
-/** Internal bookkeeping stashed in the handler's envelope for `finalize` to pick up (never shown to the caller — `finalize` always replaces this envelope). */
-interface PendingBuyNotes {
+/**
+ * Fix round 1 (I2b): bookkeeping passed from `handler` to `finalize` via
+ * `ctx.setFinalizeState`, never through the envelope `handler` returns —
+ * that envelope is a clean, public, safely-replayable fallback on its
+ * own (Fix round 1, I2a/I2c).
+ */
+interface BuyNotesFinalizeState {
   noteTxId: string;
   createOperationId: string;
   amountCents: string;
@@ -44,24 +48,32 @@ export const buyNotesTool = defineTool({
     const amountCents = BigInt(input.amount_cents);
     const created = await createNotePurchase(ctx.tx, ctx.worldId, ctx.agentId, amountCents);
 
-    const pending: PendingBuyNotes = {
+    ctx.setFinalizeState({
       noteTxId: created.noteTxId,
       createOperationId: created.createOperationId,
       amountCents: amountCents.toString(),
-    };
+    } satisfies BuyNotesFinalizeState);
 
+    // Fix round 1 (I2a/I2d): a clean, safe, immediately-usable fallback —
+    // no internal fields, and `checkout_id` is set to the note
+    // transaction's own id so `confirm_checkout` has something to act on
+    // even if `finalize` never runs (e.g. it throws). `confirm_checkout`
+    // accepts this id interchangeably with the real PayPal/sim order id
+    // once one exists (`beginConfirmCheckout`'s source-id fallback).
     return ok(
-      { note_tx_id: created.noteTxId, amount_cents: Number(amountCents), disclosure: NOTES_DISCLOSURE, _pending: pending },
-      { status: "PENDING", summary: "Creating the checkout." },
+      { checkout_id: created.noteTxId, amount_cents: Number(amountCents), disclosure: NOTES_DISCLOSURE },
+      {
+        status: "PENDING",
+        summary: "Creating the checkout.",
+        next_actions: [{ tool: "confirm_checkout", args: { checkout_id: created.noteTxId } }],
+      },
     );
   },
-  finalize: async (envelope, ctx) => {
-    const pending = (envelope.data as Record<string, unknown> | undefined)?._pending as
-      | PendingBuyNotes
-      | undefined;
+  finalize: async (envelope, ctx, state) => {
+    const pending = state as BuyNotesFinalizeState | undefined;
     if (!pending) {
-      // The handler didn't get far enough to enqueue a checkout (e.g. it
-      // threw before returning) — nothing to finalize.
+      // The handler didn't get far enough to call setFinalizeState (e.g.
+      // it threw before returning) — nothing to finalize.
       return envelope;
     }
 
@@ -93,12 +105,11 @@ export const buyNotesTool = defineTool({
       );
     }
 
+    // Still pending/failed-to-execute: the same fallback shape `handler`
+    // already returned, so storing/returning this changes nothing a
+    // caller couldn't already see.
     return ok(
-      {
-        note_tx_id: pending.noteTxId,
-        amount_cents: Number(BigInt(pending.amountCents)),
-        disclosure: NOTES_DISCLOSURE,
-      },
+      { checkout_id: pending.noteTxId, amount_cents: Number(BigInt(pending.amountCents)), disclosure: NOTES_DISCLOSURE },
       {
         status: "PENDING",
         summary: "Checkout creation is still pending; retry shortly.",

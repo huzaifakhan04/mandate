@@ -9,8 +9,10 @@ import {
   deriveOperationId,
   enqueueOperation,
   enqueueReadOperation,
+  errorBody,
   executeOperation,
   successBody,
+  type OperationError,
   type OperationPurpose,
   type OperationRail,
   type OrderCaptureResult,
@@ -18,18 +20,18 @@ import {
 } from "../paypal/operations";
 
 /**
- * `confirm_checkout` dispatch (Task 5 brief): services register one
- * handler per *checkout* purpose — the purpose the `order.create`
- * operation was enqueued under (`note_purchase`, and later Task 7's
- * `repayment_link`/`repayment_direct`) — not the capture operation's own
- * purpose. `beginConfirmCheckout`/`finalizeConfirmCheckout` look the
- * checkout purpose up from the stored `order.create` row and dispatch
- * through this registry.
+ * `confirm_checkout` dispatch (Task 5 brief, Fix round 1 I4): services
+ * register one handler per *checkout* purpose — the purpose the
+ * `order.create` operation was enqueued under (`note_purchase`, and
+ * later Task 7's `repayment_link`/`repayment_direct`) — not the capture
+ * operation's own purpose. All three callbacks are required together: a
+ * registration with no way to check ownership or report failure is
+ * worse than no registration (I4, "fail closed" — see
+ * `beginConfirmCheckout`/`finalizeConfirmCheckout` below).
  */
-export interface CaptureApplyResult {
-  summary: string;
-  data: Record<string, unknown>;
-}
+export type CaptureApplyResult =
+  | { outcome: "applied"; summary: string; data: Record<string, unknown> }
+  | { outcome: "mismatch"; reason: string };
 
 export interface CaptureHandlerDef {
   /** Resolves the agent that owns the checkout's source row, or `null` if it doesn't exist. */
@@ -40,6 +42,9 @@ export interface CaptureHandlerDef {
    * id, per the "ALREADY_CAPTURED recovery treats any capture as
    * success" carry-forward). Safe to call again on every replay/retry;
    * implementations must no-op past the first successful application.
+   * Fix round 1 (M2): implementations must verify the captured amount
+   * (and currency, where applicable) matches the expected amount before
+   * crediting anything, returning `{ outcome: "mismatch" }` instead.
    */
   applyEffect(
     db: Db,
@@ -47,6 +52,17 @@ export interface CaptureHandlerDef {
     simNow: Date,
     args: { createSourceId: string; orderId: string; capture: OrderCaptureResult },
   ): Promise<CaptureApplyResult>;
+  /**
+   * Fix round 1 (I3): marks the checkout's source row failed — called
+   * when the capture operation terminally fails, or the order is
+   * `VOIDED`. Must be idempotent (safe to call more than once for the
+   * same checkout) and must never credit anything.
+   */
+  applyFailure(
+    db: Db,
+    worldId: string,
+    args: { createSourceId: string; orderId: string; reason: string },
+  ): Promise<void>;
 }
 
 const captureHandlers = new Map<string, CaptureHandlerDef>();
@@ -72,13 +88,13 @@ const CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE: Partial<Record<OperationPurpose, Ope
   repayment_direct: "repayment_capture",
 };
 
-type CreateOperationRow = typeof paypalOperations.$inferSelect;
+type OperationRow = typeof paypalOperations.$inferSelect;
 
 async function findCreateOpByOrderId(
   tx: Db,
   worldId: string,
   orderId: string,
-): Promise<CreateOperationRow | undefined> {
+): Promise<OperationRow | undefined> {
   return scoped(tx, worldId).findOne(
     paypalOperations,
     and(eq(paypalOperations.kind, "order.create"), eq(paypalOperations.paypalId, orderId))!,
@@ -97,7 +113,7 @@ async function findCreateOpBySourceId(
   tx: Db,
   worldId: string,
   sourceId: string,
-): Promise<CreateOperationRow | undefined> {
+): Promise<OperationRow | undefined> {
   for (const purpose of captureHandlers.keys()) {
     const operationId = deriveOperationId(worldId, purpose as OperationPurpose, sourceId);
     const row = await scoped(tx, worldId).findOne(
@@ -137,6 +153,11 @@ export type BeginConfirmCheckoutOutcome =
  * `ORDER_NOT_APPROVED`, which would permanently poison the capture
  * operation's id (deterministically derived from `(purpose, orderId)`,
  * so it can never be re-enqueued for a later, successful attempt).
+ *
+ * Fix round 1 (I4, "fail closed"): a checkout purpose with no registered
+ * handler is `not_found` — there both the ownership check AND any future
+ * failure/settlement path would be undefined, so it's refused outright
+ * rather than captured-and-stored-for-later.
  */
 export async function beginConfirmCheckout(
   tx: Db,
@@ -157,17 +178,14 @@ export async function beginConfirmCheckout(
 
   const checkoutPurpose = createOp.purpose as OperationPurpose;
   const handler = getCaptureHandler(checkoutPurpose);
-  if (handler) {
-    const ownerAgentId = await handler.resolveOwnerAgentId(tx, worldId, createOp.sourceId);
-    if (ownerAgentId !== agentId) {
-      return { outcome: "not_found" };
-    }
+  if (!handler) {
+    return { outcome: "not_found" };
   }
-  // No handler registered yet for this checkout purpose (a future
-  // purpose Task 5 doesn't wire): ownership can't be checked here, so
-  // this call proceeds un-gated. Harmless today — Task 5 never creates a
-  // checkout under an unregistered purpose — and Task 7/8 close this by
-  // registering their own handler (and so their own ownership check).
+
+  const ownerAgentId = await handler.resolveOwnerAgentId(tx, worldId, createOp.sourceId);
+  if (ownerAgentId !== agentId) {
+    return { outcome: "not_found" };
+  }
 
   if (viaSourceFallback && createOp.status !== "succeeded") {
     return {
@@ -208,6 +226,14 @@ async function approveUrlForOrder(db: Db, worldId: string, orderId: string): Pro
   return body && typeof body === "object" && "approveUrl" in body ? (body.approveUrl as string) : null;
 }
 
+/** Human-readable provider reason string for a terminal failure, for the `CHECKOUT_FAILED` envelope. */
+function providerReason(error: OperationError["error"] | null | undefined): string {
+  if (!error) {
+    return "unknown";
+  }
+  return error.issue ?? error.name;
+}
+
 /**
  * Re-executes a stalled `order.create` operation (the `awaiting_create`
  * outcome of `beginConfirmCheckout`) and returns its approve URL once it
@@ -238,14 +264,53 @@ export async function finalizeAwaitingCreate(
   };
 }
 
+/** Applies a successful capture's effect (M2's amount/currency check lives in the handler itself). */
+async function applyCapturedEffect(
+  db: Db,
+  worldId: string,
+  simNow: Date,
+  handler: CaptureHandlerDef,
+  args: { createSourceId: string; orderId: string },
+  capture: OrderCaptureResult,
+): Promise<FinalizeConfirmCheckoutResult> {
+  const effect = await handler.applyEffect(db, worldId, simNow, {
+    createSourceId: args.createSourceId,
+    orderId: args.orderId,
+    capture,
+  });
+
+  if (effect.outcome === "mismatch") {
+    return {
+      status: "CHECKOUT_FAILED",
+      summary: `Captured amount didn't match what was expected (${effect.reason}).`,
+      reasonCodes: ["amount_mismatch"],
+      data: { checkout_id: args.orderId },
+    };
+  }
+
+  return {
+    status: "COMPLETED",
+    summary: effect.summary,
+    reasonCodes: [],
+    data: { checkout_id: args.orderId, ...effect.data },
+  };
+}
+
 /**
- * The post-commit half of `confirm_checkout`. First checks the order's
- * current status with a read-only `order.get` (never the capture
- * itself) — only once that shows `APPROVED` (or already `COMPLETED`,
- * the replay case) does it enqueue+execute the capture, so an
- * unapproved order's capture attempt (which would terminally fail with
- * `ORDER_NOT_APPROVED` and permanently poison the capture operation's
- * deterministic id) is never made. Never call this inside a
+ * The post-commit half of `confirm_checkout`. Fix round 1 (M3): if the
+ * capture operation already exists and succeeded (a replay — including
+ * two different `confirm_checkout` calls racing each other), its stored
+ * result is reused directly with no new `order.get`/capture attempt. If
+ * it already terminally failed, that failure is reported again (and
+ * `applyFailure` re-run, which must itself be idempotent) with no new
+ * attempt either. Only otherwise does this check the order's current
+ * status with a read-only `order.get` first — only once that shows
+ * `APPROVED` (or already `COMPLETED`, a race with another capture
+ * attempt) does it enqueue+execute the capture, so an unapproved order's
+ * capture attempt (which would terminally fail `ORDER_NOT_APPROVED` and
+ * permanently poison the capture operation's deterministic id) is never
+ * made. A `VOIDED` order fails the checkout outright (Fix round 1, I3),
+ * same as a terminally failed capture. Never call this inside a
  * transaction.
  */
 export async function finalizeConfirmCheckout(
@@ -259,6 +324,36 @@ export async function finalizeConfirmCheckout(
     rail: OperationRail;
   },
 ): Promise<FinalizeConfirmCheckoutResult> {
+  const handler = getCaptureHandler(args.checkoutPurpose);
+  const capturePurpose = CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE[args.checkoutPurpose];
+  if (!handler || !capturePurpose) {
+    // Defensive only: `beginConfirmCheckout` already refused a checkout
+    // purpose with no registered handler or no capture-purpose mapping.
+    throw new Error(`No registered handler/capture-purpose for checkout purpose ${args.checkoutPurpose}`);
+  }
+
+  const captureOpId = deriveOperationId(worldId, capturePurpose, args.orderId);
+  const existingCaptureOp = await scoped(db, worldId).findOne(
+    paypalOperations,
+    eq(paypalOperations.id, captureOpId),
+  );
+
+  if (existingCaptureOp?.status === "succeeded") {
+    const capture = existingCaptureOp.response as OrderCaptureResult;
+    return applyCapturedEffect(db, worldId, simNow, handler, args, capture);
+  }
+
+  if (existingCaptureOp?.status === "failed_terminal") {
+    const reason = providerReason((existingCaptureOp.response as OperationError | null)?.error);
+    await handler.applyFailure(db, worldId, { createSourceId: args.createSourceId, orderId: args.orderId, reason });
+    return {
+      status: "CHECKOUT_FAILED",
+      summary: `This checkout could not be completed (${reason}).`,
+      reasonCodes: ["checkout_failed", reason],
+      data: { checkout_id: args.orderId },
+    };
+  }
+
   const { operationId: getOpId } = await enqueueReadOperation(db, {
     worldId,
     rail: args.rail,
@@ -277,6 +372,21 @@ export async function finalizeConfirmCheckout(
   }
 
   const order = successBody(getResult, "order.get");
+
+  if (order.status === "VOIDED") {
+    await handler.applyFailure(db, worldId, {
+      createSourceId: args.createSourceId,
+      orderId: args.orderId,
+      reason: "order_voided",
+    });
+    return {
+      status: "CHECKOUT_FAILED",
+      summary: "This checkout was voided.",
+      reasonCodes: ["checkout_failed", "order_voided"],
+      data: { checkout_id: args.orderId },
+    };
+  }
+
   if (order.status !== "APPROVED" && order.status !== "COMPLETED") {
     const approveUrl = await approveUrlForOrder(db, worldId, args.orderId);
     return {
@@ -289,14 +399,7 @@ export async function finalizeConfirmCheckout(
     };
   }
 
-  const capturePurpose = CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE[args.checkoutPurpose];
-  if (!capturePurpose) {
-    // Defensive only: `beginConfirmCheckout` already refused an
-    // unmapped checkout purpose with `not_found`.
-    throw new Error(`No capture purpose mapped for checkout purpose ${args.checkoutPurpose}`);
-  }
-
-  const { operationId: captureOpId } = await enqueueOperation(db, {
+  const { operationId: captureOperationId } = await enqueueOperation(db, {
     worldId,
     rail: args.rail,
     kind: "order.capture",
@@ -304,41 +407,27 @@ export async function finalizeConfirmCheckout(
     sourceId: args.orderId,
     request: buildCaptureOrderRequest(args.orderId),
   });
-  const result = await executeOperation(db, captureOpId, { ignoreBackoff: true });
+  const result = await executeOperation(db, captureOperationId, { ignoreBackoff: true });
 
-  if (result.status !== "succeeded") {
+  if (result.status === "succeeded") {
+    return applyCapturedEffect(db, worldId, simNow, handler, args, successBody(result, "order.capture"));
+  }
+
+  if (result.status === "failed_terminal") {
+    const reason = providerReason(errorBody(result));
+    await handler.applyFailure(db, worldId, { createSourceId: args.createSourceId, orderId: args.orderId, reason });
     return {
-      status: "PENDING",
-      summary: "Capture is still pending; retry shortly.",
-      reasonCodes: [],
+      status: "CHECKOUT_FAILED",
+      summary: `This checkout could not be completed (${reason}).`,
+      reasonCodes: ["checkout_failed", reason],
       data: { checkout_id: args.orderId },
     };
   }
-
-  const capture = successBody(result, "order.capture");
-  const handler = getCaptureHandler(args.checkoutPurpose);
-  if (!handler) {
-    console.error(
-      `[checkouts] capture ${args.orderId} (purpose=${args.checkoutPurpose}) succeeded with no registered handler — storing, no effect applied`,
-    );
-    return {
-      status: "PENDING_SETTLEMENT",
-      summary: "Payment captured; settlement is still being processed.",
-      reasonCodes: [],
-      data: { checkout_id: args.orderId },
-    };
-  }
-
-  const effect = await handler.applyEffect(db, worldId, simNow, {
-    createSourceId: args.createSourceId,
-    orderId: args.orderId,
-    capture,
-  });
 
   return {
-    status: "COMPLETED",
-    summary: effect.summary,
+    status: "PENDING",
+    summary: "Capture is still pending; retry shortly.",
     reasonCodes: [],
-    data: { checkout_id: args.orderId, ...effect.data },
+    data: { checkout_id: args.orderId },
   };
 }

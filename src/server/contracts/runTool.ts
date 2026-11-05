@@ -206,6 +206,19 @@ export async function runTool(
       afterCommitCallbacks.push(fn);
     }
 
+    // Fix round 1, I2b: `handler` can stash bookkeeping here for an
+    // optional `finalize` hook, out-of-band from the envelope `handler`
+    // itself returns — so that envelope stays a clean, public, safely
+    // replayable fallback on its own (no smuggled internal fields).
+    let finalizeState: unknown;
+    function setFinalizeState(state: unknown): void {
+      finalizeState = state;
+    }
+
+    // Ruling L: a tool can opt out of the claim-first idempotency
+    // protocol entirely (mutating tools opt in by default).
+    const usesIdempotencyProtocol = tool.idempotent !== false;
+
     let envelope: Envelope<unknown>;
     // Set only on the path that actually claimed an idempotency row and
     // ran the handler in this call (never on a replay) — `finalize`
@@ -214,7 +227,7 @@ export async function runTool(
     let claimedIdempotencyRowId: string | null = null;
 
     if (tool.mutating) {
-      if (agent && effectiveIdempotencyKey) {
+      if (agent && effectiveIdempotencyKey && usesIdempotencyProtocol) {
         const agentId = agent.agentId;
         const requestHash = hashRequest(toolName, parsed.data);
 
@@ -262,6 +275,7 @@ export async function runTool(
               tx,
               scoped: scoped(tx, worldId),
               afterCommit,
+              setFinalizeState,
             });
 
             await tx
@@ -335,6 +349,7 @@ export async function runTool(
             tx,
             scoped: scoped(tx, worldId),
             afterCommit,
+            setFinalizeState,
           }),
         );
       }
@@ -349,6 +364,7 @@ export async function runTool(
         tx: db,
         scoped: scoped(db, worldId),
         afterCommit,
+        setFinalizeState,
       });
     }
 
@@ -361,32 +377,42 @@ export async function runTool(
     }
 
     if (tool.finalize) {
+      // Fix round 1, I2c: handler's own envelope is already a safe,
+      // public, replayable fallback (and, when an idempotency row was
+      // claimed, it's exactly what's currently stored there) — if
+      // `finalize` throws, log it and keep that fallback rather than
+      // inventing a generic `INTERNAL_ERROR` or touching the stored row.
+      const preFinalizeEnvelope = envelope;
       try {
-        envelope = await tool.finalize(envelope, {
-          worldId,
-          simNow,
-          agentId: agent?.agentId ?? null,
-          agent,
-          requestId,
-          db,
-        });
+        envelope = await tool.finalize(
+          envelope,
+          { worldId, simNow, agentId: agent?.agentId ?? null, agent, requestId, db },
+          finalizeState,
+        );
       } catch (err) {
         console.error(`[runTool] ${toolName} finalize failed (requestId=${requestId}):`, err);
-        envelope = fail(
-          "INTERNAL_ERROR",
-          `Something went wrong finalizing this request. (request_id: ${requestId})`,
-          ["internal_error"],
-          { request_id: requestId },
-        );
+        envelope = preFinalizeEnvelope;
+        return respond(envelope);
       }
 
       // The finalized envelope, not handler's pre-finalize one, is what
-      // idempotent replays of this key must return.
+      // idempotent replays of this key must return. A failure to persist
+      // this is logged and otherwise ignored — the caller still gets the
+      // (correct, just-computed) finalized envelope this call; a replay
+      // would see the stale pre-finalize one, which is a lesser issue
+      // than failing this response outright.
       if (claimedIdempotencyRowId) {
-        await db
-          .update(idempotencyKeys)
-          .set({ response: envelope, httpStatus: httpStatusForEnvelope(envelope) })
-          .where(eq(idempotencyKeys.id, claimedIdempotencyRowId));
+        try {
+          await db
+            .update(idempotencyKeys)
+            .set({ response: envelope, httpStatus: httpStatusForEnvelope(envelope) })
+            .where(eq(idempotencyKeys.id, claimedIdempotencyRowId));
+        } catch (err) {
+          console.error(
+            `[runTool] ${toolName} failed to persist the finalized envelope (requestId=${requestId}):`,
+            err,
+          );
+        }
       }
     }
 

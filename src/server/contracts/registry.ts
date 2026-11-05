@@ -21,6 +21,12 @@ import type { Envelope } from "./envelope";
  *   handler returns (readOnly tools, where there is no transaction). A
  *   callback that throws is logged and does not change the envelope. These
  *   do NOT run when an idempotent replay short-circuits the handler.
+ * - `setFinalizeState` (Fix round 1, I2b) passes bookkeeping from `handler`
+ *   to an optional `finalize` hook out-of-band — `handler`'s own returned
+ *   envelope stays a clean, public, safely-replayable fallback (no smuggled
+ *   internal fields), since `finalize` reads this state instead of
+ *   `envelope.data`. Calling it more than once keeps only the last value;
+ *   never calling it leaves `finalize`'s `state` argument `undefined`.
  * - `requestId` is a fresh id minted per request.
  */
 export interface ToolCtx {
@@ -33,6 +39,7 @@ export interface ToolCtx {
   tx: Db;
   scoped: ReturnType<typeof scoped>;
   afterCommit: (fn: () => Promise<void> | void) => void;
+  setFinalizeState: (state: unknown) => void;
 }
 
 /**
@@ -66,6 +73,16 @@ export interface ToolDef<
    * accidentally be both (or neither).
    */
   readOnly: boolean;
+  /**
+   * Ruling L (Fix round 1): whether a mutating, agent-scoped call under an
+   * `Idempotency-Key` gets the claim-first store/replay protocol at all.
+   * Defaults to `true`. A tool that is naturally idempotent by some other
+   * key of its own (e.g. `confirm_checkout`, idempotent by `checkout_id`)
+   * sets this `false` so `runTool` ignores any idempotency key entirely —
+   * storing an in-progress status like `AWAITING_APPROVAL` under the key
+   * would otherwise freeze a caller's polling loop on a stale snapshot.
+   */
+  idempotent?: boolean;
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;
@@ -75,14 +92,19 @@ export interface ToolDef<
    * `buy_notes` needs the `order.create` operation's approve URL, and
    * "never call PayPal inside a DB transaction" forbids getting that
    * inside `handler`). When present, `runTool` calls `finalize` with the
-   * envelope `handler` returned (already committed) after every
-   * `ctx.afterCommit` callback has run, and uses whatever `finalize`
-   * returns as the call's real result. For a mutating, agent-scoped call
-   * made under an idempotency key, the *finalized* envelope — not
-   * `handler`'s — is what gets stored and replayed. Never runs on an
-   * idempotent replay (nothing new happened).
+   * envelope `handler` returned (already committed), the `state`
+   * `ctx.setFinalizeState` was called with (if at all — `undefined`
+   * otherwise), after every `ctx.afterCommit` callback has run, and uses
+   * whatever `finalize` returns as the call's real result. For a mutating,
+   * agent-scoped call made under an idempotency key (and `idempotent !==
+   * false`), the *finalized* envelope — not `handler`'s — is what gets
+   * stored and replayed. Never runs on an idempotent replay (nothing new
+   * happened). If `finalize` throws (Fix round 1, I2c), `runTool` logs it
+   * and falls back to `handler`'s own (already-safe, already-replayable)
+   * envelope rather than inventing a generic `INTERNAL_ERROR`, and leaves
+   * any stored idempotency row untouched.
    */
-  finalize?: (envelope: Envelope<unknown>, ctx: FinalizeCtx) => Promise<Envelope<unknown>>;
+  finalize?: (envelope: Envelope<unknown>, ctx: FinalizeCtx, state: unknown) => Promise<Envelope<unknown>>;
 }
 
 /**

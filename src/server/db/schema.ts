@@ -3,6 +3,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
   integer,
   jsonb,
   numeric,
@@ -420,6 +421,10 @@ export const notePositions = pgTable(
     // (Task 5) upsert with `ON CONFLICT DO NOTHING` instead of a
     // select-then-insert race.
     uniqueIndex("note_positions_series_agent_idx").on(table.seriesId, table.agentId),
+    // Fix round 1 (C1): a last-resort DB-level backstop against a
+    // double-redemption ever driving units negative, on top of the
+    // application-level "redeemable = units - pending redemptions" check.
+    check("note_positions_units_nonnegative", sql`${table.units} >= 0`),
   ],
 );
 

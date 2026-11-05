@@ -87,6 +87,9 @@ const STATUS_HTTP: Record<string, number> = {
   INTERNAL_ERROR: 500,
   INSUFFICIENT_NOTE_BALANCE: 400,
   INSUFFICIENT_LIQUIDITY: 400,
+  // Fix round 1.
+  CHECKOUT_FAILED: 400,
+  PAYOUT_RECEIVER_MISSING: 400,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

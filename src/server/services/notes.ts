@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
@@ -129,16 +129,29 @@ export async function createNotePurchase(
  * / Cr `notes_payable[agent]`, plus `+amountCents` units on the agent's
  * position. Keyed by `journalKey("note_purchase_capture", orderId)`
  * (never the capture operation id — the ALREADY_CAPTURED recovery path
- * must never double-credit), guarded by a conditional
- * `pending -> completed` update on the note transaction so a replayed
- * capture (idempotent retry, or a second confirm_checkout call) never
- * re-applies the position increment.
+ * must never double-credit).
+ *
+ * Fix round 1 (I1): the conditional `pending -> completed` transition,
+ * the journal post, and the position bump all happen in ONE transaction,
+ * with the journal posted only *after* the conditional update wins — so
+ * a replayed capture (idempotent retry, or a second `confirm_checkout`
+ * call) that finds the row already `completed` touches nothing at all
+ * (not even a `postJournal` call, which is itself idempotent but would
+ * otherwise run pointlessly outside the guard). `postJournal`'s own
+ * `db.transaction` nests as a savepoint inside this one.
+ *
+ * Fix round 1 (M2): verifies the captured amount matches the note
+ * transaction's amount before crediting anything (this system is
+ * USD-only end to end — `buildCreateOrderRequest` always sets
+ * `currency_code: USD` — so there is no separate currency field to
+ * compare). A mismatch credits nothing, posts no journal, and leaves the
+ * note transaction `review` instead of `completed`.
  */
 async function applyNotePurchaseCaptureEffect(
   db: Db,
   worldId: string,
   simNow: Date,
-  args: { createSourceId: string; orderId: string },
+  args: { createSourceId: string; orderId: string; capture: { amountCents: string } },
 ): Promise<CaptureApplyResult> {
   const noteTx = await scoped(db, worldId).findOne(
     noteTransactions,
@@ -146,6 +159,29 @@ async function applyNotePurchaseCaptureEffect(
   );
   if (!noteTx) {
     throw new Error(`note_transactions row ${args.createSourceId} not found in world ${worldId}`);
+  }
+  // Already settled (success or mismatch-review) — nothing to do; keeps
+  // this safe to call on every replay without re-deriving the result.
+  if (noteTx.status !== "pending") {
+    return { outcome: "applied", summary: "Already captured.", data: { amount_cents: Number(noteTx.amountCents) } };
+  }
+
+  const amountCents = noteTx.amountCents;
+  const capturedAmountCents = BigInt(args.capture.amountCents);
+
+  if (capturedAmountCents !== amountCents) {
+    await scoped(db, worldId).update(
+      noteTransactions,
+      { status: "review" },
+      and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
+    );
+    console.error(
+      `[notes] capture ${args.orderId} for note_transactions ${noteTx.id} captured ${capturedAmountCents.toString()} cents, expected ${amountCents.toString()} — marked for review, nothing credited`,
+    );
+    return {
+      outcome: "mismatch",
+      reason: `captured ${capturedAmountCents.toString()} cents, expected ${amountCents.toString()}`,
+    };
   }
 
   const position = await scoped(db, worldId).findOne(
@@ -156,46 +192,67 @@ async function applyNotePurchaseCaptureEffect(
     throw new Error(`note_positions row ${noteTx.positionId} not found in world ${worldId}`);
   }
 
-  const amountCents = noteTx.amountCents;
-
-  await postJournal(db, {
-    worldId,
-    memo: "Note purchase captured",
-    sourceType: "note_transactions",
-    sourceId: noteTx.id,
-    simAt: simNow,
-    idempotencyKey: journalKey("note_purchase_capture", args.orderId),
-    postings: [
-      { accountCode: "cash_paypal", amountCents },
-      { accountCode: "notes_payable", ownerRef: position.agentId, amountCents: -amountCents },
-    ],
-  });
-
   await db.transaction(async (tx) => {
     const updated = await scoped(tx, worldId).update(
       noteTransactions,
       { status: "completed" },
       and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
     );
-    if (updated.length === 1) {
-      const [lockedPosition] = await scoped(tx, worldId).forUpdate(
+    if (updated.length !== 1) {
+      // Lost a race with another replay between the read above and this
+      // conditional update — the other one is applying the effect.
+      return;
+    }
+
+    await postJournal(tx, {
+      worldId,
+      memo: "Note purchase captured",
+      sourceType: "note_transactions",
+      sourceId: noteTx.id,
+      simAt: simNow,
+      idempotencyKey: journalKey("note_purchase_capture", args.orderId),
+      postings: [
+        { accountCode: "cash_paypal", amountCents },
+        { accountCode: "notes_payable", ownerRef: position.agentId, amountCents: -amountCents },
+      ],
+    });
+
+    const [lockedPosition] = await scoped(tx, worldId).forUpdate(
+      notePositions,
+      eq(notePositions.id, position.id),
+    );
+    if (lockedPosition) {
+      await scoped(tx, worldId).update(
         notePositions,
-        eq(notePositions.id, position.id),
+        { units: lockedPosition.units + amountCents, costCents: lockedPosition.costCents + amountCents },
+        eq(notePositions.id, lockedPosition.id),
       );
-      if (lockedPosition) {
-        await scoped(tx, worldId).update(
-          notePositions,
-          { units: lockedPosition.units + amountCents, costCents: lockedPosition.costCents + amountCents },
-          eq(notePositions.id, lockedPosition.id),
-        );
-      }
     }
   });
 
   return {
+    outcome: "applied",
     summary: `Captured ${amountCents.toString()} cents; ${amountCents.toString()} note units credited.`,
     data: { amount_cents: Number(amountCents), units_credited: Number(amountCents) },
   };
+}
+
+/** Fix round 1 (I3): marks a note purchase's transaction `failed`, idempotently, crediting nothing. */
+async function applyNotePurchaseFailure(
+  db: Db,
+  worldId: string,
+  args: { createSourceId: string; orderId: string; reason: string },
+): Promise<void> {
+  const updated = await scoped(db, worldId).update(
+    noteTransactions,
+    { status: "failed" },
+    and(eq(noteTransactions.id, args.createSourceId), eq(noteTransactions.status, "pending")),
+  );
+  if (updated.length === 1) {
+    console.error(
+      `[notes] note purchase ${args.createSourceId} (order ${args.orderId}) failed: ${args.reason}`,
+    );
+  }
 }
 
 async function resolveNotePurchaseOwnerAgentId(
@@ -216,8 +273,8 @@ async function resolveNotePurchaseOwnerAgentId(
 
 registerCaptureHandler("note_purchase", {
   resolveOwnerAgentId: resolveNotePurchaseOwnerAgentId,
-  applyEffect: (db, worldId, simNow, args) =>
-    applyNotePurchaseCaptureEffect(db, worldId, simNow, args),
+  applyEffect: (db, worldId, simNow, args) => applyNotePurchaseCaptureEffect(db, worldId, simNow, args),
+  applyFailure: applyNotePurchaseFailure,
 });
 
 // ---------------------------------------------------------------------
@@ -225,16 +282,28 @@ registerCaptureHandler("note_purchase", {
 // ---------------------------------------------------------------------
 
 export type RedeemNotesOutcome =
-  | { outcome: "insufficient_note_balance"; positionUnits: bigint }
+  | { outcome: "insufficient_note_balance"; redeemableUnits: bigint }
   | { outcome: "insufficient_liquidity"; availableLiquidityCents: bigint }
+  | { outcome: "payout_receiver_missing" }
   | { outcome: "submitted"; noteTxId: string; payoutOperationId: string };
+
+/** Redemption statuses that still count against the position (not yet settled either way). */
+const OPEN_REDEMPTION_STATUSES = ["pending"] as const;
 
 /**
  * `redeem_notes`'s transactional half: checks the amount against the
- * agent's position and the world's available liquidity (both computed
- * under the note series row's lock, per Review Focus #4), creates the
- * redemption (`note_transactions` kind `redeem`, pending) and enqueues
- * the payout — never executes it inside the transaction.
+ * agent's *redeemable* balance and the world's available liquidity (both
+ * computed under the note series row's lock, per Review Focus #4),
+ * creates the redemption (`note_transactions` kind `redeem`, pending)
+ * and enqueues the payout — never executes it inside the transaction.
+ *
+ * Fix round 1 (C1): redeemable = `position.units` − the sum of this
+ * position's own *other* `redeem` transactions still `pending` — so a
+ * second redemption submitted while a first one hasn't settled yet (its
+ * payout item came back `PENDING`, or hasn't been executed at all) can't
+ * also pass the balance check and double-spend the same units. Combined
+ * with the series row lock, two concurrent `redeem_notes` calls for the
+ * same agent can never both read a stale `positionUnits` snapshot.
  */
 export async function beginNoteRedemption(
   tx: Db,
@@ -253,8 +322,22 @@ export async function beginNoteRedemption(
     and(eq(notePositions.seriesId, seriesId), eq(notePositions.agentId, agentId))!,
   );
   const positionUnits = position?.units ?? 0n;
-  if (amountCents > positionUnits) {
-    return { outcome: "insufficient_note_balance", positionUnits };
+
+  const pendingRedemptions = position
+    ? await scoped(tx, worldId).select(
+        noteTransactions,
+        and(
+          eq(noteTransactions.positionId, position.id),
+          eq(noteTransactions.kind, "redeem"),
+          inArray(noteTransactions.status, [...OPEN_REDEMPTION_STATUSES]),
+        )!,
+      )
+    : [];
+  const pendingRedeemCents = pendingRedemptions.reduce((sum, row) => sum + row.amountCents, 0n);
+  const redeemableUnits = positionUnits - pendingRedeemCents;
+
+  if (amountCents > redeemableUnits) {
+    return { outcome: "insufficient_note_balance", redeemableUnits };
   }
 
   const availableLiquidityCents = await availableLiquidity(tx, worldId);
@@ -264,7 +347,9 @@ export async function beginNoteRedemption(
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));
   if (!agent || !agent.payoutReceiver) {
-    throw new Error(`Agent ${agentId} has no payout receiver configured`);
+    // Fix round 1 (M1): a clean domain outcome, not a thrown error — the
+    // tool maps this to 400 `PAYOUT_RECEIVER_MISSING`.
+    return { outcome: "payout_receiver_missing" };
   }
 
   const [noteTx] = await scoped(tx, worldId).insert(noteTransactions, {
@@ -298,18 +383,37 @@ export async function beginNoteRedemption(
   return { outcome: "submitted", noteTxId: noteTx.id, payoutOperationId: operationId };
 }
 
+/** Terminal payout item statuses that fail the redemption (Ruling J, Fix round 1 C2 — enumerated exactly). */
+const FAILED_PAYOUT_ITEM_STATUSES = new Set([
+  "FAILED",
+  "UNCLAIMED",
+  "RETURNED",
+  "BLOCKED",
+  "REFUNDED",
+  "DENIED",
+]);
+
 /**
  * Settles a redemption payout (Ruling B/J), idempotent and safe to call
  * from `ctx.afterCommit` (Task 5) as well as later from a webhook or the
- * reconcile cron (Task 8): reads the item's `transactionStatus` —
- * `SUCCESS` journals the redemption (Dr `notes_payable[agent]` / Cr
- * `cash_paypal`) and reduces the position's units; any other terminal
- * status fails the redemption with the position left untouched; still
- * in flight/retryable leaves the redemption `pending` for a later call.
- * Looks the operation up by id alone (no `worldId` yet), via
- * `paypal/operations.getOperation` rather than reading
+ * reconcile cron (Task 8). Fix round 1 (C2): reads the item's
+ * `transactionStatus` strictly — `SUCCESS` journals the redemption (Dr
+ * `notes_payable[agent]` / Cr `cash_paypal`) and reduces the position's
+ * units; one of the enumerated terminal-failure statuses
+ * (`FAILED`/`UNCLAIMED`/`RETURNED`/`BLOCKED`/`REFUNDED`/`DENIED`) fails
+ * the redemption with the position left untouched; everything else —
+ * `PENDING`, `ONHOLD`, `UNKNOWN`, or no item at all (a live PayPal
+ * `payout.send` POST usually doesn't report the item yet) — leaves the
+ * redemption `pending` for a later call (Task 8's cron, polling
+ * `payout.get`). Looks the operation up by id alone (no `worldId` yet),
+ * via `paypal/operations.getOperation` rather than reading
  * `paypal_operations` directly, to stay off the world-isolation guard's
  * denylist.
+ *
+ * Fix round 1 (I1): the conditional `pending -> completed` transition,
+ * the journal post, and the position decrement all happen in ONE
+ * transaction, with the journal posted only after the conditional
+ * update wins.
  */
 export async function applyRedemptionPayoutOutcome(db: Db, operationId: string): Promise<void> {
   const record = await getOperation(db, operationId);
@@ -346,10 +450,22 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
   }
 
   const body = op.body as PayoutSendResult;
-  const transactionStatus = body.item?.transactionStatus ?? "UNKNOWN";
+  const transactionStatus = body.item?.transactionStatus;
 
-  if (transactionStatus === "PENDING") {
-    return; // Still settling on PayPal's side; Task 8's cron polls payout.get.
+  if (!transactionStatus) {
+    return; // No item reported yet (typical for a live PayPal POST); stays pending.
+  }
+
+  if (transactionStatus !== "SUCCESS") {
+    if (!FAILED_PAYOUT_ITEM_STATUSES.has(transactionStatus)) {
+      return; // PENDING / ONHOLD / UNKNOWN / anything else not enumerated: stays pending.
+    }
+    await scoped(db, worldId).update(
+      noteTransactions,
+      { status: "failed" },
+      and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
+    );
+    return;
   }
 
   const position = await scoped(db, worldId).findOne(
@@ -360,28 +476,7 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
     throw new Error(`note_positions row ${noteTx.positionId} not found in world ${worldId}`);
   }
 
-  if (transactionStatus !== "SUCCESS") {
-    await scoped(db, worldId).update(
-      noteTransactions,
-      { status: "failed" },
-      and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
-    );
-    return;
-  }
-
   const simAt = await getSimNow(db, worldId);
-  await postJournal(db, {
-    worldId,
-    memo: "Note redeemed",
-    sourceType: "note_transactions",
-    sourceId: noteTx.id,
-    simAt,
-    idempotencyKey: journalKey("note_redemption", noteTx.id),
-    postings: [
-      { accountCode: "notes_payable", ownerRef: position.agentId, amountCents: noteTx.amountCents },
-      { accountCode: "cash_paypal", amountCents: -noteTx.amountCents },
-    ],
-  });
 
   await db.transaction(async (tx) => {
     const updated = await scoped(tx, worldId).update(
@@ -389,21 +484,36 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
       { status: "completed" },
       and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
     );
-    if (updated.length === 1) {
-      const [lockedPosition] = await scoped(tx, worldId).forUpdate(
+    if (updated.length !== 1) {
+      return;
+    }
+
+    await postJournal(tx, {
+      worldId,
+      memo: "Note redeemed",
+      sourceType: "note_transactions",
+      sourceId: noteTx.id,
+      simAt,
+      idempotencyKey: journalKey("note_redemption", noteTx.id),
+      postings: [
+        { accountCode: "notes_payable", ownerRef: position.agentId, amountCents: noteTx.amountCents },
+        { accountCode: "cash_paypal", amountCents: -noteTx.amountCents },
+      ],
+    });
+
+    const [lockedPosition] = await scoped(tx, worldId).forUpdate(
+      notePositions,
+      eq(notePositions.id, position.id),
+    );
+    if (lockedPosition) {
+      await scoped(tx, worldId).update(
         notePositions,
-        eq(notePositions.id, position.id),
+        {
+          units: lockedPosition.units - noteTx.amountCents,
+          costCents: lockedPosition.costCents - noteTx.amountCents,
+        },
+        eq(notePositions.id, lockedPosition.id),
       );
-      if (lockedPosition) {
-        await scoped(tx, worldId).update(
-          notePositions,
-          {
-            units: lockedPosition.units - noteTx.amountCents,
-            costCents: lockedPosition.costCents - noteTx.amountCents,
-          },
-          eq(notePositions.id, lockedPosition.id),
-        );
-      }
     }
   });
 }

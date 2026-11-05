@@ -50,6 +50,13 @@
       "when": 1793909794867,
       "tag": "0006_unusual_goliath",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1793911203857,
+      "tag": "0007_chemical_xavin",
+      "breakpoints": true
     }
   ]
 }

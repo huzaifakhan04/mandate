@@ -15,8 +15,10 @@ export const redeemNotesTool = defineTool({
   title: "Redeem Notes",
   description:
     "Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. " +
-    "Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's position, " +
-    "or INSUFFICIENT_LIQUIDITY if the bank doesn't currently have the cash available.",
+    "Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable " +
+    "balance (position minus any other redemption still settling), INSUFFICIENT_LIQUIDITY " +
+    "if the bank doesn't currently have the cash available, or PAYOUT_RECEIVER_MISSING if " +
+    "the agent has no payout receiver on file.",
   auth: "agent",
   mutating: true,
   readOnly: false,
@@ -33,9 +35,9 @@ export const redeemNotesTool = defineTool({
     if (outcome.outcome === "insufficient_note_balance") {
       return fail(
         "INSUFFICIENT_NOTE_BALANCE",
-        "The requested amount exceeds your note position.",
+        "The requested amount exceeds your redeemable note balance.",
         ["insufficient_note_balance"],
-        { position_units: Number(outcome.positionUnits) },
+        { redeemable_units: Number(outcome.redeemableUnits) },
       );
     }
     if (outcome.outcome === "insufficient_liquidity") {
@@ -44,6 +46,13 @@ export const redeemNotesTool = defineTool({
         "The bank doesn't have enough available liquidity for this redemption right now.",
         ["insufficient_liquidity"],
         { available_liquidity_cents: Number(outcome.availableLiquidityCents) },
+      );
+    }
+    if (outcome.outcome === "payout_receiver_missing") {
+      return fail(
+        "PAYOUT_RECEIVER_MISSING",
+        "This agent has no payout receiver on file.",
+        ["payout_receiver_missing"],
       );
     }
 
