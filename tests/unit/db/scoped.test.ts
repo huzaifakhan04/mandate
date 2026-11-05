@@ -87,4 +87,93 @@ describe("scoped: world isolation", () => {
     expect(worldAgents[0]?.status).toBe("approved");
     expect(otherWorldAgents[0]?.status).toBe("pending");
   });
+
+  it("insert() ignores a cast-forced caller-supplied worldId", async () => {
+    const [world] = await db
+      .insert(worlds)
+      .values({ slug: "world-e", name: "World E", railMode: "sim" })
+      .returning();
+    const [otherWorld] = await db
+      .insert(worlds)
+      .values({ slug: "world-f", name: "World F", railMode: "sim" })
+      .returning();
+
+    if (!world || !otherWorld) {
+      throw new Error("expected both worlds to be inserted");
+    }
+
+    // The public type of `insert` omits `worldId`, so a caller can only
+    // reach this path by casting around the types (e.g. a copy-pasted
+    // `as any`). Even then, the scope's worldId must win at runtime.
+    const [inserted] = await scoped(db, world.id).insert(agents, {
+      worldId: otherWorld.id,
+      name: "Agent E",
+      operator: "operator-e",
+      model: "model-e",
+      codeManifestHash: "hash-e",
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    expect(inserted?.worldId).toBe(world.id);
+
+    const scopedToWorld = await scoped(db, world.id).select(agents);
+    const scopedToOtherWorld = await scoped(db, otherWorld.id).select(agents);
+
+    expect(scopedToWorld.some((agent) => agent.name === "Agent E")).toBe(
+      true,
+    );
+    expect(
+      scopedToOtherWorld.some((agent) => agent.name === "Agent E"),
+    ).toBe(false);
+  });
+
+  it("update() ignores a cast-forced caller-supplied worldId", async () => {
+    const [world] = await db
+      .insert(worlds)
+      .values({ slug: "world-g", name: "World G", railMode: "sim" })
+      .returning();
+    const [otherWorld] = await db
+      .insert(worlds)
+      .values({ slug: "world-h", name: "World H", railMode: "sim" })
+      .returning();
+
+    if (!world || !otherWorld) {
+      throw new Error("expected both worlds to be inserted");
+    }
+
+    await scoped(db, world.id).insert(agents, {
+      name: "Agent G",
+      operator: "operator-g",
+      model: "model-g",
+      codeManifestHash: "hash-g",
+    });
+    await scoped(db, otherWorld.id).insert(agents, {
+      name: "Agent H",
+      operator: "operator-h",
+      model: "model-h",
+      codeManifestHash: "hash-h",
+    });
+
+    // Same cast-forced attempt, but against `update`'s `set`: it must
+    // neither move the row to another world nor let it escape the
+    // `where world_id = <scope>` filter.
+    await scoped(db, world.id).update(agents, {
+      status: "approved",
+      worldId: otherWorld.id,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any);
+
+    const worldAgents = await scoped(db, world.id).select(agents);
+    const otherWorldAgents = await scoped(db, otherWorld.id).select(agents);
+
+    expect(worldAgents.find((agent) => agent.name === "Agent G")?.status).toBe(
+      "approved",
+    );
+    expect(
+      worldAgents.find((agent) => agent.name === "Agent G")?.worldId,
+    ).toBe(world.id);
+    expect(
+      otherWorldAgents.find((agent) => agent.name === "Agent H")?.status,
+    ).toBe("pending");
+  });
 });
