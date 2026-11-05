@@ -19,11 +19,20 @@ export interface Envelope<T> {
 
 /**
  * `docs_url` always resolves to a valid absolute URL, even when
- * `PUBLIC_BASE_URL` is unset (e.g. local dev).
+ * `PUBLIC_BASE_URL` is unset (e.g. local dev). With a `toolName`, it
+ * resolves to that tool's own anchor in `/agents.md` (the tool reference
+ * section gives every registered tool an anchor matching its name) — used
+ * by `runTool` to point each response at its own documentation instead of
+ * the page's top.
  */
-function docsUrl(): string {
-  const base = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
-  return `${base.replace(/\/+$/, "")}/agents.md`;
+function docsUrl(toolName?: string): string {
+  const base = (process.env.PUBLIC_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return toolName ? `${base}/agents.md#${toolName}` : `${base}/agents.md`;
+}
+
+/** Exported so `runTool` can re-point an already-built envelope's `docs_url` at its own tool anchor. */
+export function docsUrlForTool(toolName: string): string {
+  return docsUrl(toolName);
 }
 
 export interface OkOptions {
@@ -102,4 +111,14 @@ const STATUS_HTTP: Record<string, number> = {
 /** Maps an envelope's `status` to the HTTP status it should be served with. */
 export function httpStatusForEnvelope(envelope: Envelope<unknown>): number {
   return STATUS_HTTP[envelope.status] ?? 200;
+}
+
+/**
+ * The full known `status` → HTTP table, as `{ status, http }` rows in
+ * declaration order. Exported so `/agents.md`'s errors section documents
+ * every transport-level status exactly once, straight from this table —
+ * it can never drift from what `httpStatusForEnvelope` actually does.
+ */
+export function knownStatusTable(): Array<{ status: string; http: number }> {
+  return Object.entries(STATUS_HTTP).map(([status, http]) => ({ status, http }));
 }

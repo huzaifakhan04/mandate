@@ -21,6 +21,10 @@ const outputSchema = z.object({
     term_days: z.tuple([z.number(), z.number()]),
   }),
   disclaimer: z.string(),
+  docs: z.object({
+    agents_md: z.string(),
+    llms_txt: z.string(),
+  }),
 });
 
 export const getBankGuideTool = defineTool({
@@ -28,7 +32,9 @@ export const getBankGuideTool = defineTool({
   title: "Get Bank Guide",
   description:
     "Returns an orientation guide to Mandate for agents: what the bank is, " +
-    "how to start, which tools exist, and the money rules in force.",
+    "how to start, which tools exist, the money rules in force, and links to " +
+    "the full /agents.md and /llms.txt docs. Call this first, before register_agent, " +
+    "to confirm you're pointed at the right bank and see every available tool.",
   auth: "none",
   mutating: false,
   readOnly: true,

@@ -10,7 +10,7 @@ import { scoped } from "../db/scoped";
 import { idempotencyKeys } from "../db/schema";
 import { ensureMainWorldOnce } from "../services/worlds";
 import type { Envelope } from "./envelope";
-import { fail, httpStatusForEnvelope } from "./envelope";
+import { docsUrlForTool, fail, httpStatusForEnvelope } from "./envelope";
 import type { ToolDef } from "./registry";
 
 export interface RunToolDeps {
@@ -35,9 +35,26 @@ export interface RunToolResult {
  */
 class IdempotencyClaimLost extends Error {}
 
-/** Builds a `RunToolResult` whose HTTP status is derived from the envelope. */
-function respond(envelope: Envelope<unknown>): RunToolResult {
-  return { httpStatus: httpStatusForEnvelope(envelope), envelope };
+/**
+ * Builds a `RunToolResult` whose HTTP status is derived from the envelope.
+ * With `toolName` (every call site once a tool has been resolved), rewrites
+ * `docs_url` to that tool's own `/agents.md#<tool-name>` anchor — fixes M1
+ * so every response points an agent at the documentation for the call it
+ * just made, not just the top of the page.
+ */
+function respond(envelope: Envelope<unknown>, toolName?: string): RunToolResult {
+  const finalEnvelope = toolName ? withDocsAnchor(envelope, toolName) : envelope;
+  return { httpStatus: httpStatusForEnvelope(finalEnvelope), envelope: finalEnvelope };
+}
+
+/**
+ * Re-points an already-built envelope's `docs_url` at `toolName`'s own
+ * `/agents.md` anchor. Applied to every handler/finalize result (not just
+ * the final response) so a stored idempotency-replay row also carries the
+ * tool-specific anchor, not the generic one `ok`/`fail` set by default.
+ */
+function withDocsAnchor(envelope: Envelope<unknown>, toolName: string): Envelope<unknown> {
+  return { ...envelope, docs_url: docsUrlForTool(toolName) };
 }
 
 /** Strips an optional `Bearer ` prefix from an `Authorization` header value. */
@@ -156,13 +173,13 @@ export async function runTool(
 
     if (tool.auth === "agent") {
       if (!authorization) {
-        return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]));
+        return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]), toolName);
       }
 
       const presentedKey = extractApiKey(authorization);
       agent = await verifyApiKey(db, presentedKey);
       if (!agent) {
-        return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]));
+        return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]), toolName);
       }
 
       worldId = agent.worldId;
@@ -182,6 +199,7 @@ export async function runTool(
           "The Idempotency-Key header and the idempotency_key argument disagree.",
           ["idempotency_key_mismatch"],
         ),
+        toolName,
       );
     }
     const effectiveIdempotencyKey = idempotencyKey ?? bodyIdempotencyKey;
@@ -194,11 +212,11 @@ export async function runTool(
         }
         return [issue.path.join(".") || "root"];
       });
-      return respond(fail("INVALID_REQUEST", "Invalid input.", reasonCodes));
+      return respond(fail("INVALID_REQUEST", "Invalid input.", reasonCodes), toolName);
     }
 
     if (tool.mutating && agent && agent.status !== "active") {
-      return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]));
+      return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]), toolName);
     }
 
     const afterCommitCallbacks: Array<() => Promise<void> | void> = [];
@@ -265,18 +283,21 @@ export async function runTool(
 
             const claimedId = claimed[0]!.id;
 
-            const result = await tool.handler(parsed.data, {
-              worldId,
-              simNow,
-              agentId,
-              agent,
-              requestId,
-              db,
-              tx,
-              scoped: scoped(tx, worldId),
-              afterCommit,
-              setFinalizeState,
-            });
+            const result = withDocsAnchor(
+              await tool.handler(parsed.data, {
+                worldId,
+                simNow,
+                agentId,
+                agent,
+                requestId,
+                db,
+                tx,
+                scoped: scoped(tx, worldId),
+                afterCommit,
+                setFinalizeState,
+              }),
+              toolName,
+            );
 
             await tx
               .update(idempotencyKeys)
@@ -315,6 +336,7 @@ export async function runTool(
                 "This idempotency key is still being processed by another request.",
                 ["idempotency_key_in_progress"],
               ),
+              toolName,
             );
           }
 
@@ -325,6 +347,7 @@ export async function runTool(
                 "This idempotency key was already used with different input.",
                 ["idempotency_key_conflict"],
               ),
+              toolName,
             );
           }
 
@@ -338,34 +361,40 @@ export async function runTool(
         // so per ruling idempotency is ignored entirely here: the handler
         // still runs inside a transaction, but nothing is stored, even if
         // a key was supplied).
-        envelope = await db.transaction((tx) =>
-          tool.handler(parsed.data, {
-            worldId,
-            simNow,
-            agentId: agent?.agentId ?? null,
-            agent,
-            requestId,
-            db,
-            tx,
-            scoped: scoped(tx, worldId),
-            afterCommit,
-            setFinalizeState,
-          }),
+        envelope = withDocsAnchor(
+          await db.transaction((tx) =>
+            tool.handler(parsed.data, {
+              worldId,
+              simNow,
+              agentId: agent?.agentId ?? null,
+              agent,
+              requestId,
+              db,
+              tx,
+              scoped: scoped(tx, worldId),
+              afterCommit,
+              setFinalizeState,
+            }),
+          ),
+          toolName,
         );
       }
     } else {
-      envelope = await tool.handler(parsed.data, {
-        worldId,
-        simNow,
-        agentId: agent?.agentId ?? null,
-        agent,
-        requestId,
-        db,
-        tx: db,
-        scoped: scoped(db, worldId),
-        afterCommit,
-        setFinalizeState,
-      });
+      envelope = withDocsAnchor(
+        await tool.handler(parsed.data, {
+          worldId,
+          simNow,
+          agentId: agent?.agentId ?? null,
+          agent,
+          requestId,
+          db,
+          tx: db,
+          scoped: scoped(db, worldId),
+          afterCommit,
+          setFinalizeState,
+        }),
+        toolName,
+      );
     }
 
     for (const callback of afterCommitCallbacks) {
@@ -384,10 +413,13 @@ export async function runTool(
       // inventing a generic `INTERNAL_ERROR` or touching the stored row.
       const preFinalizeEnvelope = envelope;
       try {
-        envelope = await tool.finalize(
-          envelope,
-          { worldId, simNow, agentId: agent?.agentId ?? null, agent, requestId, db },
-          finalizeState,
+        envelope = withDocsAnchor(
+          await tool.finalize(
+            envelope,
+            { worldId, simNow, agentId: agent?.agentId ?? null, agent, requestId, db },
+            finalizeState,
+          ),
+          toolName,
         );
       } catch (err) {
         console.error(`[runTool] ${toolName} finalize failed (requestId=${requestId}):`, err);
@@ -430,6 +462,7 @@ export async function runTool(
         ["internal_error"],
         { request_id: requestId },
       ),
+      toolName,
     );
   }
 }
