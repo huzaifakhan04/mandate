@@ -104,7 +104,7 @@ export const paypalOperations = pgTable("paypal_operations", {
   /**
    * Set when `executeOperation` claims this row (`queued`/
    * `failed_retryable` -> `in_flight`) and cleared when the attempt
-   * records its outcome; an `in_flight` claim older than 2 minutes is
+   * records its outcome; an `in_flight` claim older than 3 minutes is
    * treated as abandoned (crashed worker) and can be re-claimed.
    */
   claimedAt: timestamp("claimed_at", { withTimezone: true }),

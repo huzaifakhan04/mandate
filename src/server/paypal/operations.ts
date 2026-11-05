@@ -301,6 +301,22 @@ function errorCode(error: OperationError): string {
   return error.error.issue ?? error.error.name;
 }
 
+/** True when PayPal's error `name` or *any* `details[].issue` equals `code`. */
+function hasErrorCode(body: unknown, code: string): boolean {
+  const record =
+    body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  if (record.name === code) {
+    return true;
+  }
+  const details = Array.isArray(record.details) ? record.details : [];
+  return details.some(
+    (detail) =>
+      detail !== null &&
+      typeof detail === "object" &&
+      (detail as Record<string, unknown>).issue === code,
+  );
+}
+
 /**
  * Sends one request for `row` over its rail: PayPal via `paypalFetch`
  * (with `PayPal-Request-Id` = the operation id), or the sim rail's in-DB
@@ -401,13 +417,16 @@ function failure(
 }
 
 /**
- * `ORDER_ALREADY_CAPTURED`: an earlier attempt (or another capture of the
- * same order) already captured it. Recover the existing capture with a
- * GET on the order and treat it as success. If the GET itself fails or
- * shows no capture yet, the outcome is `failed_retryable` — never
- * terminal, because the money *did* move and a later run must find it.
+ * The capture's outcome is known to have moved money (or may have) but
+ * we don't hold a parsed capture: PayPal said `ORDER_ALREADY_CAPTURED`
+ * (an earlier attempt, or another capture of the same order, already
+ * captured it), or it answered 2xx with a body we couldn't parse.
+ * Recover the existing capture with a GET on the order and treat it as
+ * success. If the GET itself fails or shows no capture, the outcome is
+ * `failed_retryable` — never terminal, because the money may well have
+ * moved and a later run must find it.
  */
-async function recoverAlreadyCaptured(
+async function recoverCapture(
   db: Db,
   row: OperationRow,
   request: ExecutableRequest,
@@ -444,8 +463,8 @@ async function recoverAlreadyCaptured(
     "failed_retryable",
     captureAttempt.httpStatus,
     operationError(captureAttempt.error.error.name, {
-      issue: "ORDER_ALREADY_CAPTURED",
-      message: "Order already captured, but the recovery GET did not return the capture; will retry",
+      issue: captureAttempt.error.error.issue,
+      message: `Capture outcome unconfirmed (${errorCode(captureAttempt.error)}) and the recovery GET did not return the capture; will retry`,
       debugId: captureAttempt.error.error.debugId,
       details: recoveryProblem,
     }),
@@ -488,16 +507,28 @@ async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
         latencyMs: sent.latencyMs,
       };
     } catch (err) {
-      // PayPal accepted the request, but the body isn't what this kind
-      // promises. Re-sending the same request id would replay the same
-      // body, so retrying can't help.
+      const error = operationError("RESPONSE_UNPARSEABLE", {
+        message: err instanceof Error ? err.message : String(err),
+        details: sent.body,
+      });
+      // PayPal accepted the request but the body isn't what this kind
+      // promises. For a money-moving kind that must never be terminal:
+      // a capture may have happened (confirm it via GET), and a payout
+      // batch was likely created (re-sending the same PayPal-Request-Id
+      // replays that same batch, never a second one). For non-money kinds
+      // the same request id would replay the same body, so it's terminal.
+      if (kind === "order.capture") {
+        return recoverCapture(db, row, request, {
+          httpStatus: sent.httpStatus,
+          error,
+          attempts: sent.attempts,
+          latencyMs: sent.latencyMs,
+        });
+      }
       return failure(
-        "failed_terminal",
+        kind === "payout.send" ? "failed_retryable" : "failed_terminal",
         sent.httpStatus,
-        operationError("RESPONSE_UNPARSEABLE", {
-          message: err instanceof Error ? err.message : String(err),
-          details: sent.body,
-        }),
+        error,
         sent.attempts,
         sent.latencyMs,
       );
@@ -505,8 +536,9 @@ async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
   }
 
   const error = errorFromResponse(sent.httpStatus, sent.body);
-  if (kind === "order.capture" && errorCode(error) === "ORDER_ALREADY_CAPTURED") {
-    return recoverAlreadyCaptured(db, row, request, {
+  if (kind === "order.capture" && hasErrorCode(sent.body, "ORDER_ALREADY_CAPTURED")) {
+    error.error.issue = "ORDER_ALREADY_CAPTURED";
+    return recoverCapture(db, row, request, {
       httpStatus: sent.httpStatus,
       error,
       attempts: sent.attempts,
@@ -522,12 +554,23 @@ async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
   );
 }
 
-const STALE_CLAIM = sql`now() - interval '2 minutes'`;
+/**
+ * An `in_flight` claim older than this is presumed abandoned (worker
+ * crashed) and may be reclaimed. It MUST exceed the worst-case duration
+ * of one `executeOperation` run, or a live, slow attempt could be
+ * reclaimed and run concurrently. Worst case: `paypalFetch` is capped at
+ * `PAYPAL_TOTAL_DEADLINE_MS` (60s, fetch.ts) across all its attempts,
+ * token fetches and backoff, and a run makes at most two of those calls
+ * (capture + recovery GET) = 120s, plus a few DB round trips — well
+ * under 3 minutes. Keep these two constants in step.
+ */
+const STALE_CLAIM_INTERVAL = "3 minutes";
+const STALE_CLAIM = sql.raw(`now() - interval '${STALE_CLAIM_INTERVAL}'`);
 
 /**
  * Atomically claims a row: a `queued`/`failed_retryable` row whose
  * backoff has elapsed (or `ignoreBackoff`), or an `in_flight` row whose
- * claim is older than 2 minutes (its worker died mid-call). `claimed_at`
+ * claim is older than `STALE_CLAIM_INTERVAL` (its worker died mid-call). `claimed_at`
  * is truncated to milliseconds so the JS `Date` read back compares equal
  * in `recordOutcome`'s claim guard.
  */
@@ -558,7 +601,7 @@ async function claim(
 
 /**
  * The single place that writes an attempt's outcome (Ruling H):
- * `attempts` accumulates (`attempts + n`), `claimed_at` is cleared,
+ * `attempts` accumulates (`attempts + n`, n ≥ 1 for a failed run), `claimed_at` is cleared,
  * `next_attempt_at` uses the cumulative count.
  *
  * - A success may land on any non-final row (`queued`/`in_flight`/
@@ -574,13 +617,17 @@ async function claim(
  */
 async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): Promise<OperationRow> {
   const t = paypalOperations;
+  // A failed run counts as at least one attempt, even when nothing was
+  // sent (config error, internal error), so backoff keeps growing.
+  const counted =
+    outcome.status === "succeeded" ? outcome.attempts : Math.max(outcome.attempts, 1);
   const common = {
     status: outcome.status,
     httpStatus: outcome.httpStatus,
     response: outcome.response,
     latencyMs: outcome.latencyMs,
     lastError: outcome.lastError,
-    attempts: sql`${t.attempts} + ${outcome.attempts}`,
+    attempts: sql`${t.attempts} + ${counted}`,
     claimedAt: null,
   };
 
@@ -602,7 +649,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): P
             ...common,
             nextAttemptAt:
               outcome.status === "failed_retryable"
-                ? computeNextAttemptAt(claimed.attempts + outcome.attempts)
+                ? computeNextAttemptAt(claimed.attempts + counted)
                 : null,
           })
           .where(
@@ -620,7 +667,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): P
 
   const [current] = await db
     .update(t)
-    .set({ attempts: sql`${t.attempts} + ${outcome.attempts}` })
+    .set({ attempts: sql`${t.attempts} + ${counted}` })
     .where(eq(t.id, claimed.id))
     .returning();
   if (!current) {
@@ -659,9 +706,13 @@ export interface ExecuteOperationOptions {
  *    than 401/409/429 → `failed_terminal`; 5xx, 401/409/429, network
  *    error or timeout → `failed_retryable` with `next_attempt_at` =
  *    now + 30s·2^attempts (cumulative, capped at 10 min). An
- *    `order.capture` answered `ORDER_ALREADY_CAPTURED` recovers the
+ *    `order.capture` answered `ORDER_ALREADY_CAPTURED` (any
+ *    `details[].issue`) or a 2xx with an unparseable body recovers the
  *    capture via GET (`succeeded`), or is `failed_retryable` if that GET
- *    fails. An unexpected exception is recorded as `failed_retryable`.
+ *    fails. An unparseable 2xx `payout.send` is `failed_retryable` (the
+ *    same request id replays the same batch); for other kinds it is
+ *    `failed_terminal`. An unexpected exception is `failed_retryable`.
+ *    Every failed run counts as ≥ 1 attempt for backoff.
  * 4. **Return** `toOperationResult(row)` — identical on replay.
  */
 export async function executeOperation(

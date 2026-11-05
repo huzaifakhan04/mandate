@@ -15,7 +15,9 @@ import {
 import { PayPalConfigError } from "@/server/paypal/config";
 import {
   __resetBackoffMsForTests,
+  __resetTotalDeadlineMsForTests,
   __setBackoffMsForTests,
+  __setTotalDeadlineMsForTests,
   PayPalNetworkError,
   paypalFetch,
 } from "@/server/paypal/fetch";
@@ -267,4 +269,67 @@ describe("paypalFetch (pure HTTP client — writes no rows)", () => {
       process.env.PAYPAL_CLIENT_SECRET = "test-client-secret-value";
     }
   });
+  it("sends Prefer: return=representation on POST, not on GET", async () => {
+    let postPrefer: string | null = null;
+    let getPrefer: string | null = "unset";
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, ({ request }) => {
+        postPrefer = request.headers.get("Prefer");
+        return HttpResponse.json({ id: "O" }, { status: 201 });
+      }),
+      http.get(`${BASE_URL}/v2/checkout/orders/O`, ({ request }) => {
+        getPrefer = request.headers.get("Prefer");
+        return HttpResponse.json({ id: "O" });
+      }),
+    );
+
+    await paypalFetch(orderRequest());
+    await paypalFetch({ method: "GET", path: "/v2/checkout/orders/O", requestId: randomUUID() });
+    expect(postPrefer).toBe("return=representation");
+    expect(getPrefer).toBeNull();
+  });
+
+  it("stops at the total deadline: throws PayPalNetworkError(stage=deadline) when no response arrived", async () => {
+    __setTotalDeadlineMsForTests(150);
+    let callCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, async () => {
+        callCount += 1;
+        await delay(1_000);
+        return HttpResponse.json({ id: "late" });
+      }),
+    );
+
+    const startedAt = Date.now();
+    try {
+      const caught = await paypalFetch(orderRequest()).catch((err: unknown) => err);
+      expect(caught).toBeInstanceOf(PayPalNetworkError);
+      expect(caught).toMatchObject({ details: { stage: "deadline" } });
+      expect(Date.now() - startedAt).toBeLessThan(600);
+      expect(callCount).toBe(1);
+    } finally {
+      __resetTotalDeadlineMsForTests();
+    }
+  }, 10_000);
+
+  it("past the deadline after a 5xx, returns that last response instead of retrying further", async () => {
+    __setTotalDeadlineMsForTests(100);
+    __setBackoffMsForTests([200, 200]);
+    let callCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, () => {
+        callCount += 1;
+        return HttpResponse.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 503 });
+      }),
+    );
+
+    try {
+      const result = await paypalFetch(orderRequest());
+      expect(result.httpStatus).toBe(503);
+      expect(callCount).toBe(1);
+    } finally {
+      __resetTotalDeadlineMsForTests();
+      __setBackoffMsForTests([0, 0]);
+    }
+  }, 10_000);
 });

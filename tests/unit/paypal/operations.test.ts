@@ -341,7 +341,7 @@ describe("enqueueOperation / executeOperation (paypal rail)", () => {
     const { operationId } = await enqueueCreate();
     await db
       .update(paypalOperations)
-      .set({ status: "in_flight", claimedAt: sql`now() - interval '3 minutes'`, attempts: 1 })
+      .set({ status: "in_flight", claimedAt: sql`now() - interval '4 minutes'`, attempts: 1 })
       .where(eq(paypalOperations.id, operationId));
 
     const result = await executeOperation(db, operationId);
@@ -352,12 +352,12 @@ describe("enqueueOperation / executeOperation (paypal rail)", () => {
     expect(row).toMatchObject({ requestId: operationId, attempts: 2, claimedAt: null });
   });
 
-  it("does not reclaim a fresh in_flight row (someone else's attempt is live)", async () => {
+  it("does not reclaim an in_flight row inside the 3-minute stale window (a slow attempt may still be live)", async () => {
     const seen = mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
     const { operationId } = await enqueueCreate();
     await db
       .update(paypalOperations)
-      .set({ status: "in_flight", claimedAt: sql`now() - interval '30 seconds'` })
+      .set({ status: "in_flight", claimedAt: sql`now() - interval '150 seconds'` })
       .where(eq(paypalOperations.id, operationId));
 
     const result = await executeOperation(db, operationId);
@@ -517,5 +517,129 @@ describe("enqueueOperation / executeOperation (paypal rail)", () => {
       process.env.PAYPAL_CLIENT_ID = "test-client-id";
     }
     expect(seen).toHaveLength(0);
+  });
+  it("order.capture answered 2xx with an unparseable body → recovers the capture via GET (never terminal)", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-11/capture`, () =>
+        HttpResponse.json({ id: "ORDER-11", status: "COMPLETED" }, { status: 201 }),
+      ),
+      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-11`, () =>
+        HttpResponse.json({
+          id: "ORDER-11",
+          status: "COMPLETED",
+          purchase_units: [
+            { payments: { captures: [{ id: "CAP-11", status: "COMPLETED", amount: { value: "2.50" } }] } },
+          ],
+        }),
+      ),
+    );
+    const { operationId } = await enqueueCapture("ORDER-11");
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({
+      status: "succeeded",
+      body: { captureId: "CAP-11", amountCents: "250", recovered: true },
+    });
+  });
+
+  it("order.capture 2xx unparseable and the recovery GET fails → failed_retryable", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-12/capture`, () =>
+        HttpResponse.text("<html>gateway</html>", { status: 200 }),
+      ),
+      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-12`, () => HttpResponse.error()),
+    );
+    const { operationId } = await enqueueCapture("ORDER-12");
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({
+      status: "failed_retryable",
+      body: { error: { name: "RESPONSE_UNPARSEABLE" } },
+    });
+  });
+
+  it("payout.send answered 2xx with an unparseable body → failed_retryable; the retry (same Request-Id) succeeds", async () => {
+    const seen: (string | null)[] = [];
+    server.use(
+      http.post(`${BASE_URL}/v1/payments/payouts`, ({ request }) => {
+        seen.push(request.headers.get("PayPal-Request-Id"));
+        return seen.length === 1
+          ? HttpResponse.json({ unexpected: true }, { status: 201 })
+          : HttpResponse.json(
+              { batch_header: { payout_batch_id: "BATCH-U", batch_status: "PENDING" } },
+              { status: 201 },
+            );
+      }),
+    );
+    const { operationId } = await enqueueOperation(db, {
+      worldId,
+      rail: "paypal",
+      kind: "payout.send",
+      purpose: "note_redemption",
+      sourceId: "note-unparseable",
+      request: {
+        method: "POST",
+        path: "/v1/payments/payouts",
+        body: { items: [{ receiver: "a@example.com", amount: { value: "1.00", currency: "USD" } }] },
+      },
+    });
+
+    const first = await executeOperation(db, operationId);
+    expect(first).toMatchObject({
+      status: "failed_retryable",
+      body: { error: { name: "RESPONSE_UNPARSEABLE" } },
+    });
+    const retried = await executeOperation(db, operationId, { ignoreBackoff: true });
+    expect(retried).toMatchObject({ status: "succeeded", body: { batchId: "BATCH-U" } });
+    expect(seen).toEqual([operationId, operationId]);
+  });
+
+  it("detects ORDER_ALREADY_CAPTURED in any details[] entry, not just the first", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders/ORDER-13/capture`, () =>
+        HttpResponse.json(
+          {
+            name: "UNPROCESSABLE_ENTITY",
+            details: [{ issue: "SOMETHING_ELSE" }, { issue: "ORDER_ALREADY_CAPTURED" }],
+          },
+          { status: 422 },
+        ),
+      ),
+      http.get(`${BASE_URL}/v2/checkout/orders/ORDER-13`, () =>
+        HttpResponse.json({
+          id: "ORDER-13",
+          status: "COMPLETED",
+          purchase_units: [
+            { payments: { captures: [{ id: "CAP-13", status: "COMPLETED", amount: { value: "1.00" } }] } },
+          ],
+        }),
+      ),
+    );
+    const { operationId } = await enqueueCapture("ORDER-13");
+
+    const result = await executeOperation(db, operationId);
+    expect(result).toMatchObject({ status: "succeeded", body: { captureId: "CAP-13", recovered: true } });
+  });
+
+  it("a failed run that sent nothing (config error) still counts 1 attempt, so backoff grows", async () => {
+    mockCreate(() => HttpResponse.json(ORDER_CREATED, { status: 201 }));
+    const { operationId } = await enqueueCreate();
+    delete process.env.PAYPAL_CLIENT_ID;
+    try {
+      const delays: number[] = [];
+      for (let run = 1; run <= 2; run += 1) {
+        await executeOperation(db, operationId, { ignoreBackoff: true });
+        const row = await readOperation(db, operationId);
+        expect(row.attempts).toBe(run);
+        delays.push((row.nextAttemptAt as Date).getTime() - Date.now());
+      }
+      // 30s·2^1 = 60s, then 30s·2^2 = 120s.
+      expect(delays[0]).toBeGreaterThan(55_000);
+      expect(delays[0]).toBeLessThanOrEqual(60_000);
+      expect(delays[1]).toBeGreaterThan(115_000);
+      expect(delays[1]).toBeLessThanOrEqual(120_000);
+    } finally {
+      process.env.PAYPAL_CLIENT_ID = "test-client-id";
+    }
   });
 });
