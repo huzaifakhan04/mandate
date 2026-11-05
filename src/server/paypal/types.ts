@@ -11,7 +11,8 @@ export type OperationKind =
   | "order.capture"
   | "order.get"
   | "payout.send"
-  | "payout.get";
+  | "payout.get"
+  | "payout.cancel_item";
 
 export const OPERATION_KINDS: readonly OperationKind[] = [
   "order.create",
@@ -19,6 +20,7 @@ export const OPERATION_KINDS: readonly OperationKind[] = [
   "order.get",
   "payout.send",
   "payout.get",
+  "payout.cancel_item",
 ];
 
 /** Read-only kinds: never move money, so they may run under an ad-hoc (random) id. */
@@ -86,12 +88,22 @@ export interface PayoutGetResult {
   items: PayoutItemResult[];
 }
 
+/**
+ * `POST /v1/payments/payouts-item/{id}/cancel` (Ruling R): cancels an
+ * UNCLAIMED item, returning its funds; the item is then `RETURNED`.
+ */
+export interface PayoutCancelItemResult {
+  itemId: string;
+  transactionStatus: string;
+}
+
 export interface OperationResultByKind {
   "order.create": OrderCreateResult;
   "order.capture": OrderCaptureResult;
   "order.get": OrderGetResult;
   "payout.send": PayoutSendResult;
   "payout.get": PayoutGetResult;
+  "payout.cancel_item": PayoutCancelItemResult;
 }
 
 /** Stored `response` of a failed operation (redacted). */

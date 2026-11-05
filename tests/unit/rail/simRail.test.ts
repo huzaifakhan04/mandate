@@ -7,6 +7,7 @@ import type { Db } from "@/server/db/client";
 import { paypalOperations, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import {
+  buildCancelPayoutItemRequest,
   buildCaptureOrderRequest,
   buildCreateOrderRequest,
   buildGetOrderRequest,
@@ -240,6 +241,64 @@ describe("sim rail through enqueueOperation / executeOperation", () => {
       status: "succeeded",
       body: { batchStatus: "SUCCESS", item: { transactionStatus: "FAILED" } },
     });
+  });
+
+  async function sendTo(receiver: string, sourceId = randomUUID()) {
+    const { operationId } = await enqueueOperation(db, {
+      worldId,
+      rail: "sim",
+      kind: "payout.send",
+      purpose: "loan_disbursement",
+      sourceId,
+      request: buildSendPayoutRequest({ receiver, receiverType: "EMAIL", amountCents: 700n, senderItemId: sourceId }),
+    });
+    return { operationId, result: await executeOperation(db, operationId) };
+  }
+
+  async function cancelItem(itemId: string) {
+    const { operationId } = await enqueueOperation(db, {
+      worldId,
+      rail: "sim",
+      kind: "payout.cancel_item",
+      purpose: "payout_cancel",
+      sourceId: itemId,
+      request: buildCancelPayoutItemRequest(itemId),
+    });
+    return executeOperation(db, operationId);
+  }
+
+  it("Ruling R: a receiver containing 'unclaimed' → item UNCLAIMED; cancel → RETURNED, and payout.get shows RETURNED", async () => {
+    const { operationId, result } = await sendTo("unclaimed@example.com");
+    expect(result).toMatchObject({ status: "succeeded", body: { item: { transactionStatus: "UNCLAIMED" } } });
+    const itemId = `SIMITEM-${operationId}`;
+
+    const cancelled = await cancelItem(itemId);
+    expect(cancelled).toMatchObject({
+      kind: "payout.cancel_item",
+      status: "succeeded",
+      httpStatus: 200,
+      body: { itemId, transactionStatus: "RETURNED" },
+    });
+
+    const got = await read("payout.get", buildGetPayoutRequest(`SIMBATCH-${operationId}`));
+    expect((got.body as { items: { transactionStatus: string }[] }).items[0]?.transactionStatus).toBe("RETURNED");
+  });
+
+  it("cancelling a SUCCESS item → failed_terminal 422 ITEM_CANNOT_BE_CANCELLED; unknown item → 404", async () => {
+    const { operationId } = await sendTo("agent@example.com");
+    expect(await cancelItem(`SIMITEM-${operationId}`)).toMatchObject({
+      status: "failed_terminal",
+      httpStatus: 422,
+      body: { error: { issue: "ITEM_CANNOT_BE_CANCELLED" } },
+    });
+    expect(await cancelItem("SIMITEM-nope")).toMatchObject({ status: "failed_terminal", httpStatus: 404 });
+  });
+
+  it("a receiver containing 'pending' → live-shaped POST (PENDING, no item); payout.get shows the item", async () => {
+    const { operationId, result } = await sendTo("pending@example.com");
+    expect(result).toMatchObject({ status: "succeeded", body: { batchStatus: "PENDING", item: null } });
+    const got = await read("payout.get", buildGetPayoutRequest(`SIMBATCH-${operationId}`));
+    expect((got.body as { items: { transactionStatus: string }[] }).items[0]?.transactionStatus).toBe("SUCCESS");
   });
 
   it("payout.get for an unknown batch → failed_terminal 404", async () => {

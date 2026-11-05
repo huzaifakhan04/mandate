@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-import { and, eq, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
@@ -21,7 +21,13 @@ import {
   parseCreateOrderResponse,
   parseGetOrderResponse,
 } from "./orders";
-import { parseGetPayoutResponse, parseSendPayoutResponse, withSenderBatchId } from "./payouts";
+import {
+  parseCancelPayoutItemResponse,
+  parseGetPayoutResponse,
+  parseSendPayoutResponse,
+  payoutItemIdFromCancelPath,
+  withSenderBatchId,
+} from "./payouts";
 import { redact } from "./redact";
 import {
   OPERATION_KINDS,
@@ -46,7 +52,7 @@ export {
   buildGetOrderRequest,
   centsToAmount,
 } from "./orders";
-export { buildGetPayoutRequest, buildSendPayoutRequest } from "./payouts";
+export { buildCancelPayoutItemRequest, buildGetPayoutRequest, buildSendPayoutRequest } from "./payouts";
 export { PayPalApiError, PayPalOperationReuseError };
 
 type OperationRow = typeof paypalOperations.$inferSelect;
@@ -73,6 +79,7 @@ const KIND_ROUTES: Record<OperationKind, { method: ExecutableRequest["method"]; 
   "order.get": { method: "GET", path: /^\/v2\/checkout\/orders\/[^/]+$/ },
   "payout.send": { method: "POST", path: /^\/v1\/payments\/payouts$/ },
   "payout.get": { method: "GET", path: /^\/v1\/payments\/payouts\/[^/]+$/ },
+  "payout.cancel_item": { method: "POST", path: /^\/v1\/payments\/payouts-item\/[^/]+\/cancel$/ },
 };
 
 function isOperationKind(kind: string): kind is OperationKind {
@@ -395,6 +402,10 @@ function parseSuccess(
       const result = parseGetPayoutResponse(body);
       return { response: result, paypalId: result.batchId };
     }
+    case "payout.cancel_item": {
+      const result = parseCancelPayoutItemResponse(body);
+      return { response: result, paypalId: payoutItemIdFromCancelPath(request.path) };
+    }
   }
 }
 
@@ -701,6 +712,40 @@ export async function getOperation(db: Db, operationId: string): Promise<Operati
     purpose: row.purpose as OperationPurpose | null,
     sourceId: row.sourceId,
   };
+}
+
+/**
+ * Ruling Q: the newest succeeded `payout.get` read of the batch a
+ * `payout.send` operation created, enqueued after that send — or `null`
+ * if there is none (or the send has no batch id yet). Outcome appliers use
+ * it to see a live item's status, which PayPal's POST response almost
+ * never reports. Lives here (not in services) because services stay off
+ * `paypal_operations` (the world-isolation guard).
+ */
+export async function latestPayoutGetForSend(
+  db: Db,
+  sendOperationId: string,
+): Promise<OperationResultByKind["payout.get"] | null> {
+  const send = await db.select().from(paypalOperations).where(eq(paypalOperations.id, sendOperationId));
+  const sendRow = send[0];
+  if (!sendRow || sendRow.kind !== "payout.send" || !sendRow.paypalId) {
+    return null;
+  }
+  const [read] = await db
+    .select()
+    .from(paypalOperations)
+    .where(
+      and(
+        eq(paypalOperations.worldId, sendRow.worldId),
+        eq(paypalOperations.kind, "payout.get"),
+        eq(paypalOperations.status, "succeeded"),
+        eq(paypalOperations.paypalId, sendRow.paypalId),
+        gte(paypalOperations.createdAt, sendRow.createdAt),
+      ),
+    )
+    .orderBy(desc(paypalOperations.createdAt))
+    .limit(1);
+  return read ? (read.response as OperationResultByKind["payout.get"]) : null;
 }
 
 async function readOperationRow(db: Db, operationId: string): Promise<OperationRow> {

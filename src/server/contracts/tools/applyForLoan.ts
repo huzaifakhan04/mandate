@@ -23,7 +23,34 @@ const inputSchema = z
     path: ["invoice", "amount_cents"],
   });
 
-const outputSchema = z.object({}).passthrough();
+const disclosureSchema = z.object({
+  funding_provided_cents: z.number(),
+  fee_cents: z.number(),
+  estimated_apr_bps: z.number(),
+  total_repayment_cents: z.number(),
+  term_days: z.number(),
+  estimated_due_date: z.string(),
+  due_rule: z.string(),
+  prepayment: z.string(),
+  collateral: z.string(),
+  avoidable_fees: z.string(),
+  note: z.string().optional(),
+});
+
+/** OFFERED (offer + disclosure) or DECLINED (reason codes). */
+const outputSchema = z.union([
+  z.object({
+    application_id: z.string(),
+    offer_id: z.string(),
+    disclosure: disclosureSchema,
+    disclosure_hash: z.string(),
+    expires_sim_at: z.string(),
+  }),
+  z.object({
+    application_id: z.string(),
+    reasons: z.array(z.string()),
+  }),
+]);
 
 export const applyForLoanTool = defineTool({
   name: "apply_for_loan",

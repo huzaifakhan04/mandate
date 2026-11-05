@@ -12,7 +12,9 @@ import { createTestDb } from "@/server/db/testing";
 import { disclosureHash } from "@/server/domain/disclosure";
 import { availableLiquidity } from "@/server/domain/liquidity";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
-import { simApprove } from "@/server/rail/simHandler";
+import { executeOperation } from "@/server/paypal/operations";
+import { simApprove, simClaimPayoutItem } from "@/server/rail/simHandler";
+import { pollPayoutStatus } from "@/server/services/payoutPolling";
 import {
   __resetLoanActivatedHooksForTests,
   applyPayoutOutcome,
@@ -125,7 +127,10 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect((ok.envelope.data as Data).eligible).toBe(true);
     expect((ok.envelope.data as Data).reasons).toEqual([]);
     expect((ok.envelope.data as Data).max_principal_cents).toBe(30000);
-    expect(ok.envelope.next_actions[0]?.tool).toBe("apply_for_loan");
+    expect(ok.envelope.next_actions[0]).toEqual({
+      tool: "apply_for_loan",
+      args: { amount_cents: 25000, term_days: 14, purpose: "<describe what the money is for>" },
+    });
 
     const bad = await call(db, "check_eligibility", key, { amount_cents: 500, term_days: 45 });
     const badData = bad.envelope.data as Data;
@@ -187,9 +192,15 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
       collateral: "Invoice payment link",
       avoidable_fees: "None in P1",
       note: "APR above 36% may exceed some state caps (unverified)",
+      due_rule: "14 days after funds are sent",
     });
-    expect(typeof disclosure.due_date).toBe("string");
+    expect(disclosure).not.toHaveProperty("due_date");
+    expect(new Date(disclosure.estimated_due_date as string).getTime() - simNow.getTime()).toBeGreaterThanOrEqual(
+      14 * 86_400_000,
+    );
     expect(data.disclosure_hash).toBe(disclosureHash(disclosure));
+    // Ruling P: due_rule is covered by the hash.
+    expect(disclosureHash({ ...disclosure, due_rule: "14 days after the offer" })).not.toBe(data.disclosure_hash);
     const expiresAt = new Date(data.expires_sim_at as string).getTime();
     expect(expiresAt - simNow.getTime()).toBeGreaterThanOrEqual(86_400_000);
     expect(expiresAt - simNow.getTime()).toBeLessThan(86_400_000 + 60_000);
@@ -365,12 +376,15 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect((result.envelope.data as Data).disbursement).toEqual({ status: "FAILED" });
 
     expect(await loansReceivable(db, worldId)).toBe(0n);
+    const [failedLoan] = await db.select().from(loans).where(eq(loans.worldId, worldId));
+    expect(failedLoan?.outstandingCents).toBe(0n);
     expect(await cashBalance(db, worldId)).toBe(30000n);
     expect(await availableLiquidity(db, worldId)).toBe(30000n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     const got = await call(db, "get_loan", key, { loan_id: (result.envelope.data as Data).loan_id });
     expect((got.envelope.data as Data).status).toBe("DISBURSEMENT_FAILED");
+    expect((got.envelope.data as Data).outstanding_cents).toBe(0);
     expect(((got.envelope.data as Data).history as Data[]).map((e) => e.type)).toContain(
       "loan.disbursement_failed",
     );
@@ -380,10 +394,103 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(again.envelope.status).toBe("OFFERED");
   });
 
-  it("a payout with no item yet stays DISBURSING; a later SUCCESS activates it exactly once", async () => {
+  it("Ruling Q: live-shaped send (no item) stays DISBURSING with nothing owed; pollPayoutStatus → ACTIVE, one journal", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 30000);
-    const { key, agentId } = await createTestAgent(db, worldId);
+    const { key } = await createTestAgent(db, worldId, "pending-borrower@example.com");
+    const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
+
+    const accepted = await call(db, "accept_offer", key, {
+      offer_id: applied.offer_id,
+      disclosure_hash: applied.disclosure_hash,
+    });
+    expect(accepted.envelope.status).toBe("DISBURSING");
+    expect((accepted.envelope.data as Data).disbursement).toEqual({ status: "PENDING" });
+    const loanId = (accepted.envelope.data as Data).loan_id as string;
+
+    const disbursing = await call(db, "get_loan", key, { loan_id: loanId });
+    expect((disbursing.envelope.data as Data).status).toBe("DISBURSING");
+    expect((disbursing.envelope.data as Data).outstanding_cents).toBe(0);
+    expect(await loansReceivable(db, worldId)).toBe(0n);
+    expect(await availableLiquidity(db, worldId)).toBe(5000n); // principal reserved
+
+    const [loan] = await db.select().from(loans).where(eq(loans.id, loanId));
+    await pollPayoutStatus(db, loan!.disbursementOpId!);
+    await pollPayoutStatus(db, loan!.disbursementOpId!);
+
+    const active = await call(db, "get_loan", key, { loan_id: loanId });
+    expect((active.envelope.data as Data).status).toBe("ACTIVE");
+    expect((active.envelope.data as Data).outstanding_cents).toBe(25750);
+    expect(await loansReceivable(db, worldId)).toBe(25000n);
+    const entries = await db
+      .select()
+      .from(journalEntries)
+      .where(and(eq(journalEntries.worldId, worldId), eq(journalEntries.sourceId, loanId)));
+    expect(entries).toHaveLength(1);
+    const reads = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.kind, "payout.get")));
+    expect(reads.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("Ruling Q: observed webhook ONHOLD stays DISBURSING; observed FAILED → DISBURSEMENT_FAILED, nothing owed", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const { key } = await createTestAgent(db, worldId, "pending-borrower@example.com");
+    const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
+    const accepted = await call(db, "accept_offer", key, {
+      offer_id: applied.offer_id,
+      disclosure_hash: applied.disclosure_hash,
+    });
+    const loanId = (accepted.envelope.data as Data).loan_id as string;
+    const [loan] = await db.select().from(loans).where(eq(loans.id, loanId));
+
+    await applyPayoutOutcome(db, loan!.disbursementOpId!, { itemStatus: "ONHOLD", source: "webhook" });
+    expect((await db.select().from(loans).where(eq(loans.id, loanId)))[0]?.status).toBe("disbursing");
+
+    await applyPayoutOutcome(db, loan!.disbursementOpId!, { itemStatus: "FAILED", source: "webhook" });
+    const [failed] = await db.select().from(loans).where(eq(loans.id, loanId));
+    expect(failed?.status).toBe("disbursement_failed");
+    expect(failed?.outstandingCents).toBe(0n);
+    expect(await loansReceivable(db, worldId)).toBe(0n);
+    expect(await availableLiquidity(db, worldId)).toBe(30000n);
+
+    const got = await call(db, "get_loan", key, { loan_id: loanId });
+    expect(got.envelope.reason_codes).toEqual(["payout_failed", "payout_failed"]);
+    expect((got.envelope.data as Data).outstanding_cents).toBe(0);
+  });
+
+  it("Ruling R: UNCLAIMED → cancel → RETURNED → DISBURSEMENT_FAILED, liquidity released, no journal", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const { key } = await createTestAgent(db, worldId, "unclaimed-borrower@example.com");
+    const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
+
+    const result = await call(db, "accept_offer", key, {
+      offer_id: applied.offer_id,
+      disclosure_hash: applied.disclosure_hash,
+    });
+    expect(result.envelope.status).toBe("DISBURSEMENT_FAILED");
+    expect(result.envelope.reason_codes).toEqual(["payout_failed", "payout_returned"]);
+
+    const cancels = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.kind, "payout.cancel_item")));
+    expect(cancels).toHaveLength(1);
+    expect(cancels[0]?.status).toBe("succeeded");
+    expect(cancels[0]?.purpose).toBe("payout_cancel");
+
+    expect(await loansReceivable(db, worldId)).toBe(0n);
+    expect(await availableLiquidity(db, worldId)).toBe(30000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("Ruling R: UNCLAIMED keeps the principal reserved; if claimed before the cancel lands, a poll activates the loan", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const { key, agentId } = await createTestAgent(db, worldId, "unclaimed-borrower@example.com");
     const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
 
     const { beginAcceptOffer } = await import("@/server/services/loans");
@@ -392,69 +499,45 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     );
     if (begun.outcome !== "disbursing") throw new Error(`expected disbursing, got ${begun.outcome}`);
 
-    await db
-      .update(paypalOperations)
-      .set({
-        status: "succeeded",
-        httpStatus: 201,
-        response: { batchId: "BATCH-1", batchStatus: "PENDING", item: null },
-        paypalId: "BATCH-1",
-      })
-      .where(eq(paypalOperations.id, begun.payoutOperationId));
+    // The payout goes out UNCLAIMED, then the receiver claims it before
+    // the bank's cancel lands (so the cancel is refused).
+    const sent = await executeOperation(db, begun.payoutOperationId);
+    const item = (sent.body as { item: { itemId: string; transactionStatus: string } }).item;
+    expect(item.transactionStatus).toBe("UNCLAIMED");
+    await simClaimPayoutItem(db, item.itemId);
 
     await applyPayoutOutcome(db, begun.payoutOperationId);
-    let [loan] = await db.select().from(loans).where(eq(loans.id, begun.loanId));
-    expect(loan?.status).toBe("disbursing");
-    expect(await loansReceivable(db, worldId)).toBe(0n);
+    expect((await db.select().from(loans).where(eq(loans.id, begun.loanId)))[0]?.status).toBe("disbursing");
+    expect(await availableLiquidity(db, worldId)).toBe(5000n); // still reserved
 
-    const accepted = await call(db, "get_loan", key, { loan_id: begun.loanId });
-    expect((accepted.envelope.data as Data).status).toBe("DISBURSING");
-
-    await db
-      .update(paypalOperations)
-      .set({
-        response: {
-          batchId: "BATCH-1",
-          batchStatus: "SUCCESS",
-          item: { payoutItemId: "ITEM-1", transactionStatus: "SUCCESS" },
-        },
-      })
-      .where(eq(paypalOperations.id, begun.payoutOperationId));
-
-    await applyPayoutOutcome(db, begun.payoutOperationId);
-    await applyPayoutOutcome(db, begun.payoutOperationId);
-
-    [loan] = await db.select().from(loans).where(eq(loans.id, begun.loanId));
-    expect(loan?.status).toBe("active");
+    await pollPayoutStatus(db, begun.payoutOperationId);
+    expect((await db.select().from(loans).where(eq(loans.id, begun.loanId)))[0]?.status).toBe("active");
     expect(await loansReceivable(db, worldId)).toBe(25000n);
-    const entries = await db
-      .select()
-      .from(journalEntries)
-      .where(and(eq(journalEntries.worldId, worldId), eq(journalEntries.sourceId, begun.loanId)));
-    expect(entries).toHaveLength(1);
   });
 
-  it("an unenumerated item status (ONHOLD) leaves the loan DISBURSING", async () => {
+  it("M2: max_principal_cents is 0 when liquidity is below the 1000-cent minimum", async () => {
+    const worldId = await createSimWorld(db);
+    const { key } = await createTestAgent(db, worldId);
+    // Fund 1000, then reserve 500 of it as a pending redemption → 500 left.
+    const lender = await fundPool(db, worldId, 1000);
+    const { beginNoteRedemption } = await import("@/server/services/notes");
+    await db.transaction((tx) => beginNoteRedemption(tx, worldId, lender.agentId, 500n));
+    const result = await call(db, "check_eligibility", key, { amount_cents: 1000, term_days: 7 });
+    expect((result.envelope.data as Data).available_liquidity_cents).toBe(500);
+    expect((result.envelope.data as Data).max_principal_cents).toBe(0);
+  });
+
+  it("M4: an unknown payout receiver type → PAYOUT_RECEIVER_MISSING", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 30000);
-    const { agentId, key } = await createTestAgent(db, worldId);
-    const applied = (await applyFor(db, key, 25000, 14)).envelope.data as Data;
-    const { beginAcceptOffer } = await import("@/server/services/loans");
-    const begun = await db.transaction((tx) =>
-      beginAcceptOffer(tx, worldId, agentId, applied.offer_id as string, applied.disclosure_hash as string),
-    );
-    if (begun.outcome !== "disbursing") throw new Error("expected disbursing");
-    await db
-      .update(paypalOperations)
-      .set({
-        status: "succeeded",
-        httpStatus: 201,
-        response: { batchId: "B", batchStatus: "PENDING", item: { payoutItemId: "I", transactionStatus: "ONHOLD" } },
-      })
-      .where(eq(paypalOperations.id, begun.payoutOperationId));
-    await applyPayoutOutcome(db, begun.payoutOperationId);
-    const [loan] = await db.select().from(loans).where(eq(loans.id, begun.loanId));
-    expect(loan?.status).toBe("disbursing");
+    const { key, agentId } = await createTestAgent(db, worldId);
+    await db.update(agents).set({ payoutReceiverType: "venmo" }).where(eq(agents.id, agentId));
+    const applied = (await applyFor(db, key, 10000, 7)).envelope.data as Data;
+    const result = await call(db, "accept_offer", key, {
+      offer_id: applied.offer_id,
+      disclosure_hash: applied.disclosure_hash,
+    });
+    expect(result.envelope.status).toBe("PAYOUT_RECEIVER_MISSING");
   });
 
   it("the loan-activated hook runs once, inside the activation transaction", async () => {

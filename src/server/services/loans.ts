@@ -15,15 +15,8 @@ import {
 } from "../domain/loanMachine";
 import { price, PRICING_LIMITS, rangeReasons } from "../domain/pricing";
 import { postJournal } from "../ledger/postJournal";
-import {
-  buildSendPayoutRequest,
-  enqueueOperation,
-  errorBody,
-  executeOperation,
-  getOperation,
-  journalKey,
-  type PayoutSendResult,
-} from "../paypal/operations";
+import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } from "../paypal/operations";
+import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { railForWorld } from "./worlds";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
@@ -190,9 +183,13 @@ export async function checkEligibility(
     reasons.push("insufficient_liquidity");
   }
 
-  const positiveLiquidity = availableLiquidityCents > 0n ? availableLiquidityCents : 0n;
+  // Below the P1 minimum principal nothing can be lent at all (M2).
   const maxPrincipalCents =
-    positiveLiquidity < PRICING_LIMITS.maxPrincipalCents ? positiveLiquidity : PRICING_LIMITS.maxPrincipalCents;
+    availableLiquidityCents < PRICING_LIMITS.minPrincipalCents
+      ? 0n
+      : availableLiquidityCents < PRICING_LIMITS.maxPrincipalCents
+        ? availableLiquidityCents
+        : PRICING_LIMITS.maxPrincipalCents;
 
   const { feeCents, aprBps } = price(amountCents, termDays);
 
@@ -230,7 +227,9 @@ export interface Disclosure {
   estimated_apr_bps: number;
   total_repayment_cents: number;
   term_days: number;
-  due_date: string;
+  /** Offer time + term; the real due date is `due_rule` applied to when the funds are sent (Ruling P). */
+  estimated_due_date: string;
+  due_rule: string;
   prepayment: "No penalty";
   collateral: "Invoice payment link" | "None";
   avoidable_fees: "None in P1";
@@ -262,7 +261,8 @@ function buildDisclosure(
     estimated_apr_bps: aprBps,
     total_repayment_cents: Number(amountCents + feeCents),
     term_days: termDays,
-    due_date: dueSimAt.toISOString(),
+    estimated_due_date: dueSimAt.toISOString(),
+    due_rule: `${termDays} days after funds are sent`,
     prepayment: "No penalty",
     collateral: hasInvoice ? "Invoice payment link" : "None",
     avoidable_fees: "None in P1",
@@ -282,9 +282,10 @@ function buildDisclosure(
  * simulated day. Any of the agent's earlier still-open offers are
  * superseded (expired) first, so an agent has at most one live offer.
  *
- * `due_date` in the disclosure is `now + term_days`; the loan's actual
- * due date is re-based on the disbursement time at activation (same
- * term), so it can only be later than disclosed, never earlier.
+ * Ruling P: the loan is due `term_days` after the funds are sent (the
+ * borrower always gets the full term). The disclosure says so in
+ * `due_rule`, and `estimated_due_date` is `now + term_days`; both are
+ * covered by the hash.
  */
 export async function createLoanOffer(
   tx: Db,
@@ -478,7 +479,8 @@ export async function beginAcceptOffer(
   }
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));
-  if (!agent || !agent.payoutReceiver) {
+  const recipientType = payoutRecipientType(agent?.payoutReceiverType ?? null);
+  if (!agent || !agent.payoutReceiver || !recipientType) {
     return { outcome: "payout_receiver_missing" };
   }
 
@@ -498,8 +500,9 @@ export async function beginAcceptOffer(
     agentId,
     principalCents: offer.principalCents,
     feeCents: offer.feeCents,
-    outstandingCents: offer.principalCents + offer.feeCents,
-    // Provisional; re-based on the disbursement time at activation.
+    // Nothing is owed until the funds are sent: P + F is set at activation.
+    outstandingCents: 0n,
+    // Provisional; re-based on the disbursement time at activation (Ruling P).
     dueSimAt: addDays(simNow, offer.termDays),
     status: toDbStatus(transition(acceptedState, "DISBURSE")),
   });
@@ -516,7 +519,7 @@ export async function beginAcceptOffer(
     sourceId: loan.id,
     request: buildSendPayoutRequest({
       receiver: agent.payoutReceiver,
-      receiverType: agent.payoutReceiverType === "paypal_id" ? "PAYPAL_ID" : "EMAIL",
+      receiverType: recipientType,
       amountCents: offer.principalCents,
       note: "Mandate loan disbursement",
       senderItemId: loan.id,
@@ -601,30 +604,30 @@ export async function expireStaleOffers(db: Db, worldId: string, simNow: Date): 
 // Disbursement outcome
 // ---------------------------------------------------------------------
 
-/** Terminal payout item statuses that fail the disbursement (Ruling J — enumerated exactly). */
-const FAILED_PAYOUT_ITEM_STATUSES = new Set(["FAILED", "UNCLAIMED", "RETURNED", "BLOCKED", "REFUNDED", "DENIED"]);
-
 /**
- * Settles a loan disbursement payout (Rulings B/J). Idempotent; safe to
- * call from `accept_offer`'s finalize step, Task 8's webhook and its
- * reconcile cron, any number of times, concurrently.
+ * Settles a loan disbursement payout (Rulings B/J/Q/R). Idempotent; safe
+ * to call from `accept_offer`'s finalize step, Task 8's webhook (with
+ * `observed`) and its reconcile cron (via `pollPayoutStatus`), any number
+ * of times, concurrently. Never call inside a transaction.
  *
- * Executes the `payout.send` operation (a no-op returning the stored
- * result if it's already final or in flight elsewhere; respects backoff
- * so a cron retry backs off), then reads the item's `transactionStatus`
- * strictly:
- * - `SUCCESS` → DISBURSING → ACTIVE, `disbursed_sim_at` = now and
- *   `due_sim_at` re-based to now + term, journal Dr `loans_receivable` /
- *   Cr `cash_paypal` (P), event `loan.disbursed`, then every
- *   loan-activated hook — all in ONE transaction, with the journal posted
- *   only after the conditional `WHERE status = 'disbursing'` update wins.
- * - one of `FAILED`/`UNCLAIMED`/`RETURNED`/`BLOCKED`/`REFUNDED`/`DENIED`,
- *   or a terminally failed operation → DISBURSEMENT_FAILED, no journal
- *   (the reserved liquidity is released because the loan no longer counts
- *   as DISBURSING), event `loan.disbursement_failed` with the reason.
- * - anything else (no item yet — typical of a live PayPal POST —,
- *   `PENDING`, `ONHOLD`, `UNKNOWN`, an op still queued/in flight/
- *   retryable) → stays DISBURSING for a later call.
+ * `resolvePayoutOutcome` (services/payoutStatus.ts) executes the
+ * `payout.send` operation and resolves the item's status from — in order
+ * — a succeeded cancel, `observed`, the newest `payout.get` read of the
+ * batch, then the send result:
+ * - `SUCCESS` → DISBURSING → ACTIVE, `disbursed_sim_at` = now,
+ *   `due_sim_at` = now + term (Ruling P), `outstanding_cents` = P + F,
+ *   journal Dr `loans_receivable` / Cr `cash_paypal` (P), event
+ *   `loan.disbursed`, then every loan-activated hook — all in ONE
+ *   transaction, the journal posted only after the conditional
+ *   `WHERE status = 'disbursing'` update wins.
+ * - `FAILED`/`RETURNED`/`BLOCKED`/`REFUNDED`/`DENIED`, or a terminally
+ *   failed operation → DISBURSEMENT_FAILED, outstanding 0, no journal,
+ *   event `loan.disbursement_failed` with the reason. The reserved
+ *   liquidity is released (the loan no longer counts as DISBURSING).
+ * - `UNCLAIMED` (Ruling R) → stays DISBURSING (liquidity stays reserved)
+ *   while the item is cancelled; once the cancel returns it (RETURNED),
+ *   the failure above applies.
+ * - anything else → stays DISBURSING for a later call.
  *
  * Both settlements lock the note series row first (Ruling N), so they
  * serialise with `accept_offer`'s liquidity read: without it, an
@@ -632,10 +635,13 @@ const FAILED_PAYOUT_ITEM_STATUSES = new Set(["FAILED", "UNCLAIMED", "RETURNED", 
  * Σ DISBURSING could make the pool look P cents richer than it is.
  *
  * Only handles operations with purpose `loan_disbursement`; any other
- * operation is ignored (Task 8's `dispatchPayoutOutcome` routes by
- * purpose).
+ * operation is ignored.
  */
-export async function applyPayoutOutcome(db: Db, operationId: string): Promise<void> {
+export async function applyPayoutOutcome(
+  db: Db,
+  operationId: string,
+  observed?: ObservedPayoutStatus,
+): Promise<void> {
   const record = await getOperation(db, operationId);
   if (!record || record.kind !== "payout.send" || record.purpose !== "loan_disbursement" || !record.sourceId) {
     return;
@@ -648,26 +654,12 @@ export async function applyPayoutOutcome(db: Db, operationId: string): Promise<v
     return; // Unknown, or already settled.
   }
 
-  const op = await executeOperation(db, operationId);
-
-  if (op.status === "queued" || op.status === "in_flight" || op.status === "failed_retryable") {
+  const resolution = await resolvePayoutOutcome(db, operationId, observed);
+  if (resolution.kind === "pending") {
     return;
   }
-
-  if (op.status === "failed_terminal") {
-    const error = errorBody(op);
-    await settleDisbursementFailure(db, worldId, loan, `payout_error:${error?.issue ?? error?.name ?? "unknown"}`);
-    return;
-  }
-
-  const transactionStatus = (op.body as PayoutSendResult).item?.transactionStatus;
-  if (!transactionStatus) {
-    return;
-  }
-  if (transactionStatus !== "SUCCESS") {
-    if (FAILED_PAYOUT_ITEM_STATUSES.has(transactionStatus)) {
-      await settleDisbursementFailure(db, worldId, loan, transactionStatus);
-    }
+  if (resolution.kind === "failed") {
+    await settleDisbursementFailure(db, worldId, loan, resolution.reason);
     return;
   }
 
@@ -685,6 +677,7 @@ export async function applyPayoutOutcome(db: Db, operationId: string): Promise<v
         status: toDbStatus(transition("DISBURSING", "PAYOUT_SUCCEEDED")),
         disbursedSimAt: simAt,
         dueSimAt: addDays(simAt, offer.termDays),
+        outstandingCents: loan.principalCents + loan.feeCents,
       },
       and(eq(loans.id, loan.id), eq(loans.status, "disbursing"))!,
     );
@@ -725,7 +718,7 @@ async function settleDisbursementFailure(db: Db, worldId: string, loan: LoanRow,
     await lockNoteSeries(tx, worldId);
     const [failed] = await scoped(tx, worldId).update(
       loans,
-      { status: toDbStatus(transition("DISBURSING", "PAYOUT_FAILED")) },
+      { status: toDbStatus(transition("DISBURSING", "PAYOUT_FAILED")), outstandingCents: 0n },
       and(eq(loans.id, loan.id), eq(loans.status, "disbursing"))!,
     );
     if (!failed) {

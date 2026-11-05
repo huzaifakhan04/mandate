@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import { InvalidAmountError } from "@/server/paypal/orders";
 import {
   batchIdFromPath,
+  buildCancelPayoutItemRequest,
+  parseCancelPayoutItemResponse,
+  payoutItemIdFromCancelPath,
   buildGetPayoutRequest,
   buildSendPayoutRequest,
   parseGetPayoutResponse,
@@ -70,5 +73,16 @@ describe("payouts request builders / response parsers", () => {
 
   it("throws on a response without a batch header", () => {
     expect(() => parseSendPayoutResponse({})).toThrow(/batch_header/);
+  });
+
+  it("builds and parses a payout item cancel (Ruling R)", () => {
+    const request = buildCancelPayoutItemRequest("ITEM 1");
+    expect(request).toEqual({ method: "POST", path: "/v1/payments/payouts-item/ITEM%201/cancel" });
+    expect(payoutItemIdFromCancelPath(request.path)).toBe("ITEM 1");
+    expect(() => payoutItemIdFromCancelPath("/v1/payments/payouts/X")).toThrow();
+    expect(
+      parseCancelPayoutItemResponse({ payout_item_id: "ITEM1", transaction_status: "RETURNED", payout_batch_id: "B" }),
+    ).toEqual({ itemId: "ITEM1", transactionStatus: "RETURNED" });
+    expect(() => parseCancelPayoutItemResponse({})).toThrow();
   });
 });

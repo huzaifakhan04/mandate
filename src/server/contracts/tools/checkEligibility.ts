@@ -4,6 +4,9 @@ import { ok } from "../envelope";
 import { defineTool } from "../registry";
 import { checkEligibility } from "../../services/loans";
 
+/** `apply_for_loan` requires a purpose only the agent can supply; the next action carries this placeholder. */
+export const PURPOSE_PLACEHOLDER = "<describe what the money is for>";
+
 const inputSchema = z.object({
   amount_cents: z.number().int().min(1),
   term_days: z.number().int().min(1),
@@ -62,7 +65,17 @@ export const checkEligibilityTool = defineTool({
           : `Not eligible right now: ${result.reasons.join(", ")}.`,
         reason_codes: result.reasons,
         next_actions: result.eligible
-          ? [{ tool: "apply_for_loan", args: { amount_cents: input.amount_cents, term_days: input.term_days } }]
+          ? [
+              {
+                tool: "apply_for_loan",
+                args: {
+                  amount_cents: input.amount_cents,
+                  term_days: input.term_days,
+                  // Placeholder the agent must replace (5–200 chars).
+                  purpose: PURPOSE_PLACEHOLDER,
+                },
+              },
+            ]
           : [{ tool: "get_status", args: {} }],
       },
     );

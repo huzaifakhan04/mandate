@@ -803,3 +803,84 @@ describe("Fix round 2: item 5 — terminally-failed order.get fails the checkout
     expect(noteTx?.status).toBe("failed");
   });
 });
+
+describe("Fix round 1 (Task 6, Rulings Q/R): redemption payout status", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  async function fundedLender(receiver: string, amountCents: number) {
+    const worldId = await createSimWorld(db);
+    const { key, agentId } = await createTestAgent(db, worldId, receiver);
+    const buyResult = await call(db, "buy_notes", key, { amount_cents: amountCents });
+    const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
+    await simApprove(db, checkoutId);
+    await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    return { worldId, key, agentId };
+  }
+
+  it("UNCLAIMED → cancel → RETURNED: the redemption fails and the position is untouched", async () => {
+    const { worldId, key } = await fundedLender("unclaimed-lender@example.com", 8000);
+
+    const redeem = await call(db, "redeem_notes", key, { amount_cents: 8000 });
+    expect(redeem.envelope.status).toBe("PENDING");
+
+    const [redeemTx] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "redeem")));
+    expect(redeemTx?.status).toBe("failed");
+
+    const cancels = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.kind, "payout.cancel_item")));
+    expect(cancels.map((row) => row.status)).toEqual(["succeeded"]);
+
+    const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
+    expect(position?.units).toBe(8000n);
+    expect(await availableLiquidity(db, worldId)).toBe(8000n);
+  });
+
+  it("live-shaped send (no item) stays pending; pollPayoutStatus settles it", async () => {
+    const { pollPayoutStatus } = await import("@/server/services/payoutPolling");
+    const { worldId, key } = await fundedLender("pending-lender@example.com", 6000);
+
+    await call(db, "redeem_notes", key, { amount_cents: 6000 });
+    const [pending] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "redeem")));
+    expect(pending?.status).toBe("pending");
+    expect(await availableLiquidity(db, worldId)).toBe(0n);
+
+    await pollPayoutStatus(db, pending!.opId!);
+    const [settled] = await db.select().from(noteTransactions).where(eq(noteTransactions.id, pending!.id));
+    expect(settled?.status).toBe("completed");
+    const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
+    expect(position?.units).toBe(0n);
+  });
+
+  it("an observed webhook FAILED fails a pending redemption", async () => {
+    const { applyRedemptionPayoutOutcome } = await import("@/server/services/notes");
+    const { worldId, key } = await fundedLender("pending-lender@example.com", 6000);
+    await call(db, "redeem_notes", key, { amount_cents: 6000 });
+    const [pending] = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "redeem")));
+
+    await applyRedemptionPayoutOutcome(db, pending!.opId!, { itemStatus: "FAILED", source: "webhook" });
+    const [failed] = await db.select().from(noteTransactions).where(eq(noteTransactions.id, pending!.id));
+    expect(failed?.status).toBe("failed");
+    const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
+    expect(position?.units).toBe(6000n);
+  });
+});

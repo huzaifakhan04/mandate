@@ -1,6 +1,7 @@
 import { assertPositiveAmountCents, centsToAmount } from "./orders";
 import type {
   ExecutableRequest,
+  PayoutCancelItemResult,
   PayoutGetResult,
   PayoutItemResult,
   PayoutSendResult,
@@ -13,7 +14,7 @@ import type {
 
 export interface SendPayoutRequestParams {
   receiver: string;
-  receiverType: "EMAIL" | "PAYPAL_ID";
+  receiverType: "EMAIL" | "PAYPAL_ID" | "PHONE";
   amountCents: bigint;
   note?: string;
   senderItemId: string;
@@ -99,4 +100,28 @@ export function parseSendPayoutResponse(body: unknown): PayoutSendResult {
 
 export function parseGetPayoutResponse(body: unknown): PayoutGetResult {
   return { ...parseHeader(body), items: parseItems(body) };
+}
+
+/** `POST /v1/payments/payouts-item/{itemId}/cancel` (Ruling R) — only valid for an UNCLAIMED item. */
+export function buildCancelPayoutItemRequest(itemId: string): ExecutableRequest {
+  return { method: "POST", path: `/v1/payments/payouts-item/${encodeURIComponent(itemId)}/cancel` };
+}
+
+const CANCEL_ITEM_PATH_RE = /^\/v1\/payments\/payouts-item\/([^/]+)\/cancel$/;
+
+export function payoutItemIdFromCancelPath(path: string): string {
+  const match = CANCEL_ITEM_PATH_RE.exec(path);
+  if (!match) {
+    throw new Error(`Not a payout item cancel path: ${path}`);
+  }
+  return decodeURIComponent(match[1] as string);
+}
+
+/** Parses the payout item PayPal returns from a cancel. Throws on a malformed body. */
+export function parseCancelPayoutItemResponse(body: unknown): PayoutCancelItemResult {
+  const record = (body ?? {}) as { payout_item_id?: unknown; transaction_status?: unknown };
+  if (typeof record.payout_item_id !== "string" || typeof record.transaction_status !== "string") {
+    throw new Error("PayPal payout item cancel response is missing payout_item_id/transaction_status");
+  }
+  return { itemId: record.payout_item_id, transactionStatus: record.transaction_status };
 }

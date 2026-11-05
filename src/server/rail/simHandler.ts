@@ -4,7 +4,7 @@ import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
 import { PayPalApiError } from "../paypal/fetch";
 import { amountToCents, centsToAmount, orderIdFromPath } from "../paypal/orders";
-import { batchIdFromPath } from "../paypal/payouts";
+import { batchIdFromPath, payoutItemIdFromCancelPath } from "../paypal/payouts";
 import type { ExecutableRequest, OperationKind } from "../paypal/types";
 
 /**
@@ -34,7 +34,14 @@ import type { ExecutableRequest, OperationKind } from "../paypal/types";
  *   result, just as a live PayPal item later goes FAILED/UNCLAIMED while
  *   the POST itself returned 201. Outcome appliers must read the item
  *   status, not only the operation status. Sim items resolve instantly
- *   (no PENDING phase).
+ *   (no PENDING phase). A receiver containing `"unclaimed"` gets item
+ *   `UNCLAIMED` (Ruling R: the receiver has no PayPal account yet). A
+ *   receiver containing `"pending"` gets a live-shaped POST response
+ *   (batch PENDING, no items) while `payout.get` shows the item (SUCCESS,
+ *   or UNCLAIMED/FAILED if the receiver also says so).
+ * - `payout.cancel_item` → an `UNCLAIMED` item becomes `RETURNED` (200,
+ *   the item); cancelling an already-`RETURNED` item answers the same;
+ *   any other item → 422 `ITEM_CANNOT_BE_CANCELLED`; unknown → 404.
  * - `order.get` / `payout.get` → 200 with the current state, or 404.
  */
 
@@ -47,11 +54,13 @@ interface SimOrderState {
   captureId: string | null;
 }
 
+type SimItemStatus = "SUCCESS" | "FAILED" | "UNCLAIMED" | "RETURNED";
+
 interface SimPayoutState {
   batchId: string;
   senderBatchId: string | null;
   batchStatus: "SUCCESS";
-  items: { itemId: string; transactionStatus: "SUCCESS" | "FAILED"; amountCents: string }[];
+  items: { itemId: string; transactionStatus: SimItemStatus; amountCents: string }[];
 }
 
 export interface SimRequest {
@@ -242,11 +251,25 @@ async function sendPayout(db: Db, req: SimRequest): Promise<SimResponse> {
     items: [
       {
         itemId: `SIMITEM-${req.operationId}`,
-        transactionStatus: item.receiver.includes("fail") ? "FAILED" : "SUCCESS",
+        transactionStatus: item.receiver.includes("fail")
+          ? "FAILED"
+          : item.receiver.includes("unclaimed")
+            ? "UNCLAIMED"
+            : "SUCCESS",
         amountCents: amountCents.toString(),
       },
     ],
   });
+  if (item.receiver.includes("pending")) {
+    // Live-shaped: PayPal's POST usually reports only the batch header
+    // (PENDING) and no items; the item's real status is visible only via
+    // payout.get (or a webhook).
+    const full = payoutBody(state);
+    return {
+      httpStatus: 201,
+      body: { batch_header: { ...(full.batch_header as Record<string, unknown>), batch_status: "PENDING" } },
+    };
+  }
   return { httpStatus: 201, body: payoutBody(state) };
 }
 
@@ -269,6 +292,72 @@ async function getPayout(db: Db, req: SimRequest): Promise<SimResponse> {
     : notFound(`payout batch ${batchId}`);
 }
 
+async function cancelPayoutItem(db: Db, req: SimRequest): Promise<SimResponse> {
+  const itemId = payoutItemIdFromCancelPath(req.request.path);
+  const [row] = await db
+    .select({ id: t.id, simState: t.simState })
+    .from(t)
+    .where(
+      and(
+        eq(t.worldId, req.worldId),
+        eq(t.rail, "sim"),
+        eq(t.kind, "payout.send"),
+        sql`${t.simState}->'items' @> ${JSON.stringify([{ itemId }])}::jsonb`,
+      ),
+    )
+    .limit(1);
+  if (!row) {
+    return notFound(`payout item ${itemId}`);
+  }
+  const state = row.simState as SimPayoutState;
+  const item = state.items.find((candidate) => candidate.itemId === itemId)!;
+  const itemBody = (status: SimItemStatus) => ({
+    payout_item_id: itemId,
+    payout_batch_id: state.batchId,
+    transaction_status: status,
+  });
+  if (item.transactionStatus === "RETURNED") {
+    return { httpStatus: 200, body: itemBody("RETURNED") };
+  }
+  if (item.transactionStatus !== "UNCLAIMED") {
+    return unprocessable("ITEM_CANNOT_BE_CANCELLED");
+  }
+  const next: SimPayoutState = {
+    ...state,
+    items: state.items.map((candidate) =>
+      candidate.itemId === itemId ? { ...candidate, transactionStatus: "RETURNED" } : candidate,
+    ),
+  };
+  await db.update(t).set({ simState: next }).where(eq(t.id, row.id));
+  return { httpStatus: 200, body: itemBody("RETURNED") };
+}
+
+/** Test/bot helper: a sim UNCLAIMED item is claimed by its receiver (→ SUCCESS). */
+export async function simClaimPayoutItem(db: Db, itemId: string): Promise<void> {
+  const [row] = await db
+    .select({ id: t.id, simState: t.simState })
+    .from(t)
+    .where(and(eq(t.rail, "sim"), sql`${t.simState}->'items' @> ${JSON.stringify([{ itemId }])}::jsonb`))
+    .limit(1);
+  if (!row) {
+    throw new SimRailError(`Unknown sim payout item ${itemId}`);
+  }
+  const state = row.simState as SimPayoutState;
+  await db
+    .update(t)
+    .set({
+      simState: {
+        ...state,
+        items: state.items.map((item) =>
+          item.itemId === itemId && item.transactionStatus === "UNCLAIMED"
+            ? { ...item, transactionStatus: "SUCCESS" }
+            : item,
+        ),
+      } satisfies SimPayoutState,
+    })
+    .where(eq(t.id, row.id));
+}
+
 /** The sim rail's transport, dispatched by operation kind. Only `executeOperation` calls this. */
 export async function simHandle(db: Db, req: SimRequest): Promise<SimResponse> {
   switch (req.kind) {
@@ -282,6 +371,8 @@ export async function simHandle(db: Db, req: SimRequest): Promise<SimResponse> {
       return sendPayout(db, req);
     case "payout.get":
       return getPayout(db, req);
+    case "payout.cancel_item":
+      return cancelPayoutItem(db, req);
   }
 }
 

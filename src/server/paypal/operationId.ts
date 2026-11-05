@@ -22,7 +22,8 @@ export type OperationPurpose =
   | "repayment_direct"
   | "repayment_capture"
   | "note_purchase_capture"
-  | "remainder_payout";
+  | "remainder_payout"
+  | "payout_cancel";
 
 function uuidBytes(uuid: string): Buffer {
   return Buffer.from(uuid.replace(/-/g, ""), "hex");

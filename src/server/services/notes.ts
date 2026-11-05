@@ -10,11 +10,10 @@ import {
   buildCreateOrderRequest,
   buildSendPayoutRequest,
   enqueueOperation,
-  executeOperation,
   getOperation,
   journalKey,
-  type PayoutSendResult,
 } from "../paypal/operations";
+import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { availableLiquidity } from "../domain/liquidity";
 import { railForWorld } from "./worlds";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
@@ -390,7 +389,8 @@ export async function beginNoteRedemption(
   }
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));
-  if (!agent || !agent.payoutReceiver) {
+  const recipientType = payoutRecipientType(agent?.payoutReceiverType ?? null);
+  if (!agent || !agent.payoutReceiver || !recipientType) {
     // Fix round 1 (M1): a clean domain outcome, not a thrown error — the
     // tool maps this to 400 `PAYOUT_RECEIVER_MISSING`.
     return { outcome: "payout_receiver_missing" };
@@ -415,7 +415,7 @@ export async function beginNoteRedemption(
     sourceId: noteTx.id,
     request: buildSendPayoutRequest({
       receiver: agent.payoutReceiver,
-      receiverType: agent.payoutReceiverType === "paypal_id" ? "PAYPAL_ID" : "EMAIL",
+      receiverType: recipientType,
       amountCents,
       note: "Mandate note redemption",
       senderItemId: noteTx.id,
@@ -427,39 +427,35 @@ export async function beginNoteRedemption(
   return { outcome: "submitted", noteTxId: noteTx.id, payoutOperationId: operationId };
 }
 
-/** Terminal payout item statuses that fail the redemption (Ruling J, Fix round 1 C2 — enumerated exactly). */
-const FAILED_PAYOUT_ITEM_STATUSES = new Set([
-  "FAILED",
-  "UNCLAIMED",
-  "RETURNED",
-  "BLOCKED",
-  "REFUNDED",
-  "DENIED",
-]);
-
 /**
- * Settles a redemption payout (Ruling B/J), idempotent and safe to call
- * from `ctx.afterCommit` (Task 5) as well as later from a webhook or the
- * reconcile cron (Task 8). Fix round 1 (C2): reads the item's
- * `transactionStatus` strictly — `SUCCESS` journals the redemption (Dr
- * `notes_payable[agent]` / Cr `cash_paypal`) and reduces the position's
- * units; one of the enumerated terminal-failure statuses
- * (`FAILED`/`UNCLAIMED`/`RETURNED`/`BLOCKED`/`REFUNDED`/`DENIED`) fails
- * the redemption with the position left untouched; everything else —
- * `PENDING`, `ONHOLD`, `UNKNOWN`, or no item at all (a live PayPal
- * `payout.send` POST usually doesn't report the item yet) — leaves the
- * redemption `pending` for a later call (Task 8's cron, polling
- * `payout.get`). Looks the operation up by id alone (no `worldId` yet),
- * via `paypal/operations.getOperation` rather than reading
- * `paypal_operations` directly, to stay off the world-isolation guard's
- * denylist.
+ * Settles a redemption payout (Rulings B/J/Q/R), idempotent and safe to
+ * call from `ctx.afterCommit` (Task 5) as well as later from a webhook
+ * (with `observed`) or the reconcile cron (via `pollPayoutStatus`).
+ * Never call inside a transaction.
+ *
+ * `resolvePayoutOutcome` (services/payoutStatus.ts) executes the
+ * `payout.send` operation and resolves the item's status — from a
+ * succeeded cancel, `observed`, the newest `payout.get` read of the
+ * batch, or the send result, in that order:
+ * - `SUCCESS` journals the redemption (Dr `notes_payable[agent]` / Cr
+ *   `cash_paypal`) and reduces the position's units;
+ * - `FAILED`/`RETURNED`/`BLOCKED`/`REFUNDED`/`DENIED` (or a terminally
+ *   failed operation) fails the redemption with the position untouched;
+ * - `UNCLAIMED` (Ruling R) keeps the redemption `pending` (still reserved
+ *   against liquidity and the redeemable balance) while the item is
+ *   cancelled; once it is RETURNED the failure above applies;
+ * - everything else (no item yet, `PENDING`, `ONHOLD`, …) stays pending.
  *
  * Fix round 1 (I1): the conditional `pending -> completed` transition,
  * the journal post, and the position decrement all happen in ONE
  * transaction, with the journal posted only after the conditional
  * update wins.
  */
-export async function applyRedemptionPayoutOutcome(db: Db, operationId: string): Promise<void> {
+export async function applyRedemptionPayoutOutcome(
+  db: Db,
+  operationId: string,
+  observed?: ObservedPayoutStatus,
+): Promise<void> {
   const record = await getOperation(db, operationId);
   if (!record || record.kind !== "payout.send" || !record.sourceId) {
     return;
@@ -473,37 +469,11 @@ export async function applyRedemptionPayoutOutcome(db: Db, operationId: string):
     return;
   }
 
-  // Actually attempt the payout (idempotent/no-op if it's already
-  // final): nothing else executes a freshly-enqueued `payout.send`
-  // operation. Respects backoff (no `ignoreBackoff`) so a cron retry
-  // (Task 8) backs off correctly; a fresh `queued` row with no
-  // `next_attempt_at` yet is still claimed immediately.
-  const op = await executeOperation(db, operationId);
-
-  if (op.status === "queued" || op.status === "in_flight" || op.status === "failed_retryable") {
-    return; // Still in flight; a later call (cron/webhook, Task 8) retries.
+  const resolution = await resolvePayoutOutcome(db, operationId, observed);
+  if (resolution.kind === "pending") {
+    return; // Still in flight / unclaimed; a later call (cron/webhook, Task 8) retries.
   }
-
-  if (op.status === "failed_terminal") {
-    await scoped(db, worldId).update(
-      noteTransactions,
-      { status: "failed" },
-      and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
-    );
-    return;
-  }
-
-  const body = op.body as PayoutSendResult;
-  const transactionStatus = body.item?.transactionStatus;
-
-  if (!transactionStatus) {
-    return; // No item reported yet (typical for a live PayPal POST); stays pending.
-  }
-
-  if (transactionStatus !== "SUCCESS") {
-    if (!FAILED_PAYOUT_ITEM_STATUSES.has(transactionStatus)) {
-      return; // PENDING / ONHOLD / UNKNOWN / anything else not enumerated: stays pending.
-    }
+  if (resolution.kind === "failed") {
     await scoped(db, worldId).update(
       noteTransactions,
       { status: "failed" },
