@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# subagent-driven-development scratch
+.superpowers/
+# playwright
+/test-results/
+/playwright-report/
+/.playwright-mcp/
