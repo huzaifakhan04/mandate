@@ -1,17 +1,38 @@
 import { z } from "zod";
 
+import type { AgentPrincipal } from "../auth/apiKeys";
+import type { Db } from "../db/client";
+import type { scoped } from "../db/scoped";
 import type { Envelope } from "./envelope";
 
 /**
- * Per-request context handed to every tool handler. `worldId`/`simNow` come
- * from the main world's clock (Task 4); `agentId` is `null` until agent auth
- * exists; `requestId` is a fresh id minted per request.
+ * Per-request context handed to every tool handler.
+ *
+ * - `worldId`/`simNow` come from the main world's clock (Task 4), or from
+ *   the authenticated agent's own world for `auth: 'agent'` tools.
+ * - `agent` is the authenticated caller (`null` for `auth: 'none'` tools);
+ *   `agentId` is a convenience alias for `agent?.agentId ?? null`.
+ * - `db` is the plain database handle; `tx` is the per-call transaction for
+ *   mutating tools, and equals `db` for `readOnly` tools (no transaction is
+ *   opened). `scoped` is `scoped(tx, worldId)` — the world-scoped query
+ *   helper, already wired to whichever of `db`/`tx` is in effect.
+ * - `afterCommit` registers a callback to run, in registration order, after
+ *   the per-call transaction commits (mutating tools) or right after the
+ *   handler returns (readOnly tools, where there is no transaction). A
+ *   callback that throws is logged and does not change the envelope. These
+ *   do NOT run when an idempotent replay short-circuits the handler.
+ * - `requestId` is a fresh id minted per request.
  */
 export interface ToolCtx {
   worldId: string;
   simNow: Date;
   agentId: string | null;
+  agent: AgentPrincipal | null;
   requestId: string;
+  db: Db;
+  tx: Db;
+  scoped: ReturnType<typeof scoped>;
+  afterCommit: (fn: () => Promise<void> | void) => void;
 }
 
 export interface ToolDef<
@@ -23,6 +44,13 @@ export interface ToolDef<
   description: string;
   auth: "none" | "agent";
   mutating: boolean;
+  /**
+   * Whether this tool is safe to expose over `GET` and runs without a
+   * per-call transaction (`ctx.tx === ctx.db`). Must be the exact opposite
+   * of `mutating` — `defineTool` enforces this invariant so a tool can't
+   * accidentally be both (or neither).
+   */
+  readOnly: boolean;
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;
@@ -36,11 +64,30 @@ export interface ToolDef<
  */
 export const registry: ToolDef[] = [];
 
-/** Registers a tool definition and returns it unchanged. */
+/**
+ * Registers a tool definition and returns it unchanged.
+ *
+ * Enforces two invariants that `runTool` relies on:
+ * - `readOnly` must be the exact opposite of `mutating`.
+ * - a `mutating` tool must require `auth: 'agent'` — idempotency rows are
+ *   attributed to an agent (`idempotency_keys.agent_id` is `NOT NULL`), so a
+ *   mutating tool with no authenticated agent could never be made
+ *   idempotent.
+ */
 export function defineTool<
   Input extends z.ZodObject<z.ZodRawShape>,
   Output extends z.ZodType,
 >(def: ToolDef<Input, Output>): ToolDef<Input, Output> {
+  if (def.readOnly === def.mutating) {
+    throw new Error(
+      `Tool "${def.name}": readOnly must be the opposite of mutating.`,
+    );
+  }
+  if (def.mutating && def.auth !== "agent") {
+    throw new Error(
+      `Tool "${def.name}": mutating tools must require auth: 'agent'.`,
+    );
+  }
   registry.push(def as unknown as ToolDef);
   return def;
 }

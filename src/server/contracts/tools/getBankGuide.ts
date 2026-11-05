@@ -31,6 +31,7 @@ export const getBankGuideTool = defineTool({
     "how to start, which tools exist, and the money rules in force.",
   auth: "none",
   mutating: false,
+  readOnly: true,
   // Strict (not just `z.object({})`) so a tools/call with any unexpected
   // `arguments` key is a genuine schema-validation failure that flows
   // through `runTool`'s INVALID_REQUEST envelope — see tests/e2e/mcp.spec.ts.

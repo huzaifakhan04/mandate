@@ -72,6 +72,35 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
 }
 
 /**
+ * Per-`Db`-instance memo of `ensureMainWorld`'s result, so hot paths like
+ * `runTool` (called on every `auth: 'none'` request) don't re-run its
+ * transaction (insert/select/insert) every time. Keyed by the `Db` instance
+ * (a `WeakMap` so it never keeps a test's in-memory PGlite db alive past its
+ * own lifetime) rather than globally, so tests using independent `createTestDb()`
+ * instances never see another test's cached world id.
+ */
+const mainWorldMemo = new WeakMap<Db, Promise<{ worldId: string }>>();
+
+/**
+ * Memoised `ensureMainWorld`: the first call for a given `db` does the real
+ * work and caches the resulting promise; every later call for that same
+ * `db` returns the cached promise instead of hitting the database again. A
+ * failed attempt is evicted from the cache so a transient error doesn't
+ * poison every later call for that `db`.
+ */
+export function ensureMainWorldOnce(db: Db): Promise<{ worldId: string }> {
+  let cached = mainWorldMemo.get(db);
+  if (!cached) {
+    cached = ensureMainWorld(db).catch((err) => {
+      mainWorldMemo.delete(db);
+      throw err;
+    });
+    mainWorldMemo.set(db, cached);
+  }
+  return cached;
+}
+
+/**
  * Creates a new world with a fresh clock (speed 0, anchors set to now)
  * and a seeded chart of accounts. The slug is derived from `name` with a
  * random suffix to keep it short and unique.

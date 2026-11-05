@@ -15,6 +15,13 @@
       "when": 1793883274962,
       "tag": "0001_good_lady_mastermind",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1793904152471,
+      "tag": "0002_material_exiles",
+      "breakpoints": true
     }
   ]
 }

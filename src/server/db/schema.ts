@@ -501,6 +501,7 @@ export const idempotencyKeys = pgTable(
     key: text("key").notNull(),
     requestHash: text("request_hash").notNull(),
     response: jsonb("response"),
+    httpStatus: integer("http_status").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

@@ -131,6 +131,7 @@ describe("REST contract route /api/v1/[tool]", () => {
       description: "A test-only POST-only tool used to exercise the 405 path for GET requests.",
       auth: "none" as const,
       mutating: false,
+      readOnly: false,
       input: z.object({}),
       output: z.object({}),
       handler: async () => ok({}, { status: "OK", summary: "ok" }),

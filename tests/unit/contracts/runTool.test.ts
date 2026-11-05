@@ -1,10 +1,14 @@
 import { z } from "zod";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { generateApiKey } from "@/server/auth/apiKeys";
 import { ok } from "@/server/contracts/envelope";
 import type { ToolDef } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
+import type { Db } from "@/server/db/client";
+import { agents, apiKeys } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
+import { ensureMainWorld } from "@/server/services/worlds";
 
 function makeTool(overrides: Partial<ToolDef> = {}): ToolDef {
   return {
@@ -13,6 +17,7 @@ function makeTool(overrides: Partial<ToolDef> = {}): ToolDef {
     description: "A test-only tool that echoes its input back for runTool unit tests.",
     auth: "none",
     mutating: false,
+    readOnly: true,
     input: z.object({ value: z.string().optional() }),
     output: z.object({ value: z.string().optional() }),
     handler: async (input) => ok(input, { status: "OK", summary: "echoed" }),
@@ -20,15 +25,43 @@ function makeTool(overrides: Partial<ToolDef> = {}): ToolDef {
   };
 }
 
+/** Creates an agent + API key in `db`, returning the full key and its ids. */
+async function createTestAgent(db: Db) {
+  const { worldId } = await ensureMainWorld(db);
+  const [agent] = await db
+    .insert(agents)
+    .values({
+      worldId,
+      name: "Test Agent",
+      operator: "test-operator",
+      model: "test-model",
+      codeManifestHash: "deadbeef",
+      status: "active",
+    })
+    .returning();
+
+  const generated = generateApiKey();
+  await db.insert(apiKeys).values({
+    worldId,
+    agentId: agent!.id,
+    prefix: generated.prefix,
+    keyHash: generated.hash,
+  });
+
+  return { worldId, agentId: agent!.id, key: generated.key };
+}
+
 describe("runTool", () => {
   let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
     consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    process.env.API_KEY_PEPPER = "test-pepper";
   });
 
   afterEach(() => {
     consoleErrorSpy.mockRestore();
+    delete process.env.API_KEY_PEPPER;
   });
 
   it("runs the handler and returns 200 for valid input", async () => {
@@ -91,17 +124,49 @@ describe("runTool", () => {
     expect(result.envelope.summary).toContain("req-456");
   });
 
-  it("passes agentId through to the handler's ctx", async () => {
+  it("resolves ctx.agent/ctx.agentId from a valid Authorization header", async () => {
+    const db = await createTestDb();
+    const { agentId, worldId, key } = await createTestAgent(db);
+
     let seenAgentId: string | null = null;
+    let seenAgent: unknown = null;
     const tool = makeTool({
+      auth: "agent",
       handler: async (_input, ctx) => {
         seenAgentId = ctx.agentId;
+        seenAgent = ctx.agent;
         return ok({}, { status: "OK", summary: "ok" });
       },
     });
 
-    await runTool(tool, "echo_tool", {}, { getDb: createTestDb, agentId: "agent-1" });
+    await runTool(tool, "echo_tool", {}, { getDb: async () => db, authorization: `Bearer ${key}` });
 
-    expect(seenAgentId).toBe("agent-1");
+    expect(seenAgentId).toBe(agentId);
+    expect(seenAgent).toEqual({ agentId, worldId, status: "active" });
+  });
+
+  it("returns 401 UNAUTHORIZED with missing_api_key when auth: 'agent' has no Authorization header", async () => {
+    const tool = makeTool({ auth: "agent" });
+
+    const result = await runTool(tool, "echo_tool", {}, { getDb: createTestDb });
+
+    expect(result.httpStatus).toBe(401);
+    expect(result.envelope.status).toBe("UNAUTHORIZED");
+    expect(result.envelope.reason_codes).toContain("missing_api_key");
+  });
+
+  it("returns 401 UNAUTHORIZED with invalid_api_key for a wrong key", async () => {
+    const db = await createTestDb();
+    await createTestAgent(db);
+    const tool = makeTool({ auth: "agent" });
+
+    const result = await runTool(tool, "echo_tool", {}, {
+      getDb: async () => db,
+      authorization: "Bearer mnd_aaaaaaaa_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    });
+
+    expect(result.httpStatus).toBe(401);
+    expect(result.envelope.status).toBe("UNAUTHORIZED");
+    expect(result.envelope.reason_codes).toContain("invalid_api_key");
   });
 });
