@@ -28,46 +28,65 @@ function slugify(name: string): string {
 export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
   const now = new Date();
 
-  await db
-    .insert(worlds)
-    .values({
-      slug: "main",
-      name: "Main",
-      ownerPrincipalId: null,
-      railMode: "paypal",
-    })
-    .onConflictDoNothing({ target: worlds.slug });
+  // All three steps run in one transaction so a failure partway through
+  // (e.g. ensureChartOfAccounts throwing) rolls back the whole thing
+  // instead of leaving a half-built main world (a world/clock row with
+  // no chart of accounts, or a world row with no clock row at all —
+  // which would make getSimNow throw forever for that world).
+  return db.transaction(async (tx) => {
+    await tx
+      .insert(worlds)
+      .values({
+        slug: "main",
+        name: "Main",
+        ownerPrincipalId: null,
+        railMode: "paypal",
+      })
+      .onConflictDoNothing({ target: worlds.slug });
 
-  const [world] = await db
-    .select()
-    .from(worlds)
-    .where(eq(worlds.slug, "main"))
-    .limit(1);
+    const [world] = await tx
+      .select()
+      .from(worlds)
+      .where(eq(worlds.slug, "main"))
+      .limit(1);
 
-  if (!world) {
-    throw new Error("Expected main world to exist after ON CONFLICT insert");
-  }
+    if (!world) {
+      throw new Error("Expected main world to exist after ON CONFLICT insert");
+    }
 
-  await db
-    .insert(clock)
-    .values({
-      worldId: world.id,
-      anchorReal: now,
-      anchorSim: now,
-      speed: "0",
-      manualOffsetMs: 0n,
-    })
-    .onConflictDoNothing({ target: clock.worldId });
+    await tx
+      .insert(clock)
+      .values({
+        worldId: world.id,
+        anchorReal: now,
+        anchorSim: now,
+        speed: "0",
+        manualOffsetMs: 0n,
+      })
+      .onConflictDoNothing({ target: clock.worldId });
 
-  await ensureChartOfAccounts(db, world.id);
+    await ensureChartOfAccounts(tx, world.id);
 
-  return { worldId: world.id };
+    return { worldId: world.id };
+  });
 }
 
 /**
  * Creates a new world with a fresh clock (speed 0, anchors set to now)
  * and a seeded chart of accounts. The slug is derived from `name` with a
  * random suffix to keep it short and unique.
+ *
+ * Note: the suffix is 6 random base-36 characters (36^6 ≈ 2.2 billion
+ * possibilities), so a collision with an existing slug is astronomically
+ * unlikely but not impossible; if it ever happens it surfaces as a
+ * unique-constraint violation on `worlds.slug` from the insert below,
+ * not a silent overwrite.
+ *
+ * All three writes (world, clock, chart of accounts) run in a single
+ * transaction so a failure partway through — e.g. `ensureChartOfAccounts`
+ * throwing — rolls back the whole thing instead of leaving an orphaned
+ * world with no clock row (which would make `getSimNow` throw forever
+ * for that world).
  */
 export async function createWorld(
   db: Db,
@@ -78,29 +97,31 @@ export async function createWorld(
   const slug = `${base}-${suffix}`;
   const now = new Date();
 
-  const [world] = await db
-    .insert(worlds)
-    .values({
-      slug,
-      name: input.name,
-      ownerPrincipalId: input.ownerPrincipalId,
-      railMode: input.railMode,
-    })
-    .returning();
+  return db.transaction(async (tx) => {
+    const [world] = await tx
+      .insert(worlds)
+      .values({
+        slug,
+        name: input.name,
+        ownerPrincipalId: input.ownerPrincipalId,
+        railMode: input.railMode,
+      })
+      .returning();
 
-  if (!world) {
-    throw new Error("Expected world to be inserted");
-  }
+    if (!world) {
+      throw new Error("Expected world to be inserted");
+    }
 
-  await db.insert(clock).values({
-    worldId: world.id,
-    anchorReal: now,
-    anchorSim: now,
-    speed: "0",
-    manualOffsetMs: 0n,
+    await tx.insert(clock).values({
+      worldId: world.id,
+      anchorReal: now,
+      anchorSim: now,
+      speed: "0",
+      manualOffsetMs: 0n,
+    });
+
+    await ensureChartOfAccounts(tx, world.id);
+
+    return { worldId: world.id, slug: world.slug };
   });
-
-  await ensureChartOfAccounts(db, world.id);
-
-  return { worldId: world.id, slug: world.slug };
 }

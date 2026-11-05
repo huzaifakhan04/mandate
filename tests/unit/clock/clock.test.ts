@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { Db } from "@/server/db/client";
-import { clock } from "@/server/db/schema";
+import { clock, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { advanceClock, getSimNow, simNow } from "@/server/clock/clock";
 import { createWorld, ensureMainWorld } from "@/server/services/worlds";
+import * as accountsModule from "@/server/ledger/accounts";
 import { trialBalance } from "@/server/ledger/trialBalance";
 import { eq } from "drizzle-orm";
 
@@ -70,6 +71,16 @@ describe("advanceClock / getSimNow", () => {
     await setupWorld();
     await expect(advanceClock(db, worldId, -1)).rejects.toThrow();
   });
+
+  it("advanceClock(…, 2.5) throws (non-integer days)", async () => {
+    await setupWorld();
+    await expect(advanceClock(db, worldId, 2.5)).rejects.toThrow();
+  });
+
+  it("advanceClock(…, NaN) throws", async () => {
+    await setupWorld();
+    await expect(advanceClock(db, worldId, NaN)).rejects.toThrow();
+  });
 });
 
 describe("ensureMainWorld", () => {
@@ -116,5 +127,32 @@ describe("createWorld", () => {
     const nonZero = accounts.filter((a) => a.balanceCents !== 0n);
     expect(nonZero).toHaveLength(0);
     expect(totalCents).toBe(0n);
+  });
+
+  it("rolls back the world and clock rows if a later step throws", async () => {
+    const db = await createTestDb();
+
+    const spy = vi
+      .spyOn(accountsModule, "ensureChartOfAccounts")
+      .mockRejectedValueOnce(new Error("boom: forced failure after world insert"));
+
+    await expect(
+      createWorld(db, {
+        name: "Doomed World",
+        ownerPrincipalId: null,
+        railMode: "sim",
+      }),
+    ).rejects.toThrow("boom");
+
+    spy.mockRestore();
+
+    const worldRows = await db
+      .select()
+      .from(worlds)
+      .where(eq(worlds.name, "Doomed World"));
+    expect(worldRows).toHaveLength(0);
+
+    const clockRows = await db.select().from(clock);
+    expect(clockRows).toHaveLength(0);
   });
 });

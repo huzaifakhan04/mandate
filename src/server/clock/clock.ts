@@ -56,6 +56,9 @@ export async function advanceClock(
   worldId: string,
   days: number,
 ): Promise<Date> {
+  if (!Number.isInteger(days)) {
+    throw new Error(`advanceClock: days must be an integer, got ${days}`);
+  }
   if (days <= 0 || days > 365) {
     throw new Error(`advanceClock: days must be in (0, 365], got ${days}`);
   }
