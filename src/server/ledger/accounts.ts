@@ -15,6 +15,7 @@ export const ACCOUNT_CODES = [
   "late_fee_income",
   "provision_expense",
   "note_interest_expense",
+  "paypal_fees_expense",
   "bank_equity",
   "suspense",
 ] as const;
@@ -43,6 +44,9 @@ export const CHART_OF_ACCOUNTS: Record<AccountCode, AccountType> = {
   // Task 4 (Note economics): holders' 80% share of each repayment's fee
   // is booked Dr `note_interest_expense` / Cr `notes_payable[holder_i]`.
   note_interest_expense: "expense",
+  // Task 10b: PayPal's capture/payout processing fees — the bank's own
+  // expense (Dr here / Cr `cash_paypal`), so cash tracks the PayPal balance.
+  paypal_fees_expense: "expense",
   bank_equity: "equity",
   suspense: "asset",
 } as const;

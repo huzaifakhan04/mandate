@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import type { Db } from "../db/client";
-import { amountToCents, findOperationByPaypalId, getOperation } from "../paypal/operations";
+import { amountToCents, findOperationByPaypalId, getOperation, optionalCents } from "../paypal/operations";
 import {
   getWebhookEvent,
   markWebhookEventProcessed,
@@ -151,7 +151,18 @@ function captureFromResource(resource: Record<string, unknown>): ObservedCapture
       amountCents = undefined; // Malformed amount: keep the stored one.
     }
   }
-  return { captureId, captureStatus, ...(amountCents ? { amountCents } : {}) };
+  let paypalFeeCents: string | undefined;
+  try {
+    paypalFeeCents = optionalCents(record(resource.seller_receivable_breakdown).paypal_fee) ?? undefined;
+  } catch {
+    paypalFeeCents = undefined; // Malformed fee: keep the stored one (Task 10b).
+  }
+  return {
+    captureId,
+    captureStatus,
+    ...(amountCents ? { amountCents } : {}),
+    ...(paypalFeeCents ? { paypalFeeCents } : {}),
+  };
 }
 
 /** Applies the event's effect; returns whether the event is done (false while its capture is still PENDING). */

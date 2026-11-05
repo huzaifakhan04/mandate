@@ -168,11 +168,31 @@ function firstCapture(body: unknown): CaptureRecord | null {
     return null;
   }
   const amount = asRecord(captured.amount);
+  const breakdown = asRecord(captured.seller_receivable_breakdown);
   return {
     captureId: requireString(captured.id, "the capture id"),
     captureStatus: requireString(captured.status, "the capture status"),
     amountCents: amountToCents(requireString(amount?.value, "the capture amount")).toString(),
+    paypalFeeCents: optionalCents(breakdown?.paypal_fee),
+    grossCents: optionalCents(breakdown?.gross_amount),
+    netCents: optionalCents(breakdown?.net_amount),
   };
+}
+
+/**
+ * Task 10b: an optional PayPal money object (`{ value: "1.23" }`) as a
+ * cents string, or `null` when absent. A malformed value throws (the
+ * whole response is then unparseable, like a malformed amount).
+ */
+export function optionalCents(money: unknown): string | null {
+  const value = asRecord(money)?.value;
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new InvalidAmountError(`Malformed PayPal amount: ${JSON.stringify(value)}`);
+  }
+  return amountToCents(value).toString();
 }
 
 /** Parses a capture response; `recovered` is set by the caller for the ORDER_ALREADY_CAPTURED path. */

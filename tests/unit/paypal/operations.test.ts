@@ -416,6 +416,9 @@ describe("enqueueOperation / executeOperation (paypal rail)", () => {
         captureId: "CAP-9",
         captureStatus: "COMPLETED",
         amountCents: "1500",
+        paypalFeeCents: null,
+        grossCents: null,
+        netCents: null,
         recovered: true,
       },
     });
@@ -480,7 +483,7 @@ describe("enqueueOperation / executeOperation (paypal rail)", () => {
     });
 
     const result = await executeOperation(db, operationId);
-    expect(result.body).toEqual({ batchId: "BATCH-1", batchStatus: "PENDING", item: null });
+    expect(result.body).toEqual({ batchId: "BATCH-1", batchStatus: "PENDING", item: null, feeCents: null });
     expect(requestId).toBe(operationId);
     expect(senderBatchId).toBe(operationId);
   });

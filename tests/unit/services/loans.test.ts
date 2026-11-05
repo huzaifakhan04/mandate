@@ -64,6 +64,8 @@ async function call(
   });
 }
 
+import { addBankCapital, SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/bankCapital";
+
 /** Funds the world's pool by `amountCents` via a lender's sim note purchase. */
 async function fundPool(db: Db, worldId: string, amountCents: number) {
   const lender = await createTestAgent(db, worldId, "lender@example.com");
@@ -72,6 +74,9 @@ async function fundPool(db: Db, worldId: string, amountCents: number) {
   await simApprove(db, checkoutId);
   const confirmed = await call(db, "confirm_checkout", lender.key, { checkout_id: checkoutId });
   expect(confirmed.envelope.status).toBe("COMPLETED");
+  // Task 10b: the bank's own capital covers the PayPal capture fee, so the
+  // pool's liquidity is exactly `amountCents` (fees are tested in paypalFees.test.ts).
+  await addBankCapital(db, worldId, simCaptureFee(amountCents));
   return lender;
 }
 
@@ -227,9 +232,10 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(acceptedData.disbursement).toEqual({ status: "SUCCEEDED" });
 
     expect(await loansReceivable(db, worldId)).toBe(25000n);
-    expect(await cashBalance(db, worldId)).toBe(5000n);
+    // Task 10b: less the (simulated) 25¢ PayPal payout fee — the bank's expense.
+    expect(await cashBalance(db, worldId)).toBe(5000n - SIM_PAYOUT_FEE);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
-    expect(await availableLiquidity(db, worldId)).toBe(5000n);
+    expect(await availableLiquidity(db, worldId)).toBe(5000n - SIM_PAYOUT_FEE);
 
     const [loan] = await db.select().from(loans).where(eq(loans.worldId, worldId));
     expect(loan?.agentId).toBe(agentId);
@@ -317,7 +323,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
     expect(await loansReceivable(db, worldId)).toBe(20000n);
-    expect(await cashBalance(db, worldId)).toBe(10000n);
+    expect(await cashBalance(db, worldId)).toBe(10000n - SIM_PAYOUT_FEE);
   });
 
   it("Review Focus 4: accept_offer holds a FOR UPDATE lock on the note series row (Ruling N)", async () => {
@@ -438,7 +444,11 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
       .select()
       .from(journalEntries)
       .where(and(eq(journalEntries.worldId, worldId), eq(journalEntries.sourceId, loanId)));
-    expect(entries).toHaveLength(1);
+    // One disbursement journal, plus (Task 10b) the batch's PayPal fee — each once.
+    expect(entries.map((entry) => entry.idempotencyKey).sort()).toEqual([
+      `loan_disbursement:${loanId}`,
+      `paypal_fee:payout:SIMBATCH-${loan!.disbursementOpId!}`,
+    ]);
     const reads = await db
       .select()
       .from(paypalOperations)

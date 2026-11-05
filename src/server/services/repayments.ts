@@ -39,6 +39,7 @@ import {
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
 import { registerLoanActivatedHook } from "./loans";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
+import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 
 /**
@@ -622,6 +623,9 @@ export async function applyRepaymentCapture(
       idempotencyKey: journalKey("repayment_capture", captureId),
       postings: repaymentPostings,
     });
+    // Task 10b: PayPal's fee on this capture — the bank's expense, so it
+    // changes neither the waterfall nor the holders' share.
+    await postCaptureFee(tx, { worldId, simAt: simNow, sourceType: "repayments", sourceId: repayment.id }, args.capture);
 
     // Cumulative, so partial payments never lose cents to flooring: the
     // holders' share of everything collected so far minus what earlier
@@ -914,6 +918,10 @@ export async function applyRemainderPayoutOutcome(
         { accountCode: "cash_paypal", amountCents: -repayment.remainderCents },
       ],
     });
+    if (resolution.fee) {
+      // Task 10b: the payout's PayPal fee, same transaction (once per batch).
+      await postPayoutFee(tx, { worldId, simAt, sourceType: "repayments", sourceId: repayment.id }, resolution.fee);
+    }
     await appendEvent(tx, worldId, {
       type: "loan.remainder_paid",
       aggregateId: loan.id,

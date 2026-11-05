@@ -9,13 +9,16 @@ import {
   getOperation,
   latestPayoutGetForSend,
   listDueOperations,
+  listRecentSucceededPayoutSends,
+  listTroubledOperations,
   orderPollTimes,
   type OperationRecord,
   type OrderCreateResult,
+  type TroubledOperation,
   type PayoutSendResult,
 } from "../paypal/operations";
 import { settleCheckoutByOrderId } from "../services/checkouts";
-import { dispatchPayoutOutcome, pollPayoutStatus } from "../services/payoutPolling";
+import { dispatchPayoutOutcome, PAYOUT_FEE_POLL_WINDOW_MS, pollPayoutStatus } from "../services/payoutPolling";
 import { isPollDue } from "../services/pollThrottle";
 import {
   loanIdFromInvoiceSourceId,
@@ -41,15 +44,20 @@ import { errorMessage, previousAnomalyCount, recordJobRun } from "./jobRuns";
  *    capture → settle the checkout).
  * 2. Payouts: `pollPayoutStatus` for every unsettled payout source —
  *    loans DISBURSING, redemptions pending, remainders pending (it is
- *    throttled by the send's age; throttled skips cost no budget).
+ *    throttled by the send's age; throttled skips cost no budget) — and
+ *    (Task 10b) for payouts settled in the last 72 h whose PayPal fee
+ *    wasn't known at success (journaled once a read reports it).
  * 3. Checkouts: `settleCheckoutByOrderId` for every open checkout order —
  *    pending note buys, open invoice/direct repayment links — no sooner
  *    than 30 s after the order was created, then throttled by its age
  *    (1 m / 5 m / 30 m / 6 h, `isPollDue`).
  * 4. Anomalies, listed (not fixed): note txs and repayment links in
  *    `review` (captured cash not journaled), UNCLAIMED payouts whose cancel
- *    failed terminally (liquidity stays reserved), failed/held remainder
- *    payouts (still owed in `payable_to_borrower`). One auto-fix: a failed
+ *    failed terminally or keeps failing retryably (liquidity stays
+ *    reserved), failed/held remainder payouts (still owed in
+ *    `payable_to_borrower`), money-moving operations still retrying after
+ *    ≥ 5 attempts (`operation_retrying`) and ones given up on by the retry
+ *    cap (`operation_retry_cap_exceeded`, Task 10b). One auto-fix: a failed
  *    invoice link on an ACTIVE loan is re-issued (`reissueInvoiceLink`);
  *    once its issues are used up it is listed instead.
  *
@@ -70,7 +78,9 @@ export type AnomalyType =
   | "repayment_link_review"
   | "unclaimed_cancel_failed"
   | "remainder_unpaid"
-  | "invoice_link_failed";
+  | "invoice_link_failed"
+  | "operation_retrying"
+  | "operation_retry_cap_exceeded";
 
 export interface Anomaly {
   type: AnomalyType;
@@ -333,19 +343,39 @@ async function pendingPayoutSources(db: Db, worldId: string): Promise<PayoutSour
 
 async function pollPayouts(run: Run, worldId: string): Promise<void> {
   const counts = run.world(worldId).counts;
-  for (const source of await pendingPayoutSources(run.db, worldId)) {
-    if (!run.canStart()) {
-      return;
-    }
-    await run.item(worldId, `${source.kind}:${source.sourceId}`, async () => {
-      const result = await pollPayoutStatus(run.db, source.sendOperationId, { now: run.now });
+  const poll = async (label: string, sendOperationId: string) => {
+    await run.item(worldId, label, async () => {
+      const result = await pollPayoutStatus(run.db, sendOperationId, { now: run.now });
       if (result.reason === "throttled") {
         counts.throttled += 1;
-      } else if (result.reason === "polled" || result.reason === "send_not_succeeded") {
+      } else if (result.reason === "polled" || result.reason === "send_not_succeeded" || result.reason === "fee_polled") {
         run.used += 1;
         counts.payoutsPolled += 1;
       }
     });
+  };
+
+  const pending = await pendingPayoutSources(run.db, worldId);
+  for (const source of pending) {
+    if (!run.canStart()) {
+      return;
+    }
+    await poll(`${source.kind}:${source.sourceId}`, source.sendOperationId);
+  }
+
+  // Task 10b: recently settled payouts whose batch fee wasn't known at
+  // success (`pollPayoutStatus` journals it, or reads the batch for it —
+  // a cheap no-op once the fee is known).
+  const pendingIds = new Set(pending.map((source) => source.sendOperationId));
+  const since = new Date(run.now.getTime() - PAYOUT_FEE_POLL_WINDOW_MS);
+  for (const sendOperationId of await listRecentSucceededPayoutSends(run.db, worldId, { since })) {
+    if (pendingIds.has(sendOperationId)) {
+      continue;
+    }
+    if (!run.canStart()) {
+      return;
+    }
+    await poll(`payout_fee:${sendOperationId}`, sendOperationId);
   }
 }
 
@@ -485,6 +515,13 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
     });
   }
 
+  for (const op of await listTroubledOperations(db, worldId, "retrying", { minAttempts: RETRYING_ANOMALY_ATTEMPTS })) {
+    anomalies.push({ type: "operation_retrying", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
+  }
+  for (const op of await listTroubledOperations(db, worldId, "capped")) {
+    anomalies.push({ type: "operation_retry_cap_exceeded", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
+  }
+
   for (const source of await pendingPayoutSources(db, worldId)) {
     const itemId = await unclaimedItemWithFailedCancel(db, worldId, source.sendOperationId);
     if (itemId) {
@@ -498,7 +535,18 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
   }
 }
 
-/** The payout item id when the send's item is UNCLAIMED and its cancel failed terminally, else `null`. */
+/** Task 10b: a write operation still `failed_retryable` after this many attempts is listed. */
+const RETRYING_ANOMALY_ATTEMPTS = 5;
+
+function troubledDetail(op: TroubledOperation): Record<string, string | number | null> {
+  return { kind: op.kind, purpose: op.purpose, source: op.sourceId, attempts: op.attempts, last_error: op.lastError };
+}
+
+/**
+ * The payout item id when the send's item is UNCLAIMED and its cancel
+ * failed — terminally, or (Task 10b) retryably: the real sandbox answered
+ * the cancel with 500 every time — else `null`.
+ */
 async function unclaimedItemWithFailedCancel(db: Db, worldId: string, sendOperationId: string): Promise<string | null> {
   const send = await getOperation(db, sendOperationId);
   if (!send || send.status !== "succeeded") {
@@ -510,5 +558,5 @@ async function unclaimedItemWithFailedCancel(db: Db, worldId: string, sendOperat
     return null;
   }
   const cancel = await getOperation(db, deriveOperationId(worldId, "payout_cancel", item.itemId));
-  return cancel?.status === "failed_terminal" ? item.itemId : null;
+  return cancel?.status === "failed_terminal" || cancel?.status === "failed_retryable" ? item.itemId : null;
 }

@@ -367,6 +367,8 @@ export interface ObservedCapture {
   captureId: string;
   captureStatus: string;
   amountCents?: string;
+  /** Task 10b: `seller_receivable_breakdown.paypal_fee`, when the webhook resource carries it. */
+  paypalFeeCents?: string;
 }
 
 /**
@@ -391,6 +393,7 @@ async function reobservePendingCapture(
       ...stored,
       captureStatus: observed.captureStatus,
       amountCents: observed.amountCents ?? stored.amountCents,
+      paypalFeeCents: observed.paypalFeeCents ?? stored.paypalFeeCents ?? null,
     };
   }
   const { operationId } = await enqueueReadOperation(db, {
@@ -407,7 +410,15 @@ async function reobservePendingCapture(
   if (!fresh || fresh.captureId !== stored.captureId) {
     return stored;
   }
-  return { ...stored, captureStatus: fresh.captureStatus, amountCents: fresh.amountCents };
+  // Task 10b: a PENDING capture has no fee breakdown yet; the fresh read's does.
+  return {
+    ...stored,
+    captureStatus: fresh.captureStatus,
+    amountCents: fresh.amountCents,
+    paypalFeeCents: fresh.paypalFeeCents ?? stored.paypalFeeCents ?? null,
+    grossCents: fresh.grossCents ?? stored.grossCents ?? null,
+    netCents: fresh.netCents ?? stored.netCents ?? null,
+  };
 }
 
 /**

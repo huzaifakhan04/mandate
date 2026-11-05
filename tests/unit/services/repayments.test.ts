@@ -26,6 +26,8 @@ import { pollPayoutStatus } from "@/server/services/payoutPolling";
 import { invoiceLinkDescription } from "@/server/services/repayments";
 import { createWorld } from "@/server/services/worlds";
 
+import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/bankCapital";
+
 type Data = Record<string, unknown>;
 
 async function createSimWorld(db: Db) {
@@ -65,6 +67,17 @@ async function fundPool(db: Db, worldId: string, amountCents: number, receiver =
   expect(confirmed.envelope.status).toBe("COMPLETED");
   return lender;
 }
+
+/**
+ * Task 10b: the (simulated) PayPal fees the bank pays out of cash in these
+ * flows — the 30000 note purchase capture (900), the disbursement payout
+ * (25), the 40000 invoice capture (1190) and the remainder payout (25).
+ * They are the bank's expense: no borrower/lender amount changes.
+ */
+const POOL_CAPTURE_FEE = simCaptureFee(30000);
+const INVOICE_CAPTURE_FEE = simCaptureFee(40000);
+const FEES_BEFORE_REMAINDER = POOL_CAPTURE_FEE + SIM_PAYOUT_FEE + INVOICE_CAPTURE_FEE;
+const ALL_FEES = FEES_BEFORE_REMAINDER + SIM_PAYOUT_FEE;
 
 const INVOICE = { client_email: "client@example.com", amount_cents: 40000, due_in_days: 14, description: "Website build" };
 
@@ -210,8 +223,10 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect(await bal(db, worldId, "note_interest_expense")).toBe(600n);
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
-    // cash: 30000 − 25000 + 40000 − 14250 = 30750 = holders 30600 + bank 150.
-    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n);
+    // cash: 30000 − 25000 + 40000 − 14250 = 30750 = holders 30600 + bank 150,
+    // less PayPal's fees (Task 10b), which the bank bears.
+    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n - ALL_FEES);
+    expect(await bal(db, worldId, "paypal_fees_expense")).toBe(ALL_FEES);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     await expectPositionsMatchLedger(db, worldId);
 
@@ -419,7 +434,8 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
       (e) => e.type === "loan.repaid",
     );
     expect(repaidEvents).toHaveLength(1);
-    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n - ALL_FEES);
+    expect(await bal(db, worldId, "paypal_fees_expense")).toBe(ALL_FEES); // each fee once
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     await expectPositionsMatchLedger(db, worldId);
@@ -483,10 +499,10 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const [repayment] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(repayment?.remainderStatus).toBe("failed");
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14250n);
-    expect(await bal(db, worldId, "cash_paypal")).toBe(45000n);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(45000n - FEES_BEFORE_REMAINDER); // no fee on the failed payout
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     // The borrower's money is not lendable pool liquidity.
-    expect(await availableLiquidity(db, worldId)).toBe(30750n);
+    expect(await availableLiquidity(db, worldId)).toBe(30750n - FEES_BEFORE_REMAINDER);
 
     const status = await call(db, "get_status", borrower.key, {});
     expect((status.envelope.data as Data).balances).toMatchObject({ payable_to_you_cents: 14250 });
@@ -516,7 +532,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const [pending] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(pending?.remainderStatus).toBe("pending");
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14250n);
-    expect(await availableLiquidity(db, worldId)).toBe(30750n);
+    expect(await availableLiquidity(db, worldId)).toBe(30750n - FEES_BEFORE_REMAINDER);
 
     const polled = await pollPayoutStatus(db, pending!.remainderPayoutOpId!);
     expect(polled).toEqual({ polled: true, reason: "polled" });
@@ -524,7 +540,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const [paid] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(paid?.remainderStatus).toBe("paid");
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
-    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(30750n - ALL_FEES);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     expect(await pollPayoutStatus(db, pending!.remainderPayoutOpId!)).toEqual({

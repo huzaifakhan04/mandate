@@ -50,6 +50,16 @@ export interface CaptureRecord {
   captureId: string;
   captureStatus: string;
   amountCents: string;
+  /**
+   * Task 10b: PayPal's processing fee on this capture
+   * (`seller_receivable_breakdown.paypal_fee`), with the breakdown's gross
+   * and net — `null` when PayPal didn't report a breakdown (e.g. a
+   * `PENDING` capture, or a result stored before Task 10b, where the
+   * fields are absent altogether — read them with `?? null`).
+   */
+  paypalFeeCents: string | null;
+  grossCents: string | null;
+  netCents: string | null;
 }
 
 export interface OrderCaptureResult extends CaptureRecord {
@@ -80,12 +90,16 @@ export interface PayoutSendResult {
   batchStatus: string;
   /** Present when PayPal (or the sim) already reports the item; PayPal's live POST usually doesn't. */
   item: PayoutItemResult | null;
+  /** Task 10b: the batch's PayPal fee (`batch_header.fees`), or `null` when not reported. */
+  feeCents: string | null;
 }
 
 export interface PayoutGetResult {
   batchId: string;
   batchStatus: string;
   items: PayoutItemResult[];
+  /** Task 10b: the batch's PayPal fee (`batch_header.fees`), or `null` when not reported. */
+  feeCents: string | null;
 }
 
 /**

@@ -17,6 +17,7 @@ import { price, PRICING_LIMITS, rangeReasons } from "../domain/pricing";
 import { postJournal } from "../ledger/postJournal";
 import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } from "../paypal/operations";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
+import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
@@ -697,6 +698,10 @@ export async function applyPayoutOutcome(
         { accountCode: "cash_paypal", amountCents: -loan.principalCents },
       ],
     });
+    if (resolution.fee) {
+      // Task 10b: the payout's PayPal fee, same transaction (once per batch).
+      await postPayoutFee(tx, { worldId, simAt, sourceType: "loans", sourceId: loan.id }, resolution.fee);
+    }
 
     await appendEvent(tx, worldId, {
       type: "loan.disbursed",

@@ -85,6 +85,9 @@ describe("Fix round 1 (I1): a capture stored PENDING is re-observed", () => {
     expect(await journalsWithKeyPrefix(db, worldId, "repayment_capture:")).toHaveLength(2);
     const [repayment] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(repayment?.remainderStatus).toBe("paid");
+    // Task 10b: the PENDING capture had no fee breakdown; the re-read COMPLETED one does — journaled once.
+    const captureId = ((await captureOp(db, worldId, orderId))!.response as Data).captureId as string;
+    expect(await journalsWithKeyPrefix(db, worldId, `paypal_fee:capture:${captureId}`)).toHaveLength(1);
   });
 
   it("a PENDING capture later DENIED → applyFailure (direct checkout failed, nothing applied)", async () => {

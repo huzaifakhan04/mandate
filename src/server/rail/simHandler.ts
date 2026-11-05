@@ -43,6 +43,14 @@ import type { ExecutableRequest, OperationKind } from "../paypal/types";
  *   the item); cancelling an already-`RETURNED` item answers the same;
  *   any other item → 422 `ITEM_CANNOT_BE_CANCELLED`; unknown → 404.
  * - `order.get` / `payout.get` → 200 with the current state, or 404.
+ *
+ * Fees (Task 10b — SIMULATED, not PayPal's real pricing): a capture
+ * reports `seller_receivable_breakdown` with a `paypal_fee` of 2.9% + 30¢
+ * (2.9% rounded half-up to the cent, never more than the gross — see
+ * `simCaptureFeeCents`); a payout batch reports `batch_header.fees` of 25¢
+ * per item in `SUCCESS` (so 0 for FAILED/UNCLAIMED/RETURNED items, and no
+ * `fees` at all in the live-shaped `"pending"` POST response). They exist
+ * so tests exercise fee journaling on the sim rail.
  */
 
 type SimOrderStatus = "PAYER_ACTION_REQUIRED" | "APPROVED" | "COMPLETED";
@@ -144,8 +152,27 @@ async function findOrder(
   return row ? { id: row.id, state: row.simState as SimOrderState } : undefined;
 }
 
+/** Simulated capture fee: 2.9% (rounded half-up to the cent) + 30¢, capped at the gross. */
+export function simCaptureFeeCents(grossCents: bigint): bigint {
+  const fee = (grossCents * 29n + 500n) / 1000n + 30n;
+  return fee > grossCents ? grossCents : fee;
+}
+
+/** Simulated payout fee: 25¢ per item in `SUCCESS`. */
+const SIM_PAYOUT_ITEM_FEE_CENTS = 25n;
+
+function usd(cents: bigint): { currency_code: string; value: string } {
+  return { currency_code: "USD", value: centsToAmount(cents) };
+}
+
+function sellerReceivableBreakdown(grossCents: bigint): Record<string, unknown> {
+  const fee = simCaptureFeeCents(grossCents);
+  return { gross_amount: usd(grossCents), paypal_fee: usd(fee), net_amount: usd(grossCents - fee) };
+}
+
 function orderBody(state: SimOrderState): Record<string, unknown> {
   const amount = { currency_code: "USD", value: centsToAmount(BigInt(state.amountCents)) };
+  const captureStatus = state.captureStatus ?? "COMPLETED";
   return {
     id: state.orderId,
     intent: "CAPTURE",
@@ -154,7 +181,21 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
       {
         amount,
         ...(state.captureId
-          ? { payments: { captures: [{ id: state.captureId, status: state.captureStatus ?? "COMPLETED", amount }] } }
+          ? {
+              payments: {
+                captures: [
+                  {
+                    id: state.captureId,
+                    status: captureStatus,
+                    amount,
+                    // Like PayPal, the fee breakdown appears once the capture has completed.
+                    ...(captureStatus === "COMPLETED"
+                      ? { seller_receivable_breakdown: sellerReceivableBreakdown(BigInt(state.amountCents)) }
+                      : {}),
+                  },
+                ],
+              },
+            }
           : {}),
       },
     ],
@@ -225,11 +266,13 @@ async function getOrder(db: Db, req: SimRequest): Promise<SimResponse> {
 }
 
 function payoutBody(state: SimPayoutState): Record<string, unknown> {
+  const succeeded = BigInt(state.items.filter((item) => item.transactionStatus === "SUCCESS").length);
   return {
     batch_header: {
       payout_batch_id: state.batchId,
       batch_status: state.batchStatus,
       sender_batch_header: { sender_batch_id: state.senderBatchId },
+      fees: { currency: "USD", value: centsToAmount(succeeded * SIM_PAYOUT_ITEM_FEE_CENTS) },
     },
     items: state.items.map((item) => ({
       payout_item_id: item.itemId,
@@ -272,9 +315,12 @@ async function sendPayout(db: Db, req: SimRequest): Promise<SimResponse> {
     // (PENDING) and no items; the item's real status is visible only via
     // payout.get (or a webhook).
     const full = payoutBody(state);
+    // No `fees` either: like PayPal's POST, the fee shows up only via payout.get.
+    const header = { ...(full.batch_header as Record<string, unknown>) };
+    delete header.fees;
     return {
       httpStatus: 201,
-      body: { batch_header: { ...(full.batch_header as Record<string, unknown>), batch_status: "PENDING" } },
+      body: { batch_header: { ...header, batch_status: "PENDING" } },
     };
   }
   return { httpStatus: 201, body: payoutBody(state) };

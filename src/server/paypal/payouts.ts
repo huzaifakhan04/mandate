@@ -1,4 +1,4 @@
-import { assertPositiveAmountCents, centsToAmount } from "./orders";
+import { assertPositiveAmountCents, centsToAmount, optionalCents } from "./orders";
 import type {
   ExecutableRequest,
   PayoutCancelItemResult,
@@ -73,7 +73,7 @@ export function batchIdFromPath(path: string): string {
 }
 
 interface PayPalPayoutBody {
-  batch_header?: { payout_batch_id?: unknown; batch_status?: unknown };
+  batch_header?: { payout_batch_id?: unknown; batch_status?: unknown; fees?: unknown };
   items?: { payout_item_id?: unknown; transaction_status?: unknown }[];
 }
 
@@ -94,12 +94,17 @@ function parseItems(body: unknown): PayoutItemResult[] {
   }));
 }
 
+/** Task 10b: `batch_header.fees` (PayPal's fee for the batch) as cents, or `null` when not reported. */
+function parseFee(body: unknown): string | null {
+  return optionalCents((body as PayPalPayoutBody | undefined)?.batch_header?.fees);
+}
+
 export function parseSendPayoutResponse(body: unknown): PayoutSendResult {
-  return { ...parseHeader(body), item: parseItems(body)[0] ?? null };
+  return { ...parseHeader(body), item: parseItems(body)[0] ?? null, feeCents: parseFee(body) };
 }
 
 export function parseGetPayoutResponse(body: unknown): PayoutGetResult {
-  return { ...parseHeader(body), items: parseItems(body) };
+  return { ...parseHeader(body), items: parseItems(body), feeCents: parseFee(body) };
 }
 
 /** `POST /v1/payments/payouts-item/{itemId}/cancel` (Ruling R) — only valid for an UNCLAIMED item. */

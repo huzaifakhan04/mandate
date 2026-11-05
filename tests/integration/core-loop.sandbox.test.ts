@@ -423,6 +423,17 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
       summary.operations = report.operations.rows;
       summary.non_zero_accounts = report.accounts;
       expect(report.trial_balance_cents).toBe("0");
+      // Task 10b: PayPal's fees are journaled (Dr paypal_fees_expense / Cr
+      // cash_paypal), so cash = the gross money flows less the fees — the
+      // real PayPal balance movement. The captures always carry a fee.
+      const balanceOf = (code: string) =>
+        BigInt(report.accounts.find((a) => a.code === code && a.owner_ref === null)?.balance_cents ?? "0");
+      const feesCents = balanceOf("paypal_fees_expense");
+      summary.paypal_fees_cents = feesCents.toString();
+      expect(feesCents > 0n).toBe(true);
+      expect(balanceOf("cash_paypal") + feesCents).toBe(
+        BigInt(NOTES_CENTS + INVOICE_CENTS - PRINCIPAL_CENTS - REMAINDER_CENTS),
+      );
       expect(report.operations.failed, JSON.stringify(report.operations.by_status)).toBe(0);
       const payouts = report.operations.rows.filter((r) => r.kind === "payout.send");
       expect(payouts.map((p) => [p.purpose, p.status])).toEqual([

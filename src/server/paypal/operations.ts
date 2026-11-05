@@ -52,6 +52,7 @@ export {
   buildCreateOrderRequest,
   buildGetOrderRequest,
   centsToAmount,
+  optionalCents,
 } from "./orders";
 export { buildCancelPayoutItemRequest, buildGetPayoutRequest, buildSendPayoutRequest } from "./payouts";
 export { PayPalApiError, PayPalOperationReuseError };
@@ -618,6 +619,57 @@ async function claim(
   return row;
 }
 
+/** Task 10b (Ruling U): a write op is given up on after this many cumulative attempts… */
+export const RETRY_CAP_ATTEMPTS = 20;
+/** …or once it was first enqueued (≈ first attempted) this long ago, in real time. */
+export const RETRY_CAP_AGE_MS = 24 * 60 * 60 * 1000;
+/** `last_error` (and the stored error's `issue`) of an operation given up on by the cap. */
+export const RETRY_CAP_EXCEEDED = "retry_cap_exceeded";
+
+/**
+ * Task 10b (Ruling U): a money-moving (non-read) operation whose outcome
+ * would be `failed_retryable` becomes `failed_terminal` once it has made
+ * ≥ `RETRY_CAP_ATTEMPTS` attempts (counting this run) or was enqueued
+ * more than `RETRY_CAP_AGE_MS` ago — e.g. the sandbox's
+ * `payouts-item/{id}/cancel` answering 500 forever. The stored error keeps
+ * PayPal's `name`, sets `issue` = `retry_cap_exceeded`, and keeps the
+ * original issue/details under `details`; `last_error` =
+ * `retry_cap_exceeded` (the reconcile cron lists these as
+ * `operation_retry_cap_exceeded`). Reads are never capped (they are
+ * throttled instead and move no money).
+ */
+function applyRetryCap(claimed: OperationRow, outcome: Outcome, counted: number): Outcome {
+  if (outcome.status !== "failed_retryable" || (READ_KINDS as readonly string[]).includes(claimed.kind)) {
+    return outcome;
+  }
+  const attempts = claimed.attempts + counted;
+  const ageMs = Date.now() - claimed.createdAt.getTime();
+  if (attempts < RETRY_CAP_ATTEMPTS && ageMs < RETRY_CAP_AGE_MS) {
+    return outcome;
+  }
+  const original = (outcome.response as OperationError).error;
+  return {
+    ...outcome,
+    status: "failed_terminal",
+    lastError: RETRY_CAP_EXCEEDED,
+    response: {
+      error: {
+        name: original.name,
+        issue: RETRY_CAP_EXCEEDED,
+        message: `Gave up after ${attempts} attempts over ${Math.round(ageMs / 60_000)} minutes: ${original.message ?? errorCode({ error: original })}`,
+        debugId: original.debugId,
+        details: {
+          reason: RETRY_CAP_EXCEEDED,
+          attempts,
+          firstEnqueuedAt: claimed.createdAt.toISOString(),
+          lastIssue: original.issue,
+          lastDetails: original.details,
+        },
+      },
+    },
+  };
+}
+
 /**
  * The single place that writes an attempt's outcome (Ruling H):
  * `attempts` accumulates (`attempts + n`, n ≥ 1 for a failed run), `claimed_at` is cleared,
@@ -634,12 +686,13 @@ async function claim(
  * When the guarded write loses, only the attempts are counted and the
  * row's current state is returned.
  */
-async function recordOutcome(db: Db, claimed: OperationRow, outcome: Outcome): Promise<OperationRow> {
+async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome): Promise<OperationRow> {
   const t = paypalOperations;
   // A failed run counts as at least one attempt, even when nothing was
   // sent (config error, internal error), so backoff keeps growing.
   const counted =
-    outcome.status === "succeeded" ? outcome.attempts : Math.max(outcome.attempts, 1);
+    rawOutcome.status === "succeeded" ? rawOutcome.attempts : Math.max(rawOutcome.attempts, 1);
+  const outcome = applyRetryCap(claimed, rawOutcome, counted);
   const common = {
     status: outcome.status,
     httpStatus: outcome.httpStatus,
@@ -787,6 +840,57 @@ export async function listDueOperations(
   return rows.map(toOperationRecord);
 }
 
+/** Task 10b: a write operation the reconcile cron reports as an anomaly. */
+export interface TroubledOperation {
+  operationId: string;
+  kind: OperationKind;
+  purpose: OperationPurpose | null;
+  sourceId: string | null;
+  attempts: number;
+  lastError: string | null;
+}
+
+/**
+ * Task 10b (reconcile anomalies), money-moving kinds only, oldest first,
+ * at most `limit`, in one world:
+ * - `retrying`: `failed_retryable` with ≥ `minAttempts` attempts;
+ * - `capped`: `failed_terminal` given up on by the retry cap
+ *   (`last_error = retry_cap_exceeded`).
+ */
+export async function listTroubledOperations(
+  db: Db,
+  worldId: string,
+  which: "retrying" | "capped",
+  { minAttempts = 0, limit = 100 }: { minAttempts?: number; limit?: number } = {},
+): Promise<TroubledOperation[]> {
+  const t = paypalOperations;
+  const rows = await db
+    .select()
+    .from(t)
+    .where(
+      and(
+        eq(t.worldId, worldId),
+        sql`${t.kind} not in (${sql.join(
+          READ_KINDS.map((kind) => sql`${kind}`),
+          sql`, `,
+        )})`,
+        which === "retrying"
+          ? and(eq(t.status, "failed_retryable"), gte(t.attempts, minAttempts))
+          : and(eq(t.status, "failed_terminal"), eq(t.lastError, RETRY_CAP_EXCEEDED)),
+      ),
+    )
+    .orderBy(t.createdAt, t.id)
+    .limit(limit);
+  return rows.map((row) => ({
+    operationId: row.id,
+    kind: row.kind as OperationKind,
+    purpose: row.purpose as OperationPurpose | null,
+    sourceId: row.sourceId,
+    attempts: row.attempts,
+    lastError: row.lastError,
+  }));
+}
+
 /**
  * Task 8 (reconcile, step 3 throttle): when the `order.create` that made
  * `orderId` was enqueued, and when the newest `order.get` of that order
@@ -864,6 +968,27 @@ export async function latestPayoutGetForSend(
 }
 
 /**
+ * Task 10b (reconcile, payout fees): succeeded `payout.send` operations
+ * in `worldId` enqueued at or after `since`, oldest first, at most
+ * `limit` — candidates whose PayPal fee may still have to be read and
+ * journaled after their source settled.
+ */
+export async function listRecentSucceededPayoutSends(
+  db: Db,
+  worldId: string,
+  { since, limit = 200 }: { since: Date; limit?: number },
+): Promise<string[]> {
+  const t = paypalOperations;
+  const rows = await db
+    .select({ id: t.id })
+    .from(t)
+    .where(and(eq(t.worldId, worldId), eq(t.kind, "payout.send"), eq(t.status, "succeeded"), gte(t.createdAt, since)))
+    .orderBy(t.createdAt, t.id)
+    .limit(limit);
+  return rows.map((row) => row.id);
+}
+
+/**
  * For throttling `pollPayoutStatus`: when the `payout.send` was enqueued,
  * and when the newest `payout.get` of its batch was enqueued — in ANY
  * status (reads carry the batch id in `paypal_id` from enqueue — Fix
@@ -929,7 +1054,10 @@ export interface ExecuteOperationOptions {
  *    fails. An unparseable 2xx `payout.send` is `failed_retryable` (the
  *    same request id replays the same batch); for other kinds it is
  *    `failed_terminal`. An unexpected exception is `failed_retryable`.
- *    Every failed run counts as ≥ 1 attempt for backoff.
+ *    Every failed run counts as ≥ 1 attempt for backoff. Task 10b: a
+ *    money-moving (non-read) kind that would be `failed_retryable` is
+ *    `failed_terminal` (`retry_cap_exceeded`) once it reached 20 attempts
+ *    or was enqueued > 24 h ago (`applyRetryCap`).
  * 4. **Return** `toOperationResult(row)` — identical on replay.
  */
 export async function executeOperation(

@@ -1,19 +1,22 @@
 import { eq } from "drizzle-orm";
 
+import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
-import { loans, noteTransactions } from "../db/schema";
+import { journalEntries, loans, noteTransactions, repayments } from "../db/schema";
 import { scoped } from "../db/scoped";
 import {
   buildGetPayoutRequest,
   enqueueReadOperation,
   executeOperation,
   getOperation,
+  latestPayoutGetForSend,
   payoutPollTimes,
   type PayoutSendResult,
 } from "../paypal/operations";
 import { applyPayoutOutcome } from "./loans";
 import { applyRedemptionPayoutOutcome } from "./notes";
 import type { ObservedPayoutStatus } from "./payoutStatus";
+import { knownPayoutFee, payoutFeeJournalKey, postPayoutFee } from "./paypalFees";
 import { isPollDue, pollIntervalMs } from "./pollThrottle";
 import { applyRemainderPayoutOutcome, refreshRepaymentLink, remainderPayoutNeedsPolling } from "./repayments";
 import { railForWorld } from "./worlds";
@@ -27,7 +30,9 @@ export type PollPayoutReason =
   | "source_settled"
   | "throttled"
   | "send_not_succeeded"
-  | "polled";
+  | "polled"
+  /** Task 10b: the source had settled but its batch fee wasn't known yet; a read was made for it. */
+  | "fee_polled";
 
 export interface PollPayoutResult {
   /** Whether a `payout.get` read was enqueued and executed by this call. */
@@ -46,6 +51,106 @@ async function sourceNeedsPolling(db: Db, worldId: string, purpose: string, sour
   }
   const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, sourceId));
   return noteTx?.kind === "redeem" && noteTx.status === "pending";
+}
+
+/** Task 10b: whether the send's source settled as a SUCCESS (the payout effect was applied). */
+async function sourceSucceeded(db: Db, worldId: string, purpose: string, sourceId: string): Promise<boolean> {
+  if (purpose === "loan_disbursement") {
+    const loan = await scoped(db, worldId).findOne(loans, eq(loans.id, sourceId));
+    return !!loan?.disbursedSimAt;
+  }
+  if (purpose === "remainder_payout") {
+    const repayment = await scoped(db, worldId).findOne(repayments, eq(repayments.id, sourceId));
+    return repayment?.remainderStatus === "paid";
+  }
+  const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, sourceId));
+  return noteTx?.kind === "redeem" && noteTx.status === "completed";
+}
+
+const FEE_SOURCE_TYPE: Record<string, string> = {
+  loan_disbursement: "loans",
+  note_redemption: "note_transactions",
+  remainder_payout: "repayments",
+};
+
+export type PayoutFeeState =
+  /** Not a succeeded payout send of a known purpose, or its source hasn't (or didn't) succeed. */
+  | "not_applicable"
+  /** Known (and journaled, when non-zero). */
+  | "known"
+  /** The source succeeded but no read so far reported the batch's fee. */
+  | "unknown";
+
+/**
+ * Task 10b: journals a settled payout's PayPal fee when the payout's
+ * success was applied without it (the fee showed up only in a later
+ * `payout.get`) — `paypal_fee:payout:<batchId>`, idempotent, so calling it
+ * after every poll/webhook is safe. Only once the source succeeded (the
+ * applier itself journals a fee already known at success, in its own
+ * transaction). Never call inside a transaction.
+ */
+export async function postPayoutFeeIfKnown(db: Db, sendOperationId: string): Promise<PayoutFeeState> {
+  const record = await getOperation(db, sendOperationId);
+  const sourceType = record?.purpose ? FEE_SOURCE_TYPE[record.purpose] : undefined;
+  if (!record || record.kind !== "payout.send" || record.status !== "succeeded" || !record.sourceId || !sourceType) {
+    return "not_applicable";
+  }
+  const { worldId, sourceId } = record;
+  if (!(await sourceSucceeded(db, worldId, record.purpose!, sourceId))) {
+    return "not_applicable";
+  }
+  const fee = knownPayoutFee(record.body as PayoutSendResult, await latestPayoutGetForSend(db, sendOperationId));
+  if (!fee) {
+    return "unknown";
+  }
+  const journaled = await scoped(db, worldId).findOne(
+    journalEntries,
+    eq(journalEntries.idempotencyKey, payoutFeeJournalKey(fee.batchId)),
+  );
+  if (fee.feeCents > 0n && !journaled) {
+    const simAt = await getSimNow(db, worldId);
+    await db.transaction((tx) => postPayoutFee(tx, { worldId, simAt, sourceType, sourceId }, fee));
+  }
+  return "known";
+}
+
+/** Task 10b: how long after a send the cron keeps reading a settled batch for its (still unknown) fee. */
+export const PAYOUT_FEE_POLL_WINDOW_MS = 72 * 60 * 60 * 1000;
+
+/**
+ * Task 10b: the source already settled. If it succeeded and its batch
+ * fee isn't known yet (and the send is younger than
+ * `PAYOUT_FEE_POLL_WINDOW_MS`), make one throttled `payout.get` read and
+ * journal the fee if that read reports it. Otherwise nothing.
+ */
+async function pollSettledPayoutFee(db: Db, sendOperationId: string, now: Date): Promise<PollPayoutResult> {
+  const settled: PollPayoutResult = { polled: false, reason: "source_settled" };
+  if ((await postPayoutFeeIfKnown(db, sendOperationId)) !== "unknown") {
+    return settled;
+  }
+  const times = await payoutPollTimes(db, sendOperationId);
+  const record = await getOperation(db, sendOperationId);
+  if (!times || !record || now.getTime() - times.sendCreatedAt.getTime() > PAYOUT_FEE_POLL_WINDOW_MS) {
+    return settled;
+  }
+  if (!isPollDue({ createdAt: times.sendCreatedAt, lastReadAt: times.lastReadCreatedAt, now })) {
+    return { polled: false, reason: "throttled" };
+  }
+  await readBatch(db, record.worldId, (record.body as PayoutSendResult).batchId);
+  await postPayoutFeeIfKnown(db, sendOperationId);
+  return { polled: true, reason: "fee_polled" };
+}
+
+/** Enqueues and executes one `payout.get` read of a batch. */
+async function readBatch(db: Db, worldId: string, batchId: string): Promise<void> {
+  const rail = await railForWorld(db, worldId);
+  const { operationId } = await enqueueReadOperation(db, {
+    worldId,
+    rail,
+    kind: "payout.get",
+    request: buildGetPayoutRequest(batchId),
+  });
+  await executeOperation(db, operationId, { ignoreBackoff: true });
 }
 
 type PayoutApplier = (db: Db, operationId: string, observed?: ObservedPayoutStatus) => Promise<void>;
@@ -80,6 +185,8 @@ export async function dispatchPayoutOutcome(
   if (record.purpose === "loan_disbursement") {
     await refreshRepaymentLink(db, record.worldId, record.sourceId);
   }
+  // Task 10b: a fee that only became known after the success was applied.
+  await postPayoutFeeIfKnown(db, sendOperationId);
   return true;
 }
 
@@ -91,7 +198,10 @@ export async function dispatchPayoutOutcome(
  * 1. Not a `payout.send`, or a purpose with no applier → nothing. Task 7
  *    adds `remainder_payout` (and, after a disbursement's applier, executes
  *    the loan's queued invoice-link create).
- * 2. The source (loan / redemption) is already settled → nothing enqueued.
+ * 2. The source (loan / redemption / remainder) is already settled →
+ *    nothing, unless (Task 10b) it succeeded without its batch's PayPal
+ *    fee being known yet: then one throttled read for the fee
+ *    (`fee_polled`), within `PAYOUT_FEE_POLL_WINDOW_MS` of the send.
  * 3. The send hasn't succeeded yet (no batch id) → no read; the applier
  *    (re-)executes the send itself, respecting its backoff.
  * 4. Throttled: skips if the newest `payout.get` of this batch (any
@@ -117,7 +227,7 @@ export async function pollPayoutStatus(
   const apply = (database: Db, opId: string) => dispatchPayoutOutcome(database, opId);
 
   if (!(await sourceNeedsPolling(db, record.worldId, record.purpose, record.sourceId))) {
-    return { polled: false, reason: "source_settled" };
+    return pollSettledPayoutFee(db, sendOperationId, now);
   }
 
   if (record.status !== "succeeded") {
@@ -130,15 +240,7 @@ export async function pollPayoutStatus(
     return { polled: false, reason: "throttled" };
   }
 
-  const batchId = (record.body as PayoutSendResult).batchId;
-  const rail = await railForWorld(db, record.worldId);
-  const { operationId } = await enqueueReadOperation(db, {
-    worldId: record.worldId,
-    rail,
-    kind: "payout.get",
-    request: buildGetPayoutRequest(batchId),
-  });
-  await executeOperation(db, operationId, { ignoreBackoff: true });
+  await readBatch(db, record.worldId, (record.body as PayoutSendResult).batchId);
   await apply(db, sendOperationId);
   return { polled: true, reason: "polled" };
 }

@@ -55,7 +55,7 @@ describe("payouts request builders / response parsers", () => {
   it("parses a live-style send response with no items", () => {
     expect(
       parseSendPayoutResponse({ batch_header: { payout_batch_id: "B1", batch_status: "PENDING" } }),
-    ).toEqual({ batchId: "B1", batchStatus: "PENDING", item: null });
+    ).toEqual({ batchId: "B1", batchStatus: "PENDING", item: null, feeCents: null });
   });
 
   it("parses a get response's items", () => {
@@ -68,6 +68,7 @@ describe("payouts request builders / response parsers", () => {
       batchId: "B1",
       batchStatus: "SUCCESS",
       items: [{ itemId: "I1", transactionStatus: "UNCLAIMED" }],
+      feeCents: null,
     });
   });
 

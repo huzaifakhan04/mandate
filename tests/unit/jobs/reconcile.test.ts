@@ -18,7 +18,13 @@ import { trialBalance } from "@/server/ledger/trialBalance";
 import { createCronHandler } from "@/server/jobs/cronHandler";
 import { runReconcile } from "@/server/jobs/reconcile";
 import { runTick } from "@/server/jobs/tick";
-import { deriveOperationId } from "@/server/paypal/operations";
+import {
+  buildCancelPayoutItemRequest,
+  buildGetPayoutRequest,
+  deriveOperationId,
+  enqueueOperation,
+  enqueueReadOperation,
+} from "@/server/paypal/operations";
 import { simApprove } from "@/server/rail/simHandler";
 import { applyPayoutOutcome } from "@/server/services/loans";
 
@@ -316,6 +322,96 @@ describe("reconcile cron", () => {
     expect((await getLoan(db, borrower.loanId)).status).toBe("disbursing");
     const anomaly = report.anomalies.find((a) => a.type === "unclaimed_cancel_failed");
     expect(anomaly).toMatchObject({ worldId, sourceId: borrower.loanId });
+  });
+
+  it("Task 10b: lists an UNCLAIMED payout whose cancel keeps failing retryably (not only terminally)", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId, { invoice: false, receiver: "unclaimed-borrower@example.com" });
+    const [cancel] = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.kind, "payout.cancel_item")));
+    // Rewind to "UNCLAIMED, cancel answered 500 and is backing off" (the real sandbox's behaviour).
+    await db
+      .update(paypalOperations)
+      .set({
+        status: "failed_retryable",
+        attempts: 3,
+        lastError: "INTERNAL_SERVER_ERROR",
+        nextAttemptAt: sql`now() + interval '1 hour'`,
+        response: { error: { name: "INTERNAL_SERVER_ERROR", issue: null, message: null, debugId: null, details: null } },
+      })
+      .where(eq(paypalOperations.id, cancel!.id));
+    const [send] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, borrower.sendOpId));
+    const state = send!.simState as { items: { transactionStatus: string }[] };
+    state.items[0]!.transactionStatus = "UNCLAIMED";
+    await db.update(paypalOperations).set({ simState: state }).where(eq(paypalOperations.id, borrower.sendOpId));
+    await db.update(loans).set({ status: "disbursing" }).where(eq(loans.id, borrower.loanId));
+
+    const report = await runReconcile(db, { now: later() });
+    expect((await getLoan(db, borrower.loanId)).status).toBe("disbursing");
+    expect(report.anomalies).toContainEqual(
+      expect.objectContaining({ type: "unclaimed_cancel_failed", worldId, sourceId: borrower.loanId }),
+    );
+  });
+
+  it("Task 10b: lists write operations retrying ≥ 5 attempts (operation_retrying) — never reads — and capped ones", async () => {
+    const worldId = await createSimWorld(db);
+    const cancelOp = (itemId: string) =>
+      enqueueOperation(db, {
+        worldId,
+        rail: "sim",
+        kind: "payout.cancel_item",
+        purpose: "payout_cancel",
+        sourceId: itemId,
+        request: buildCancelPayoutItemRequest(itemId),
+      });
+    const { operationId } = await cancelOp("ITEM-RETRYING");
+    const { operationId: fewId } = await cancelOp("ITEM-FEW");
+    const { operationId: cappedId } = await cancelOp("ITEM-CAPPED");
+    const { operationId: readId } = await enqueueReadOperation(db, {
+      worldId,
+      rail: "sim",
+      kind: "payout.get",
+      request: buildGetPayoutRequest("BATCH-READ"),
+    });
+    const retrying = {
+      status: "failed_retryable",
+      lastError: "INTERNAL_SERVER_ERROR",
+      nextAttemptAt: sql`now() + interval '1 hour'`,
+    } as const;
+    await db.update(paypalOperations).set({ ...retrying, attempts: 6 }).where(eq(paypalOperations.id, operationId));
+    await db.update(paypalOperations).set({ ...retrying, attempts: 4 }).where(eq(paypalOperations.id, fewId));
+    await db.update(paypalOperations).set({ ...retrying, attempts: 9 }).where(eq(paypalOperations.id, readId));
+    await db
+      .update(paypalOperations)
+      .set({ status: "failed_terminal", attempts: 20, lastError: "retry_cap_exceeded" })
+      .where(eq(paypalOperations.id, cappedId));
+
+    const report = await runReconcile(db, { now: later() });
+    expect(report.anomalies.filter((a) => a.type === "operation_retrying")).toEqual([
+      {
+        type: "operation_retrying",
+        worldId,
+        sourceId: operationId,
+        detail: {
+          kind: "payout.cancel_item",
+          purpose: "payout_cancel",
+          source: "ITEM-RETRYING",
+          attempts: 6,
+          last_error: "INTERNAL_SERVER_ERROR",
+        },
+      },
+    ]);
+    expect(report.anomalies).toContainEqual(
+      expect.objectContaining({
+        type: "operation_retry_cap_exceeded",
+        worldId,
+        sourceId: cappedId,
+        detail: expect.objectContaining({ kind: "payout.cancel_item", source: "ITEM-CAPPED", attempts: 20 }),
+      }),
+    );
   });
 
   it("remainder payout UNCLAIMED → cancelled (RETURNED) → remainder failed, still owed, listed by reconcile", async () => {

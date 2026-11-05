@@ -23,6 +23,8 @@ import { simApprove } from "@/server/rail/simHandler";
 import { beginNoteRedemption } from "@/server/services/notes";
 import { createWorld } from "@/server/services/worlds";
 
+import { addBankCapital, SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/bankCapital";
+
 async function createSimWorld(db: Db) {
   const { worldId } = await createWorld(db, { name: "Test World", ownerPrincipalId: null, railMode: "sim" });
   return worldId;
@@ -93,7 +95,8 @@ describe("buy_notes / confirm_checkout / redeem_notes", () => {
     const tb = await trialBalance(db, worldId);
     const cash = tb.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
     const notesPayable = tb.accounts.find((a) => a.code === "notes_payable" && a.ownerRef !== null);
-    expect(cash?.balanceCents).toBe(25000n);
+    // Task 10b: net of the (simulated) PayPal capture fee, the bank's expense.
+    expect(cash?.balanceCents).toBe(25000n - simCaptureFee(25000));
     expect(notesPayable?.balanceCents).toBe(-25000n);
     expect(tb.totalCents).toBe(0n);
 
@@ -116,7 +119,7 @@ describe("buy_notes / confirm_checkout / redeem_notes", () => {
 
     const tb = await trialBalance(db, worldId);
     const cash = tb.accounts.find((a) => a.code === "cash_paypal" && a.ownerRef === null);
-    expect(cash?.balanceCents).toBe(10000n);
+    expect(cash?.balanceCents).toBe(10000n - simCaptureFee(10000));
 
     const [position] = await db.select().from(notePositions).where(eq(notePositions.worldId, worldId));
     expect(position?.units).toBe(10000n);
@@ -144,6 +147,8 @@ describe("buy_notes / confirm_checkout / redeem_notes", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    // Task 10b: the bank covers the capture and payout fees from its own capital.
+    await addBankCapital(db, worldId, simCaptureFee(15000) + SIM_PAYOUT_FEE);
 
     const redeem = await call(db, "redeem_notes", key, { amount_cents: 15000 });
     expect(redeem.envelope.status).toBe("PENDING");
@@ -170,6 +175,7 @@ describe("buy_notes / confirm_checkout / redeem_notes", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(8000)); // Task 10b: covers the capture fee
 
     await call(db, "redeem_notes", key, { amount_cents: 8000 });
 
@@ -280,6 +286,7 @@ describe("Fix round 1: C1 double redemption", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(10000)); // Task 10b: covers the capture fee
 
     // Enqueue a redemption but deliberately never settle it (call the
     // service directly, bypassing the tool's afterCommit settlement) —
@@ -305,6 +312,7 @@ describe("Fix round 1: C1 double redemption", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(7000)); // Task 10b: covers the capture fee
 
     // Both transactions race for the series lock, then the position
     // lock, before either reads `units`/the pending-redemption sum —
@@ -344,6 +352,7 @@ describe("Fix round 1: C2 payout item statuses", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(5000)); // Task 10b: covers the capture fee
 
     const { noteTxId, payoutOperationId } = await db.transaction(async (tx) => {
       const outcome = await beginNoteRedemption(tx, worldId, agentId, 5000n);
@@ -641,6 +650,7 @@ describe("Fix round 1: M1 missing payout receiver", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", generated.key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(2000)); // Task 10b: covers the capture fee
 
     const redeem = await call(db, "redeem_notes", generated.key, { amount_cents: 2000 });
     expect(redeem.envelope.status).toBe("PAYOUT_RECEIVER_MISSING");
@@ -823,6 +833,7 @@ describe("Fix round 1 (Task 6, Rulings Q/R): redemption payout status", () => {
     const checkoutId = (buyResult.envelope.data as Record<string, unknown>).checkout_id as string;
     await simApprove(db, checkoutId);
     await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    await addBankCapital(db, worldId, simCaptureFee(amountCents)); // Task 10b: covers the capture fee
     return { worldId, key, agentId };
   }
 

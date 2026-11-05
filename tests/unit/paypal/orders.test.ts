@@ -90,6 +90,9 @@ describe("orders request builders / response parsers", () => {
       captureId: "CAP-1",
       captureStatus: "PENDING",
       amountCents: "1005",
+      paypalFeeCents: null,
+      grossCents: null,
+      netCents: null,
       recovered: false,
     });
     // JSON-safe: survives a jsonb round trip unchanged.
@@ -116,6 +119,6 @@ describe("orders request builders / response parsers", () => {
           { payments: { captures: [{ id: "C", status: "COMPLETED", amount: { value: "1.00" } }] } },
         ],
       }).capture,
-    ).toEqual({ captureId: "C", captureStatus: "COMPLETED", amountCents: "100" });
+    ).toEqual({ captureId: "C", captureStatus: "COMPLETED", amountCents: "100", paypalFeeCents: null, grossCents: null, netCents: null });
   });
 });

@@ -11,6 +11,7 @@ import {
   type PayoutCancelItemResult,
   type PayoutSendResult,
 } from "../paypal/operations";
+import { knownPayoutFee, type KnownPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 
 /**
@@ -39,7 +40,12 @@ export interface ObservedPayoutStatus {
 
 export type PayoutResolution =
   | { kind: "pending" }
-  | { kind: "succeeded" }
+  /**
+   * `fee` (Task 10b): the batch's PayPal fee when already known — the
+   * applier journals it in the same transaction as the success effect;
+   * when `null`, a later poll posts it (`postPayoutFeeIfKnown`).
+   */
+  | { kind: "succeeded"; fee: KnownPayoutFee | null }
   | { kind: "failed"; reason: string };
 
 /** Maps `agents.payout_receiver_type` to PayPal's `recipient_type`; `null` for anything unknown (M4). */
@@ -88,8 +94,11 @@ export async function resolvePayoutOutcome(
     return { kind: "pending" };
   }
   const worldId = record.worldId;
-  const sendItem = (op.body as PayoutSendResult).item;
+  const sendBody = op.body as PayoutSendResult;
+  const sendItem = sendBody.item;
   const latestGet = await latestPayoutGetForSend(db, sendOperationId);
+  const statusResolution = (itemStatus: string): PayoutResolution =>
+    resolveItemStatus(itemStatus, () => knownPayoutFee(sendBody, latestGet));
   const getItem = latestGet?.items[0] ?? null;
   const itemId = observed?.itemId ?? getItem?.itemId ?? sendItem?.itemId ?? null;
 
@@ -120,9 +129,9 @@ export async function resolvePayoutOutcome(
   return { kind: "pending" };
 }
 
-function statusResolution(itemStatus: string): PayoutResolution {
+function resolveItemStatus(itemStatus: string, fee: () => KnownPayoutFee | null): PayoutResolution {
   if (itemStatus === "SUCCESS") {
-    return { kind: "succeeded" };
+    return { kind: "succeeded", fee: fee() };
   }
   if (TERMINAL_FAILED_PAYOUT_ITEM_STATUSES.has(itemStatus)) {
     return { kind: "failed", reason: itemStatus };

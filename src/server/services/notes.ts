@@ -12,7 +12,9 @@ import {
   enqueueOperation,
   getOperation,
   journalKey,
+  type OrderCaptureResult,
 } from "../paypal/operations";
+import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { availableLiquidity } from "../domain/liquidity";
 import { railForWorld } from "./worlds";
@@ -158,7 +160,7 @@ async function applyNotePurchaseCaptureEffect(
   db: Db,
   worldId: string,
   simNow: Date,
-  args: { createSourceId: string; orderId: string; capture: { amountCents: string } },
+  args: { createSourceId: string; orderId: string; capture: OrderCaptureResult },
 ): Promise<CaptureApplyResult> {
   const noteTx = await scoped(db, worldId).findOne(
     noteTransactions,
@@ -234,6 +236,12 @@ async function applyNotePurchaseCaptureEffect(
         { accountCode: "notes_payable", ownerRef: position.agentId, amountCents: -amountCents },
       ],
     });
+    // Task 10b: PayPal's fee on this capture, same transaction (once per capture id).
+    await postCaptureFee(
+      tx,
+      { worldId, simAt: simNow, sourceType: "note_transactions", sourceId: noteTx.id },
+      args.capture,
+    );
 
     const [lockedPosition] = await scoped(tx, worldId).forUpdate(
       notePositions,
@@ -524,6 +532,14 @@ export async function applyRedemptionPayoutOutcome(
         { accountCode: "cash_paypal", amountCents: -noteTx.amountCents },
       ],
     });
+    if (resolution.fee) {
+      // Task 10b: the payout's PayPal fee, same transaction (once per batch).
+      await postPayoutFee(
+        tx,
+        { worldId, simAt, sourceType: "note_transactions", sourceId: noteTx.id },
+        resolution.fee,
+      );
+    }
 
     if (lockedPosition) {
       await scoped(tx, worldId).update(

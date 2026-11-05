@@ -132,7 +132,15 @@ describe("sim rail through enqueueOperation / executeOperation", () => {
     expect(got.body).toEqual({
       orderId,
       status: "COMPLETED",
-      capture: { captureId: `SIMCAPTURE-${operationId}`, captureStatus: "COMPLETED", amountCents: "1500" },
+      // Simulated fee (Task 10b): 2.9% of 1500 = 43.5 → 44, + 30.
+      capture: {
+        captureId: `SIMCAPTURE-${operationId}`,
+        captureStatus: "COMPLETED",
+        amountCents: "1500",
+        paypalFeeCents: "74",
+        grossCents: "1500",
+        netCents: "1426",
+      },
     });
   });
 
@@ -219,6 +227,7 @@ describe("sim rail through enqueueOperation / executeOperation", () => {
       batchId: `SIMBATCH-${operationId}`,
       batchStatus: "SUCCESS",
       items: [{ itemId: `SIMITEM-${operationId}`, transactionStatus: "SUCCESS" }],
+      feeCents: "25",
     });
   });
 
