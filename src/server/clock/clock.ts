@@ -65,10 +65,15 @@ export async function advanceClock(
 
   const deltaMs = BigInt(days) * 86_400_000n;
 
-  await db
+  const updated = await db
     .update(clock)
     .set({ manualOffsetMs: sql`${clock.manualOffsetMs} + ${deltaMs}` })
-    .where(eq(clock.worldId, worldId));
+    .where(eq(clock.worldId, worldId))
+    .returning();
+
+  if (updated.length === 0) {
+    throw new Error(`advanceClock: no clock row found for world ${worldId}`);
+  }
 
   return getSimNow(db, worldId);
 }

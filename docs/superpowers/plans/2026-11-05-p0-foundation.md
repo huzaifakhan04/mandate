@@ -33,7 +33,7 @@
 1. **The same journal idempotency key posted twice** (an agent retry) must produce exactly one journal entry and return the original. *Test in Task 3.*
 2. **An unbalanced or empty posting set, or a zero-amount line,** must be rejected and nothing written. *Test in Task 3.*
 3. **An expired PayPal access token** (401) must be refreshed once and the call retried with the **same** `PayPal-Request-Id`. A 5xx gets up to 2 retries with backoff, never a new request id. *Test in Task 5.*
-4. **An invalid tool input or unknown tool** over REST or MCP must return the envelope with `status:"INVALID_REQUEST"` and HTTP 400, never a 500 or stack trace. *Test in Task 6.*
+4. **An invalid tool input** over REST or MCP must return the envelope with `status:"INVALID_REQUEST"` and HTTP 400; **an unknown tool** must return the envelope with `status:"NOT_FOUND"` and HTTP 404 — over MCP this is `tools/call` returning a normal tool result (`isError:true`) carrying that envelope, never a raw JSON-RPC error. Neither case is ever a 500 or stack trace. *Test in Task 6.*
 5. **A query that runs without `scoped(worldId)`** could leak rows across worlds. The schema guard plus a test with two worlds must catch leakage. *Test in Task 2.*
 
 ---

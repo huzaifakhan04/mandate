@@ -11,7 +11,22 @@ import { PayPalOAuthError, getAccessToken } from "./token";
 
 /** Up to 2 retries (3 total attempts) on a 5xx or network error, same backoff PayPal recommends. */
 const MAX_RETRIES = 2;
-const BACKOFF_MS = [300, 900] as const;
+const DEFAULT_BACKOFF_MS = [300, 900] as const;
+let backoffMs: readonly [number, number] = DEFAULT_BACKOFF_MS;
+
+/**
+ * Test-only hook: overrides the retry backoff delays so retry tests don't
+ * have to sleep for real (300ms/900ms, compounding across several tests).
+ * Not exported from any public entry point other than this module itself.
+ */
+export function __setBackoffMsForTests(ms: readonly [number, number]): void {
+  backoffMs = ms;
+}
+
+/** Test-only hook: restores the real PayPal-recommended backoff delays. */
+export function __resetBackoffMsForTests(): void {
+  backoffMs = DEFAULT_BACKOFF_MS;
+}
 
 export interface PaypalFetchOp {
   worldId: string;
@@ -356,7 +371,7 @@ export async function paypalFetch<T>(
         lastBody = undefined;
         lastFailureDetails = describeOAuthFailure(err);
         if (retries < MAX_RETRIES) {
-          await sleep(BACKOFF_MS[retries] as number);
+          await sleep(backoffMs[retries] as number);
           retries += 1;
           continue;
         }
@@ -392,7 +407,7 @@ export async function paypalFetch<T>(
         lastBody = undefined;
         lastFailureDetails = { stage: "request", message: lastErrorMessage };
         if (retries < MAX_RETRIES) {
-          await sleep(BACKOFF_MS[retries] as number);
+          await sleep(backoffMs[retries] as number);
           retries += 1;
           continue;
         }
@@ -411,7 +426,7 @@ export async function paypalFetch<T>(
       }
 
       if (lastStatus >= 500 && retries < MAX_RETRIES) {
-        await sleep(BACKOFF_MS[retries] as number);
+        await sleep(backoffMs[retries] as number);
         retries += 1;
         continue;
       }

@@ -81,6 +81,15 @@ describe("advanceClock / getSimNow", () => {
     await setupWorld();
     await expect(advanceClock(db, worldId, NaN)).rejects.toThrow();
   });
+
+  it("advanceClock throws a clear error when no clock row exists for the world", async () => {
+    await setupWorld();
+    const missingWorldId = "00000000-0000-0000-0000-000000000000";
+
+    await expect(advanceClock(db, missingWorldId, 7)).rejects.toThrow(
+      /no clock row found for world/i,
+    );
+  });
 });
 
 describe("ensureMainWorld", () => {

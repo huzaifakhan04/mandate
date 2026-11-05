@@ -17,6 +17,8 @@ import type { Db } from "@/server/db/client";
 import { paypalOperations, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import {
+  __resetBackoffMsForTests,
+  __setBackoffMsForTests,
   PayPalApiError,
   PayPalOperationReuseError,
   paypalFetch,
@@ -31,6 +33,13 @@ beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
 afterEach(() => server.resetHandlers());
 afterAll(() => server.close());
 
+// None of the tests in this file assert on the *duration* of a retry
+// backoff, only on call counts/request ids/final state — so the real
+// 300ms/900ms delays (compounding across several retry tests) are
+// replaced with 0ms for the whole file.
+beforeAll(() => __setBackoffMsForTests([0, 0]));
+afterAll(() => __resetBackoffMsForTests());
+
 async function readOperation(db: Db, id: string) {
   const [row] = await db
     .select()
@@ -43,8 +52,18 @@ async function readOperation(db: Db, id: string) {
 }
 
 describe("paypalFetch", () => {
+  // One PGlite instance (with migrations applied) for the whole file,
+  // not one per test — `createTestDb()` is otherwise the dominant cost
+  // of running this suite. Every table except `worlds`/`principals` is
+  // world-scoped (Global Constraints), and every test below creates its
+  // own fresh world with a random slug, so sharing the underlying db is
+  // safe: nothing here reads/writes across worlds.
   let db: Db;
   let worldId: string;
+
+  beforeAll(async () => {
+    db = await createTestDb();
+  });
 
   beforeEach(async () => {
     process.env.PAYPAL_BASE_URL = BASE_URL;
@@ -61,7 +80,6 @@ describe("paypalFetch", () => {
       ),
     );
 
-    db = await createTestDb();
     const [world] = await db
       .insert(worlds)
       .values({ slug: `world-${randomUUID()}`, name: "World", railMode: "paypal" })
@@ -140,7 +158,47 @@ describe("paypalFetch", () => {
 
     const row = await readOperation(db, result.operationId);
     expect(row.attempts).toBe(3);
-  }, 10_000);
+  });
+
+  it("fails after exactly 3 calls on three consecutive 5xx responses, all with the same PayPal-Request-Id, row status 'failed'", async () => {
+    let callCount = 0;
+    const seenRequestIds = new Set<string | null>();
+
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, ({ request }) => {
+        callCount += 1;
+        seenRequestIds.add(request.headers.get("PayPal-Request-Id"));
+        return HttpResponse.json(
+          { name: "INTERNAL_SERVER_ERROR" },
+          { status: 503 },
+        );
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await paypalFetch(db, {
+        worldId,
+        kind: "order.create",
+        method: "POST",
+        path: "/v2/checkout/orders",
+        body: { intent: "CAPTURE" },
+      });
+      expect.unreachable("expected paypalFetch to throw");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(callCount).toBe(3);
+    expect(seenRequestIds.size).toBe(1);
+    expect(caught).toBeInstanceOf(PayPalApiError);
+    expect(caught).toMatchObject({ name: "INTERNAL_SERVER_ERROR", status: 503 });
+
+    const [requestId] = seenRequestIds;
+    const row = await readOperation(db, requestId as string);
+    expect(row.attempts).toBe(3);
+    expect(row.status).toBe("failed");
+  });
 
   it("throws PayPalApiError with the PayPal error name on a final non-2xx response", async () => {
     server.use(

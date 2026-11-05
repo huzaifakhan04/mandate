@@ -421,12 +421,53 @@ export function simRail(
       }
 
       const state = row.response as unknown as SimOrderState;
+
+      // Mirrors `captureCheckout`'s guard: approving is only a valid
+      // transition from `PAYER_ACTION_REQUIRED`. An order that's already
+      // `APPROVED` or `COMPLETED` must not be silently re-approved (that
+      // would let `approve -> capture -> approve -> capture` double-spend
+      // against the same order), so those throw a `PayPalApiError`-shaped
+      // error exactly like a real PayPal re-approval attempt would.
+      if (state.status === "COMPLETED") {
+        throw new PayPalApiError({
+          status: 422,
+          name: "ORDER_ALREADY_CAPTURED",
+          details: redact({ orderId }),
+        });
+      }
+      if (state.status === "APPROVED") {
+        throw new PayPalApiError({
+          status: 422,
+          name: "ORDER_ALREADY_APPROVED",
+          details: redact({ orderId }),
+        });
+      }
+
       const newState: SimOrderState = { ...state, status: "APPROVED" };
 
-      await db
+      // Conditional transition, same pattern (and same reasoning) as
+      // `captureCheckout`'s `UPDATE ... WHERE status = 'APPROVED'`: only a
+      // row still in `PAYER_ACTION_REQUIRED` is moved to `APPROVED`, so a
+      // concurrent/duplicate approve of an already-approved-or-captured
+      // order can't win a race against the checks above.
+      const [updated] = await db
         .update(paypalOperations)
         .set({ response: redact(newState) })
-        .where(eq(paypalOperations.id, row.id));
+        .where(
+          and(
+            eq(paypalOperations.id, row.id),
+            sql`(${paypalOperations.response}->>'status') = 'PAYER_ACTION_REQUIRED'`,
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        throw new PayPalApiError({
+          status: 422,
+          name: "ORDER_ALREADY_APPROVED",
+          details: redact({ orderId }),
+        });
+      }
     },
   };
 }

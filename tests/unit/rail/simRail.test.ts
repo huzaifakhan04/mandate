@@ -205,6 +205,61 @@ describe("simRail", () => {
     expect(fetched.status).toBe("COMPLETED");
   });
 
+  it("refuses to re-approve an already-APPROVED order with ORDER_ALREADY_APPROVED", async () => {
+    const rail = simRail(db);
+    const created = await rail.createCheckout({
+      worldId,
+      amountCents: 500n,
+      description: "double approve",
+      customId: "custom-double-approve",
+      returnUrl: "https://example.com/return",
+      cancelUrl: "https://example.com/cancel",
+    });
+
+    await rail.simApprove(created.orderId);
+
+    await expect(rail.simApprove(created.orderId)).rejects.toMatchObject({
+      name: "ORDER_ALREADY_APPROVED",
+      status: 422,
+    });
+  });
+
+  it("does not let approve -> capture -> approve -> capture double-capture the same order", async () => {
+    const rail = simRail(db);
+    const created = await rail.createCheckout({
+      worldId,
+      amountCents: 500n,
+      description: "approve capture approve capture",
+      customId: "custom-acac",
+      returnUrl: "https://example.com/return",
+      cancelUrl: "https://example.com/cancel",
+    });
+
+    await rail.simApprove(created.orderId);
+    const firstCapture = await rail.captureCheckout({
+      worldId,
+      orderId: created.orderId,
+    });
+    expect(firstCapture.status).toBe("COMPLETED");
+
+    // Re-approving a COMPLETED order must not move it back to APPROVED.
+    await expect(rail.simApprove(created.orderId)).rejects.toMatchObject({
+      name: "ORDER_ALREADY_CAPTURED",
+      status: 422,
+    });
+
+    // And capturing again must not succeed a second time.
+    await expect(
+      rail.captureCheckout({ worldId, orderId: created.orderId }),
+    ).rejects.toMatchObject({
+      name: "ORDER_ALREADY_CAPTURED",
+      status: 422,
+    });
+
+    const fetched = await rail.getCheckout({ worldId, orderId: created.orderId });
+    expect(fetched.status).toBe("COMPLETED");
+  });
+
   it("refuses to reuse an operationId across a different kind (createCheckout vs sendPayout)", async () => {
     const operationId = randomUUID();
     const rail = simRail(db);

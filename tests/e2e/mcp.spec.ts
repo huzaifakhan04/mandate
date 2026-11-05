@@ -11,13 +11,23 @@ const MCP_HEADERS = {
  * plain JSON body or a single-event `text/event-stream` body. Normalize to
  * the parsed JSON-RPC payload either way.
  */
+interface Envelope {
+  status: string;
+  summary: string;
+  reason_codes: string[];
+  data: unknown;
+  next_actions: unknown[];
+  docs_url: string;
+}
+
 interface JsonRpcResponse {
   jsonrpc: "2.0";
   id: number;
   result?: {
     serverInfo?: { name: string; version: string };
-    tools?: { name: string }[];
+    tools?: { name: string; inputSchema?: unknown }[];
     content?: { type: string; text: string }[];
+    structuredContent?: Envelope;
     isError?: boolean;
   };
   error?: { code: number; message: string };
@@ -62,8 +72,14 @@ test("MCP mandate-bank server exposes get_bank_guide over /api/mcp/mcp", async (
   });
   expect(listRes.ok()).toBeTruthy();
   const listBody = await readJsonRpc(listRes);
-  const names: string[] = (listBody.result?.tools ?? []).map((tool) => tool.name);
+  const tools = listBody.result?.tools ?? [];
+  const names: string[] = tools.map((tool) => tool.name);
   expect(names).toContain("get_bank_guide");
+  // tools/list still advertises the tool's real JSON schema, not a
+  // permissive passthrough stand-in used only for dispatch.
+  const guideTool = tools.find((tool) => tool.name === "get_bank_guide");
+  expect(guideTool?.inputSchema).toBeTruthy();
+  expect((guideTool?.inputSchema as { type?: string })?.type).toBe("object");
 
   const callRes = await request.post(MCP_URL, {
     headers: MCP_HEADERS,
@@ -78,9 +94,11 @@ test("MCP mandate-bank server exposes get_bank_guide over /api/mcp/mcp", async (
   const callBody = await readJsonRpc(callRes);
   const text = callBody.result?.content?.[0]?.text ?? "";
   expect(text).toContain('"bank":"Mandate"');
+  expect(callBody.result?.structuredContent?.status).toBe("OK");
+  expect(callBody.result?.isError).toBe(false);
 });
 
-test("tools/call on an unknown tool returns a sensible MCP error, not a 500/stack trace", async ({
+test("tools/call on an unknown tool returns runTool's NOT_FOUND envelope as a tool result, not a JSON-RPC error", async ({
   request,
 }) => {
   const res = await request.post(MCP_URL, {
@@ -93,19 +111,23 @@ test("tools/call on an unknown tool returns a sensible MCP error, not a 500/stac
     },
   });
 
-  // The MCP endpoint itself never 500s for a bad JSON-RPC request — the
-  // failure is reported inside the JSON-RPC envelope (an `error` member,
-  // or `result.isError`), with HTTP 200.
+  // The MCP endpoint itself never 500s for a bad JSON-RPC request, and an
+  // unknown tool name is not a JSON-RPC-level InvalidParams error either:
+  // it is a normal tool result (`result.isError: true`) carrying the same
+  // envelope shape `runTool`/the REST route returns for a 404.
   expect(res.status()).toBe(200);
   const body = await readJsonRpc(res);
   const raw = JSON.stringify(body);
 
-  const reportedAsError = body.error !== undefined || body.result?.isError === true;
-  expect(reportedAsError).toBe(true);
+  expect(body.error).toBeUndefined();
+  expect(body.result?.isError).toBe(true);
+  expect(body.result?.structuredContent?.status).toBe("NOT_FOUND");
+  expect(body.result?.structuredContent?.reason_codes.length).toBeGreaterThan(0);
+  expect(body.result?.structuredContent?.docs_url).toBeTruthy();
   expect(raw).not.toMatch(/at \S+ \(.*:\d+:\d+\)/); // no stack-trace frames leaked
 });
 
-test("tools/call with invalid args returns a sensible MCP error, not a 500/stack trace", async ({
+test("tools/call with invalid args returns runTool's INVALID_REQUEST envelope with reason codes", async ({
   request,
 }) => {
   const res = await request.post(MCP_URL, {
@@ -114,10 +136,12 @@ test("tools/call with invalid args returns a sensible MCP error, not a 500/stack
       jsonrpc: "2.0",
       id: 21,
       method: "tools/call",
-      // get_bank_guide takes no arguments; a non-object `arguments` value
-      // is invalid at the MCP protocol level, before our own tool schema
-      // ever sees it.
-      params: { name: "get_bank_guide", arguments: "not-an-object" },
+      // get_bank_guide's input schema is a strict empty object, so a
+      // structurally valid JSON object with an unexpected key is a genuine
+      // schema-validation failure that reaches `runTool` (unlike a
+      // non-object `arguments` value, which the MCP protocol envelope
+      // itself rejects before any tool-level dispatch).
+      params: { name: "get_bank_guide", arguments: { unexpected_field: 1 } },
     },
   });
 
@@ -125,7 +149,9 @@ test("tools/call with invalid args returns a sensible MCP error, not a 500/stack
   const body = await readJsonRpc(res);
   const raw = JSON.stringify(body);
 
-  const reportedAsError = body.error !== undefined || body.result?.isError === true;
-  expect(reportedAsError).toBe(true);
+  expect(body.error).toBeUndefined();
+  expect(body.result?.isError).toBe(true);
+  expect(body.result?.structuredContent?.status).toBe("INVALID_REQUEST");
+  expect(body.result?.structuredContent?.reason_codes.length).toBeGreaterThan(0);
   expect(raw).not.toMatch(/at \S+ \(.*:\d+:\d+\)/);
 });
