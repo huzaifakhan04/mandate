@@ -6,7 +6,7 @@ import type { Db } from "@/server/db/client";
 import { worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { InvalidAmountError } from "@/server/paypal/orders";
-import { simRail } from "@/server/rail/simRail";
+import { simRail, SimRailError } from "@/server/rail/simRail";
 
 describe("simRail", () => {
   let db: Db;
@@ -150,5 +150,104 @@ describe("simRail", () => {
 
     const fetched = await rail.getPayout({ worldId, batchId: result.batchId });
     expect(fetched.items[0]?.transactionStatus).toBe("FAILED");
+  });
+
+  it("refuses to capture an already-COMPLETED order with ORDER_ALREADY_CAPTURED", async () => {
+    const rail = simRail(db);
+    const created = await rail.createCheckout({
+      worldId,
+      amountCents: 500n,
+      description: "double capture",
+      customId: "custom-double",
+      returnUrl: "https://example.com/return",
+      cancelUrl: "https://example.com/cancel",
+    });
+    await rail.simApprove(created.orderId);
+    await rail.captureCheckout({ worldId, orderId: created.orderId });
+
+    await expect(
+      rail.captureCheckout({ worldId, orderId: created.orderId }),
+    ).rejects.toMatchObject({
+      name: "ORDER_ALREADY_CAPTURED",
+      status: 422,
+    });
+  });
+
+  it("lets exactly one of two concurrent captures of the same order win, the other rejecting with ORDER_ALREADY_CAPTURED", async () => {
+    const rail = simRail(db);
+    const created = await rail.createCheckout({
+      worldId,
+      amountCents: 500n,
+      description: "concurrent capture",
+      customId: "custom-concurrent",
+      returnUrl: "https://example.com/return",
+      cancelUrl: "https://example.com/cancel",
+    });
+    await rail.simApprove(created.orderId);
+
+    const outcomes = await Promise.allSettled([
+      rail.captureCheckout({ worldId, orderId: created.orderId }),
+      rail.captureCheckout({ worldId, orderId: created.orderId }),
+    ]);
+
+    const fulfilled = outcomes.filter((o) => o.status === "fulfilled");
+    const rejected = outcomes.filter((o) => o.status === "rejected");
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+
+    const rejection = rejected[0] as PromiseRejectedResult;
+    expect(rejection.reason).toMatchObject({
+      name: "ORDER_ALREADY_CAPTURED",
+      status: 422,
+    });
+
+    const fetched = await rail.getCheckout({ worldId, orderId: created.orderId });
+    expect(fetched.status).toBe("COMPLETED");
+  });
+
+  it("refuses to reuse an operationId across a different kind (createCheckout vs sendPayout)", async () => {
+    const operationId = randomUUID();
+    const rail = simRail(db);
+
+    await rail.createCheckout({
+      worldId,
+      amountCents: 500n,
+      description: "kind check",
+      customId: "custom-kind",
+      returnUrl: "https://example.com/return",
+      cancelUrl: "https://example.com/cancel",
+      operationId,
+    });
+
+    await expect(
+      rail.sendPayout({
+        worldId,
+        receiver: "ok@example.com",
+        receiverType: "EMAIL",
+        amountCents: 500n,
+        senderItemId: "item-kind",
+        operationId,
+      }),
+    ).rejects.toBeInstanceOf(SimRailError);
+  });
+
+  it("uses the caller-supplied operationId as the payout's own id, and reuses it on a retry", async () => {
+    const rail = simRail(db);
+    const operationId = randomUUID();
+    const params = {
+      worldId,
+      receiver: "ok@example.com",
+      receiverType: "EMAIL" as const,
+      amountCents: 500n,
+      senderItemId: "item-reuse",
+      operationId,
+    };
+
+    const first = await rail.sendPayout(params);
+    const second = await rail.sendPayout(params);
+
+    expect(first.operationId).toBe(operationId);
+    expect(second.batchId).toBe(first.batchId);
+    expect(second.operationId).toBe(first.operationId);
   });
 });

@@ -23,6 +23,23 @@ interface OAuthTokenResponse {
   expires_in: number;
 }
 
+/**
+ * A non-2xx response from `/v1/oauth2/token` itself (as opposed to a
+ * network/timeout failure reaching it at all). Carries the OAuth
+ * endpoint's own status/body so a caller that exhausts its retry budget
+ * can surface *what the OAuth failure actually was* in its error
+ * details, instead of a bare "network error".
+ */
+export class PayPalOAuthError extends Error {
+  constructor(
+    readonly status: number,
+    readonly responseBody: string,
+  ) {
+    super(`PayPal OAuth token request failed (${status}): ${responseBody}`);
+    this.name = "PayPalOAuthError";
+  }
+}
+
 async function requestNewToken(): Promise<string> {
   const { baseUrl, clientId, clientSecret } = paypalConfig();
   const basicAuth = Buffer.from(`${clientId}:${clientSecret}`).toString(
@@ -41,9 +58,7 @@ async function requestNewToken(): Promise<string> {
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `PayPal OAuth token request failed (${res.status}): ${text}`,
-    );
+    throw new PayPalOAuthError(res.status, text);
   }
 
   const body = (await res.json()) as OAuthTokenResponse;

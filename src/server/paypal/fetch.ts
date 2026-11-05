@@ -1,13 +1,13 @@
 import { randomUUID } from "crypto";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { scoped } from "../db/scoped";
 import { paypalOperations } from "../db/schema";
 import { PayPalConfigError, paypalConfig, paypalTimeoutMs } from "./config";
 import { redact } from "./redact";
-import { getAccessToken } from "./token";
+import { PayPalOAuthError, getAccessToken } from "./token";
 
 /** Up to 2 retries (3 total attempts) on a 5xx or network error, same backoff PayPal recommends. */
 const MAX_RETRIES = 2;
@@ -66,6 +66,19 @@ export class PayPalNetworkError extends Error {
   ) {
     super(message);
     this.name = "PayPalNetworkError";
+  }
+}
+
+/**
+ * Thrown when a caller-supplied `operationId` can't be reused: it
+ * belongs to a different world, or was already used for a different
+ * `rail`/`kind` of operation (e.g. reusing an id from an `order.create`
+ * for a `payout.send`). PayPal is never called in this case.
+ */
+export class PayPalOperationReuseError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PayPalOperationReuseError";
   }
 }
 
@@ -203,8 +216,14 @@ async function ensureOperationRow(
     );
 
   if (!existing) {
-    throw new Error(
+    throw new PayPalOperationReuseError(
       `operationId ${id} belongs to a different world, or vanished after a conflicting insert — refusing to reuse it`,
+    );
+  }
+
+  if (existing.rail !== "paypal" || existing.kind !== kind) {
+    throw new PayPalOperationReuseError(
+      `operationId ${id} was already used for a different operation (rail=${existing.rail}, kind=${existing.kind}); refusing to reuse it for rail=paypal, kind=${kind}`,
     );
   }
 
@@ -222,6 +241,15 @@ async function ensureOperationRow(
   return { id: existing.id, reusedResult: null };
 }
 
+/**
+ * Writes the final outcome of a call onto its row — guarded by
+ * `WHERE status <> 'succeeded'` so a losing concurrent attempt for the
+ * same (reused) `operationId` can never downgrade a row some other,
+ * already-finished attempt already marked `succeeded`. Whichever
+ * attempt's UPDATE statement actually runs first wins; Postgres
+ * evaluates the `WHERE` against the row as committed at that moment, so
+ * this is safe without any extra locking.
+ */
 async function updateOperationRow(
   db: Db,
   worldId: string,
@@ -231,7 +259,7 @@ async function updateOperationRow(
   await scoped(db, worldId).update(
     paypalOperations,
     patch,
-    eq(paypalOperations.id, id),
+    and(eq(paypalOperations.id, id), ne(paypalOperations.status, "succeeded")),
   );
 }
 
@@ -286,7 +314,26 @@ export async function paypalFetch<T>(
   let lastStatus = 0;
   let lastBody: unknown;
   let lastErrorMessage: string | undefined;
+  /**
+   * Set whenever `lastStatus === 0` (every stage that can fail this way —
+   * OAuth, the request itself, or reading its body — lands here), so the
+   * final `PayPalApiError.details` always says *what* failed, not just
+   * that something did. For an exhausted OAuth failure this carries the
+   * OAuth endpoint's own status/body.
+   */
+  let lastFailureDetails: Record<string, unknown> | undefined;
   let fatalError: unknown;
+
+  function describeOAuthFailure(err: unknown): Record<string, unknown> {
+    if (err instanceof PayPalOAuthError) {
+      return {
+        stage: "oauth",
+        oauthStatus: err.status,
+        oauthResponseBody: err.responseBody,
+      };
+    }
+    return { stage: "oauth", message: describeError(err) };
+  }
 
   try {
     const { baseUrl } = paypalConfig();
@@ -307,6 +354,7 @@ export async function paypalFetch<T>(
         lastErrorMessage = describeError(err);
         lastStatus = 0;
         lastBody = undefined;
+        lastFailureDetails = describeOAuthFailure(err);
         if (retries < MAX_RETRIES) {
           await sleep(BACKOFF_MS[retries] as number);
           retries += 1;
@@ -315,7 +363,12 @@ export async function paypalFetch<T>(
         break;
       }
 
+      // The request and reading its body are one retryable unit: an
+      // abort/timeout can happen mid-body-read just as easily as while
+      // waiting for headers, and both must be retried with the same
+      // request id exactly like a failure to connect at all.
       let res: Response;
+      let parsedBody: unknown;
       try {
         res = await fetch(url, {
           method,
@@ -329,12 +382,15 @@ export async function paypalFetch<T>(
             ? { body: JSON.stringify(requestBody) }
             : {}),
         });
+        parsedBody = await parseJsonSafe(res);
       } catch (err) {
-        // Includes an `AbortError` from the timeout above — treated the
+        // Includes an `AbortError` from the timeout above (whether it
+        // fired before headers arrived or mid-body-read) — treated the
         // same as any other network error.
         lastErrorMessage = describeError(err);
         lastStatus = 0;
         lastBody = undefined;
+        lastFailureDetails = { stage: "request", message: lastErrorMessage };
         if (retries < MAX_RETRIES) {
           await sleep(BACKOFF_MS[retries] as number);
           retries += 1;
@@ -344,8 +400,9 @@ export async function paypalFetch<T>(
       }
 
       lastStatus = res.status;
-      lastBody = await parseJsonSafe(res);
+      lastBody = parsedBody;
       lastErrorMessage = undefined;
+      lastFailureDetails = undefined;
 
       if (lastStatus === 401 && !triedRefresh) {
         triedRefresh = true;
@@ -377,9 +434,11 @@ export async function paypalFetch<T>(
 
   // Every exit path reaches this update — success, a final non-2xx, an
   // exhausted retry budget, or the fatal-error catch above — so no row is
-  // ever left `pending`.
+  // ever left `pending`. `updateOperationRow` itself guards against
+  // downgrading a row a concurrent, already-finished attempt for the
+  // same operationId marked `succeeded`.
   await updateOperationRow(db, worldId, operationId, {
-    response: redact(lastBody),
+    response: redact(lastStatus === 0 ? lastFailureDetails : lastBody),
     httpStatus: lastStatus === 0 ? null : lastStatus,
     latencyMs,
     attempts,
@@ -401,10 +460,18 @@ export async function paypalFetch<T>(
   }
 
   if (!success) {
+    // Whichever stage ultimately failed (OAuth, the request, or reading
+    // its body), an exhausted network-side failure always surfaces as
+    // the same error shape: status 0, name "PayPalNetworkError" — with
+    // `details` saying which stage it was and, for OAuth, PayPal's own
+    // status/body.
     throw new PayPalApiError({
       status: lastStatus,
       name: lastStatus === 0 ? "PayPalNetworkError" : extractErrorName(lastBody),
-      details: redact(lastBody),
+      details:
+        lastStatus === 0
+          ? redact(lastFailureDetails ?? { message: lastErrorMessage })
+          : redact(lastBody),
       debugId: extractDebugId(lastBody),
     });
   }

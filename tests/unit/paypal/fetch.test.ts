@@ -16,7 +16,11 @@ import {
 import type { Db } from "@/server/db/client";
 import { paypalOperations, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
-import { PayPalApiError, paypalFetch } from "@/server/paypal/fetch";
+import {
+  PayPalApiError,
+  PayPalOperationReuseError,
+  paypalFetch,
+} from "@/server/paypal/fetch";
 import { __resetTokenCacheForTests } from "@/server/paypal/token";
 
 const BASE_URL = "https://api-m.paypal.test";
@@ -400,4 +404,163 @@ describe("paypalFetch", () => {
       }),
     ).rejects.toThrow();
   });
+
+  it("refuses to reuse an operationId across a different kind, without calling PayPal", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, () =>
+        HttpResponse.json({ id: "ORDER-8", status: "CREATED" }),
+      ),
+    );
+
+    let payoutCallCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v1/payments/payouts`, () => {
+        payoutCallCount += 1;
+        return HttpResponse.json({
+          batch_header: { payout_batch_id: "BATCH-1", batch_status: "SUCCESS" },
+        });
+      }),
+    );
+
+    const operationId = randomUUID();
+    await paypalFetch(db, {
+      worldId,
+      kind: "order.create",
+      method: "POST",
+      path: "/v2/checkout/orders",
+      body: { intent: "CAPTURE" },
+      operationId,
+    });
+
+    await expect(
+      paypalFetch(db, {
+        worldId,
+        kind: "payout.send",
+        method: "POST",
+        path: "/v1/payments/payouts",
+        body: { sender_batch_header: { sender_batch_id: operationId } },
+        operationId,
+      }),
+    ).rejects.toBeInstanceOf(PayPalOperationReuseError);
+
+    expect(payoutCallCount).toBe(0);
+  });
+
+  it("never downgrades a 'succeeded' row when a losing concurrent attempt for the same operationId fails", async () => {
+    // Two logical calls share the same operationId/kind/worldId (a real
+    // concurrent retry), but are routed to different paths purely so this
+    // test can make each lane's outcome deterministic regardless of which
+    // one's HTTP request actually goes out first.
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders/lane-a`, () =>
+        HttpResponse.json({ id: "ORDER-9", status: "CREATED" }),
+      ),
+      http.post(`${BASE_URL}/v2/checkout/orders/lane-b`, () =>
+        HttpResponse.json({ name: "INTERNAL_SERVER_ERROR" }, { status: 500 }),
+      ),
+    );
+
+    const operationId = randomUUID();
+    const [laneAResult] = await Promise.all([
+      paypalFetch<{ id: string; status: string }>(db, {
+        worldId,
+        kind: "order.create",
+        method: "POST",
+        path: "/v2/checkout/orders/lane-a",
+        body: { intent: "CAPTURE" },
+        operationId,
+      }),
+      paypalFetch(db, {
+        worldId,
+        kind: "order.create",
+        method: "POST",
+        path: "/v2/checkout/orders/lane-b",
+        body: { intent: "CAPTURE" },
+        operationId,
+      }).catch(() => undefined),
+    ]);
+
+    expect(laneAResult.body.id).toBe("ORDER-9");
+
+    const row = await readOperation(db, operationId);
+    expect(row.status).toBe("succeeded");
+    expect(row.httpStatus).toBe(200);
+  }, 10_000);
+
+  it("retries an OAuth token failure within the same budget, then succeeds", async () => {
+    let tokenCallCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v1/oauth2/token`, () => {
+        tokenCallCount += 1;
+        if (tokenCallCount < 2) {
+          return HttpResponse.text("oauth down", { status: 500 });
+        }
+        return HttpResponse.json({
+          access_token: `token-${randomUUID()}`,
+          expires_in: 32400,
+        });
+      }),
+    );
+
+    let orderCallCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, () => {
+        orderCallCount += 1;
+        return HttpResponse.json({ id: "ORDER-10", status: "CREATED" });
+      }),
+    );
+
+    const result = await paypalFetch<{ id: string; status: string }>(db, {
+      worldId,
+      kind: "order.create",
+      method: "POST",
+      path: "/v2/checkout/orders",
+      body: { intent: "CAPTURE" },
+    });
+
+    expect(tokenCallCount).toBe(2);
+    expect(orderCallCount).toBe(1);
+    expect(result.body.id).toBe("ORDER-10");
+
+    const row = await readOperation(db, result.operationId);
+    expect(row.status).toBe("succeeded");
+  });
+
+  it("surfaces an exhausted OAuth failure as PayPalApiError{status:0, name:'PayPalNetworkError'} with the OAuth status in details", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v1/oauth2/token`, () =>
+        HttpResponse.text("oauth totally down", { status: 503 }),
+      ),
+    );
+
+    let orderCallCount = 0;
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, () => {
+        orderCallCount += 1;
+        return HttpResponse.json({ id: "ORDER-11", status: "CREATED" });
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await paypalFetch(db, {
+        worldId,
+        kind: "order.create",
+        method: "POST",
+        path: "/v2/checkout/orders",
+        body: { intent: "CAPTURE" },
+      });
+      expect.unreachable("expected paypalFetch to throw");
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(PayPalApiError);
+    const error = caught as PayPalApiError;
+    expect(error.status).toBe(0);
+    expect(error.name).toBe("PayPalNetworkError");
+    expect(error.details).toMatchObject({ stage: "oauth", oauthStatus: 503 });
+    // The actual order endpoint must never have been reached.
+    expect(orderCallCount).toBe(0);
+  }, 10_000);
 });

@@ -1,6 +1,6 @@
 import { randomUUID } from "crypto";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
@@ -107,6 +107,12 @@ async function insertOrReuse(
     );
   }
 
+  if (existing.rail !== "sim" || existing.kind !== kind) {
+    throw new SimRailError(
+      `operationId ${id} was already used for a different operation (rail=${existing.rail}, kind=${existing.kind}); refusing to reuse it for rail=sim, kind=${kind}`,
+    );
+  }
+
   return { id: existing.id, row: existing };
 }
 
@@ -204,19 +210,15 @@ export function simRail(
       }
 
       const state = row.response as unknown as SimOrderState;
-      if (state.status !== "APPROVED") {
-        const error = new PayPalApiError({
-          status: 422,
-          name: "ORDER_NOT_APPROVED",
-          details: redact({ orderId: params.orderId, status: state.status }),
-        });
 
+      const rejectCapture = async (error: PayPalApiError): Promise<never> => {
+        const auditId = randomUUID();
         await db.insert(paypalOperations).values({
-          id: randomUUID(),
+          id: auditId,
           worldId: params.worldId,
           rail: "sim",
           kind: "order.capture",
-          requestId: randomUUID(),
+          requestId: auditId,
           paypalId: params.orderId,
           status: "failed",
           request: redact(params),
@@ -225,8 +227,26 @@ export function simRail(
           attempts: 1,
           lastError: error.name,
         });
-
         throw error;
+      };
+
+      if (state.status === "COMPLETED") {
+        await rejectCapture(
+          new PayPalApiError({
+            status: 422,
+            name: "ORDER_ALREADY_CAPTURED",
+            details: redact({ orderId: params.orderId }),
+          }),
+        );
+      }
+      if (state.status !== "APPROVED") {
+        await rejectCapture(
+          new PayPalApiError({
+            status: 422,
+            name: "ORDER_NOT_APPROVED",
+            details: redact({ orderId: params.orderId, status: state.status }),
+          }),
+        );
       }
 
       const captureId = randomUUID();
@@ -236,10 +256,32 @@ export function simRail(
         captureId,
       };
 
-      await db
+      // Conditional transition (`WHERE response->>'status' = 'APPROVED'`),
+      // checked and applied atomically by Postgres at UPDATE time — so
+      // two concurrent captures of the same order can't both "win": the
+      // second one to actually execute sees the row already COMPLETED
+      // and updates zero rows, however close together the two calls
+      // started.
+      const [updated] = await db
         .update(paypalOperations)
         .set({ response: redact(newState) })
-        .where(eq(paypalOperations.id, row.id));
+        .where(
+          and(
+            eq(paypalOperations.id, row.id),
+            sql`(${paypalOperations.response}->>'status') = 'APPROVED'`,
+          ),
+        )
+        .returning();
+
+      if (!updated) {
+        await rejectCapture(
+          new PayPalApiError({
+            status: 422,
+            name: "ORDER_ALREADY_CAPTURED",
+            details: redact({ orderId: params.orderId }),
+          }),
+        );
+      }
 
       const auditId = randomUUID();
       await db.insert(paypalOperations).values({
