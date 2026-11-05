@@ -24,7 +24,7 @@ import {
   reissueInvoiceLink,
 } from "../services/repayments";
 import { listActiveWorldIds } from "../services/worlds";
-import { errorMessage, recordJobRun } from "./jobRuns";
+import { errorMessage, previousAnomalyCount, recordJobRun } from "./jobRuns";
 
 /**
  * Task 8 — the reconcile cron (every minute): what settles money when no
@@ -53,8 +53,8 @@ import { errorMessage, recordJobRun } from "./jobRuns";
  *    invoice link on an ACTIVE loan is re-issued (`reissueInvoiceLink`);
  *    once its issues are used up it is listed instead.
  *
- * Each world gets one `job_runs` row per run with its counts, errors and
- * anomalies. Every step is idempotent, so a run racing a webhook, an
+ * A world gets a `job_runs` row (counts, errors, anomalies) for a run
+ * that did something there or changed its anomaly count (M2). Every step is idempotent, so a run racing a webhook, an
  * agent call or another run applies each effect once.
  */
 
@@ -206,6 +206,9 @@ export async function runReconcile(db: Db, options: ReconcileOptions = {}): Prom
     }
     report.errors.push(...state.errors);
     report.anomalies.push(...state.anomalies);
+    if (!(await worthRecording(db, worldId, state))) {
+      continue;
+    }
     await recordJobRun(db, worldId, "reconcile", {
       executed: state.counts.executed,
       payouts_polled: state.counts.payoutsPolled,
@@ -219,6 +222,24 @@ export async function runReconcile(db: Db, options: ReconcileOptions = {}): Prom
     });
   }
   return report;
+}
+
+/**
+ * Fix round 1 (M2): a world's `job_runs` row is written only when the run
+ * did something there (executed, polled, checked, re-issued, or errored)
+ * or its anomaly count differs from the last recorded row — idle minutes
+ * leave no rows.
+ */
+async function worthRecording(db: Db, worldId: string, state: WorldState): Promise<boolean> {
+  const c = state.counts;
+  if (c.executed + c.payoutsPolled + c.checkoutsChecked + c.linksReissued > 0 || state.errors.length > 0) {
+    return true;
+  }
+  try {
+    return (await previousAnomalyCount(db, worldId, "reconcile")) !== state.anomalies.length;
+  } catch {
+    return true;
+  }
 }
 
 // ---------------------------------------------------------------------

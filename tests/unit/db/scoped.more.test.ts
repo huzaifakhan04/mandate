@@ -55,6 +55,19 @@ describe("scoped: select(where), findOne, delete, insertOnConflictDoNothing, for
     expect(found[0]?.worldId).toBe(worldA.id);
   });
 
+  it("findLatest returns the newest matching row within the world only", async () => {
+    const worldA = await makeWorld("more-latest-a");
+    const worldB = await makeWorld("more-latest-b");
+    const base = { operator: "o", model: "m", codeManifestHash: "h", status: "active" };
+    await scoped(db, worldA.id).insert(agents, { ...base, name: "old", createdAt: new Date("2026-01-01T00:00:00Z") });
+    await scoped(db, worldA.id).insert(agents, { ...base, name: "new", createdAt: new Date("2026-02-01T00:00:00Z") });
+    await scoped(db, worldB.id).insert(agents, { ...base, name: "other", createdAt: new Date("2026-03-01T00:00:00Z") });
+
+    const latest = await scoped(db, worldA.id).findLatest(agents, eq(agents.operator, "o"), agents.createdAt);
+    expect(latest?.name).toBe("new");
+    expect(await scoped(db, worldA.id).findLatest(agents, eq(agents.operator, "nobody"), agents.createdAt)).toBeUndefined();
+  });
+
   it("findOne returns a single row scoped to the world, or undefined", async () => {
     const worldA = await makeWorld("more-findone-a");
     const worldB = await makeWorld("more-findone-b");

@@ -26,6 +26,13 @@ const TRANSMISSION_HEADERS = {
   transmission_time: "paypal-transmission-time",
 } as const;
 
+/**
+ * Fix round 1 (M8): verification gets its own short deadline (the route's
+ * `maxDuration` is 30 s and PayPal expects a quick answer); past it the
+ * result is `error` → 503, and PayPal redelivers.
+ */
+const VERIFY_DEADLINE_MS = 8_000;
+
 export type WebhookVerification =
   /** PayPal answered `verification_status: SUCCESS`. */
   | { outcome: "verified" }
@@ -37,7 +44,13 @@ export type WebhookVerification =
 /**
  * Verifies a delivery with `POST /v1/notifications/verify-webhook-signature`
  * (PayPal's postback verification), passing the transmission headers,
- * `PAYPAL_WEBHOOK_ID` and the parsed event. Missing headers or an unset
+ * `PAYPAL_WEBHOOK_ID` and the parsed event. Fix round 1 (M5): the event is
+ * re-serialized from its parsed form (`JSON.stringify` in `paypalFetch`),
+ * not forwarded byte-for-byte — that's what PayPal's own SDKs do, and the
+ * postback API verifies the event's content, not a signature over our raw
+ * bytes. (Number formatting quirks in a re-serialized event are the one
+ * known way this could fail; such a delivery is 400 and PayPal redelivers.)
+ * Missing headers or an unset
  * `PAYPAL_WEBHOOK_ID` are `unverified` without calling PayPal (fail
  * closed).
  */
@@ -62,6 +75,7 @@ export async function verifyWebhookSignature(headers: Headers, event: unknown): 
       path: "/v1/notifications/verify-webhook-signature",
       body: { ...transmission, webhook_id: webhookId, webhook_event: event },
       requestId: randomUUID(),
+      deadlineMs: VERIFY_DEADLINE_MS,
     });
   } catch (err) {
     if (err instanceof PayPalNetworkError || err instanceof PayPalConfigError) {

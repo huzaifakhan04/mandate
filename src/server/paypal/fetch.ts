@@ -48,6 +48,12 @@ export interface PaypalHttpRequest {
   body?: unknown;
   /** Sent as `PayPal-Request-Id` on every attempt of this call, including retries. */
   requestId: string;
+  /**
+   * Optional per-call total deadline (ms), used only when shorter than the
+   * global `PAYPAL_TOTAL_DEADLINE_MS` — e.g. webhook verification, which
+   * must answer PayPal quickly.
+   */
+  deadlineMs?: number;
 }
 
 /**
@@ -202,7 +208,8 @@ export async function paypalFetch(req: PaypalHttpRequest): Promise<PaypalHttpRes
   const { baseUrl } = paypalConfig(); // throws PayPalConfigError before any attempt
   const url = `${baseUrl}${req.path}`;
   const startedAt = Date.now();
-  const deadline = startedAt + totalDeadlineMs;
+  const deadline =
+    startedAt + (req.deadlineMs !== undefined ? Math.min(req.deadlineMs, totalDeadlineMs) : totalDeadlineMs);
   const remaining = () => deadline - Date.now();
 
   let attempts = 0;

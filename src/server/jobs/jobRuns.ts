@@ -1,3 +1,5 @@
+import { and, eq, isNull } from "drizzle-orm";
+
 import type { Db } from "../db/client";
 import { jobRuns } from "../db/schema";
 import { scoped } from "../db/scoped";
@@ -19,4 +21,15 @@ export async function recordJobRun(db: Db, worldId: string, job: string, output:
 
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Anomaly count recorded by the world's newest every-minute row of `job`, or 0 when there is none. */
+export async function previousAnomalyCount(db: Db, worldId: string, job: string): Promise<number> {
+  const row = await scoped(db, worldId).findLatest(
+    jobRuns,
+    and(eq(jobRuns.job, job), isNull(jobRuns.simDay))!,
+    jobRuns.createdAt,
+  );
+  const anomalies = (row?.output as { anomalies?: unknown } | null | undefined)?.anomalies;
+  return Array.isArray(anomalies) ? anomalies.length : 0;
 }

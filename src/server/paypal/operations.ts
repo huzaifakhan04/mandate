@@ -22,7 +22,7 @@ import {
   parseGetOrderResponse,
 } from "./orders";
 import {
-  buildGetPayoutRequest,
+  batchIdFromPath,
   parseCancelPayoutItemResponse,
   parseGetPayoutResponse,
   parseSendPayoutResponse,
@@ -115,6 +115,7 @@ async function insertQueuedRow(
     purpose: OperationPurpose | null;
     sourceId: string | null;
     request: ExecutableRequest;
+    paypalId?: string | null;
   },
 ): Promise<OperationRow | undefined> {
   assertRequestMatchesKind(values.kind, values.request);
@@ -130,6 +131,7 @@ async function insertQueuedRow(
       status: "queued",
       purpose: values.purpose,
       sourceId: values.sourceId,
+      paypalId: values.paypalId ?? null,
       attempts: 0,
       request: redact(request),
       executableRequest: request,
@@ -207,7 +209,12 @@ export async function enqueueReadOperation(
     );
   }
   const id = randomUUID();
-  await insertQueuedRow(db, { ...params, id, purpose: null, sourceId: null });
+  // Fix round 1 (M3): a read records the id it reads from enqueue on (not
+  // only on success), so throttling looks reads up by the indexed
+  // (world_id, kind, paypal_id) instead of scanning request paths.
+  const paypalId =
+    params.kind === "order.get" ? orderIdFromPath(params.request.path) : batchIdFromPath(params.request.path);
+  await insertQueuedRow(db, { ...params, id, purpose: null, sourceId: null, paypalId });
   return { operationId: id };
 }
 
@@ -783,8 +790,8 @@ export async function listDueOperations(
 /**
  * Task 8 (reconcile, step 3 throttle): when the `order.create` that made
  * `orderId` was enqueued, and when the newest `order.get` of that order
- * was enqueued — in ANY status (matched on the request path, as
- * `payoutPollTimes` does), so failing reads throttle too. `null` when no
+ * was enqueued — in ANY status (reads carry the order id in
+ * `paypal_id` from enqueue), so failing reads throttle too. `null` when no
  * `order.create` in `worldId` made that order.
  */
 export async function orderPollTimes(
@@ -806,7 +813,6 @@ export async function orderPollTimes(
   if (!createRow) {
     return null;
   }
-  const path = buildGetOrderRequest(orderId).path;
   const [read] = await db
     .select({ createdAt: paypalOperations.createdAt })
     .from(paypalOperations)
@@ -814,7 +820,7 @@ export async function orderPollTimes(
       and(
         eq(paypalOperations.worldId, worldId),
         eq(paypalOperations.kind, "order.get"),
-        sql`${paypalOperations.executableRequest}->>'path' = ${path}`,
+        eq(paypalOperations.paypalId, orderId),
       ),
     )
     .orderBy(desc(paypalOperations.createdAt), desc(paypalOperations.id))
@@ -860,8 +866,8 @@ export async function latestPayoutGetForSend(
 /**
  * For throttling `pollPayoutStatus`: when the `payout.send` was enqueued,
  * and when the newest `payout.get` of its batch was enqueued — in ANY
- * status (matched on the request path, since a read only records its
- * `paypal_id` on success), so failing reads throttle too. `null` when the
+ * status (reads carry the batch id in `paypal_id` from enqueue — Fix
+ * round 1, M3), so failing reads throttle too. `null` when the
  * operation isn't a send with a batch id.
  */
 export async function payoutPollTimes(
@@ -872,7 +878,6 @@ export async function payoutPollTimes(
   if (!sendRow || sendRow.kind !== "payout.send" || !sendRow.paypalId) {
     return null;
   }
-  const path = buildGetPayoutRequest(sendRow.paypalId).path;
   const [read] = await db
     .select({ createdAt: paypalOperations.createdAt })
     .from(paypalOperations)
@@ -880,7 +885,7 @@ export async function payoutPollTimes(
       and(
         eq(paypalOperations.worldId, sendRow.worldId),
         eq(paypalOperations.kind, "payout.get"),
-        sql`${paypalOperations.executableRequest}->>'path' = ${path}`,
+        eq(paypalOperations.paypalId, sendRow.paypalId),
       ),
     )
     .orderBy(desc(paypalOperations.createdAt), desc(paypalOperations.id))

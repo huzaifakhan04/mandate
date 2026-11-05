@@ -52,6 +52,13 @@ interface SimOrderState {
   status: SimOrderStatus;
   amountCents: string;
   captureId: string | null;
+  /**
+   * The capture's status (default `COMPLETED`). Test hook
+   * `simSetCaptureStatus` sets it — before the capture (the capture then
+   * answers with it) or after (later reads show it), to model PayPal's
+   * PENDING captures that later complete or are denied.
+   */
+  captureStatus?: string;
 }
 
 type SimItemStatus = "SUCCESS" | "FAILED" | "UNCLAIMED" | "RETURNED";
@@ -147,7 +154,7 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
       {
         amount,
         ...(state.captureId
-          ? { payments: { captures: [{ id: state.captureId, status: "COMPLETED", amount }] } }
+          ? { payments: { captures: [{ id: state.captureId, status: state.captureStatus ?? "COMPLETED", amount }] } }
           : {}),
       },
     ],
@@ -374,6 +381,21 @@ export async function simHandle(db: Db, req: SimRequest): Promise<SimResponse> {
     case "payout.cancel_item":
       return cancelPayoutItem(db, req);
   }
+}
+
+/**
+ * Test/bot hook: sets a sim order's capture status (see
+ * `SimOrderState.captureStatus`). Throws for an unknown order.
+ */
+export async function simSetCaptureStatus(db: Db, orderId: string, captureStatus: string): Promise<void> {
+  const order = await findOrder(db, orderId, null);
+  if (!order) {
+    throw new SimRailError(`Unknown sim order ${orderId}`);
+  }
+  await db
+    .update(t)
+    .set({ simState: { ...order.state, captureStatus } satisfies SimOrderState })
+    .where(eq(t.id, order.id));
 }
 
 /**

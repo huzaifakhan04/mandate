@@ -358,6 +358,56 @@ interface SettleCheckoutArgs {
   createSourceId: string;
   orderId: string;
   rail: OperationRail;
+  /** Fix round 1 (I1): a capture's status seen in a verified `PAYMENT.CAPTURE.*` webhook. */
+  observedCapture?: ObservedCapture;
+}
+
+/** A capture's status (and amount, when given) as a verified webhook reported it. */
+export interface ObservedCapture {
+  captureId: string;
+  captureStatus: string;
+  amountCents?: string;
+}
+
+/**
+ * Fix round 1 (I1): a capture operation's stored result is immutable, so a
+ * capture first seen `PENDING` would stay PENDING forever. Re-observe it:
+ * a verified webhook's status for the SAME capture id is used directly (no
+ * GET); otherwise one `order.get` is made (the reconcile cron only gets
+ * here once `isPollDue` allows a read of this order — the read is
+ * recorded like every other order read) and, if the order's capture is the
+ * same capture, its fresh status/amount are used. Anything else → the
+ * stored PENDING result unchanged (still pending).
+ */
+async function reobservePendingCapture(
+  db: Db,
+  worldId: string,
+  args: SettleCheckoutArgs,
+  stored: OrderCaptureResult,
+): Promise<OrderCaptureResult> {
+  const observed = args.observedCapture;
+  if (observed && observed.captureId === stored.captureId) {
+    return {
+      ...stored,
+      captureStatus: observed.captureStatus,
+      amountCents: observed.amountCents ?? stored.amountCents,
+    };
+  }
+  const { operationId } = await enqueueReadOperation(db, {
+    worldId,
+    rail: args.rail,
+    kind: "order.get",
+    request: buildGetOrderRequest(args.orderId),
+  });
+  const read = await executeOperation(db, operationId, { ignoreBackoff: true });
+  if (read.status !== "succeeded") {
+    return stored;
+  }
+  const fresh = successBody(read, "order.get").capture;
+  if (!fresh || fresh.captureId !== stored.captureId) {
+    return stored;
+  }
+  return { ...stored, captureStatus: fresh.captureStatus, amountCents: fresh.amountCents };
 }
 
 /**
@@ -401,7 +451,10 @@ async function settleCheckout(
   );
 
   if (existingCaptureOp?.status === "succeeded") {
-    const capture = existingCaptureOp.response as OrderCaptureResult;
+    let capture = existingCaptureOp.response as OrderCaptureResult;
+    if (capture.captureStatus === "PENDING") {
+      capture = await reobservePendingCapture(db, worldId, args, capture);
+    }
     return dispatchCapturedResult(db, worldId, simNow, handler, args, capture);
   }
 
@@ -517,6 +570,7 @@ export async function settleCheckoutByOrderId(
   db: Db,
   worldId: string,
   orderId: string,
+  options: { observedCapture?: ObservedCapture } = {},
 ): Promise<FinalizeConfirmCheckoutResult> {
   const notFound: FinalizeConfirmCheckoutResult = {
     status: "NOT_FOUND",
@@ -538,5 +592,6 @@ export async function settleCheckoutByOrderId(
     createSourceId: createOp.sourceId,
     orderId,
     rail: createOp.rail as OperationRail,
+    observedCapture: options.observedCapture,
   });
 }

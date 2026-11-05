@@ -783,9 +783,10 @@ function failureApplier(purpose: OperationPurpose) {
     if (!link) {
       return;
     }
-    if (link.paypalOrderId && link.paypalOrderId !== args.orderId) {
-      // A stale order of a re-issued invoice link (Task 8): the link now
-      // points at a newer order, which this failure says nothing about.
+    if (link.createOpId && link.createOpId !== deriveOperationId(worldId, purpose, args.createSourceId)) {
+      // A stale issue of a re-issued invoice link (Task 8, fix round 1 M4):
+      // the link's current order.create is a newer issue (different
+      // sourceId suffix), which this failure says nothing about.
       return;
     }
     const failed = await scoped(db, worldId).update(

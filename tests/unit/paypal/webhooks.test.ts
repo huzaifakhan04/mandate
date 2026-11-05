@@ -11,7 +11,7 @@ import { createTestDb } from "@/server/db/testing";
 import { createPayPalWebhookHandler } from "@/server/jobs/webhookHandler";
 import { runReconcile } from "@/server/jobs/reconcile";
 import { __resetTokenCacheForTests } from "@/server/paypal/token";
-import { simApprove } from "@/server/rail/simHandler";
+import { simApprove, simSetCaptureStatus } from "@/server/rail/simHandler";
 import { pollPayoutStatus } from "@/server/services/payoutPolling";
 
 import {
@@ -264,6 +264,50 @@ describe("PayPal webhooks (verified)", () => {
     });
     expect((await POST(webhookRequest(JSON.stringify(completed)))).status).toBe(200);
     expect((await getLoan(db, borrower.loanId)).status).toBe("repaid");
+  });
+
+  it("Fix round 1 (I1): a capture stored PENDING is settled by CAPTURE.COMPLETED (status used directly); a PENDING event stays unprocessed", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const orderId = (await invoiceLink(db, borrower.loanId))!.paypalOrderId!;
+    await simApprove(db, orderId);
+    await simSetCaptureStatus(db, orderId, "PENDING");
+    await runReconcile(db, { now: later() });
+    expect((await getLoan(db, borrower.loanId)).status).toBe("active");
+    const [captureRow] = await db
+      .select()
+      .from(paypalOperations)
+      .where(and(eq(paypalOperations.kind, "order.capture"), eq(paypalOperations.paypalId, orderId)));
+    const captureId = (captureRow!.response as Data).captureId as string;
+
+    const stillPending = event("PAYMENT.CAPTURE.PENDING", {
+      id: captureId,
+      status: "PENDING",
+      supplementary_data: { related_ids: { order_id: orderId } },
+    });
+    expect((await POST(webhookRequest(JSON.stringify(stillPending)))).status).toBe(200);
+
+    const completedPending = event("PAYMENT.CAPTURE.COMPLETED", {
+      id: captureId,
+      status: "PENDING",
+      supplementary_data: { related_ids: { order_id: orderId } },
+    });
+    expect((await POST(webhookRequest(JSON.stringify(completedPending)))).status).toBe(200);
+    expect((await storedEvent(db, completedPending.id))?.processedAt).toBeNull();
+    expect((await getLoan(db, borrower.loanId)).status).toBe("active");
+
+    // PayPal's side still says PENDING to a GET; the verified event's own status is what settles it.
+    const completed = event("PAYMENT.CAPTURE.COMPLETED", {
+      id: captureId,
+      status: "COMPLETED",
+      amount: { currency_code: "USD", value: "400.00" },
+      supplementary_data: { related_ids: { order_id: orderId } },
+    });
+    expect((await POST(webhookRequest(JSON.stringify(completed)))).status).toBe(200);
+    expect((await getLoan(db, borrower.loanId)).status).toBe("repaid");
+    expect((await storedEvent(db, completed.id))?.processedAt).toBeInstanceOf(Date);
+    expect(await journalsWithKeyPrefix(db, worldId, "repayment_capture:")).toHaveLength(2);
   });
 
   it("an unknown resource → stored with no world, 200, no effect", async () => {

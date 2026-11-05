@@ -9,8 +9,8 @@ import { errorMessage, recordJobRun } from "./jobRuns";
  * world, expires offers whose `expires_sim_at` has passed on that world's
  * simulated clock (OFFERED → EXPIRED through the loan machine; a
  * conditional update, so idempotent and safe against a concurrent
- * `accept_offer`). Delinquency and the rest arrive in P4. One `job_runs`
- * row per world per run; one world failing doesn't stop the others.
+ * `accept_offer`). Delinquency and the rest arrive in P4. A `job_runs`
+ * row per world only for a run that expired something (or failed); one world failing doesn't stop the others.
  */
 
 export interface TickReport {
@@ -35,7 +35,10 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
       report.errors.push({ worldId, message });
     }
     report.expired += expired;
-    await recordJobRun(db, worldId, "tick", { expired_offers: expired, errors });
+    if (expired > 0 || errors.length > 0) {
+      // Fix round 1 (M2): idle ticks leave no rows.
+      await recordJobRun(db, worldId, "tick", { expired_offers: expired, errors });
+    }
   }
   return report;
 }

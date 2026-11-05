@@ -95,9 +95,9 @@ describe("reconcile cron", () => {
     expect(await journalsWithKeyPrefix(db, worldId, "repayment_capture:")).toHaveLength(2);
     expect(await journalsWithKeyPrefix(db, worldId, "remainder_payout:")).toHaveLength(1);
 
-    // One job_runs row per world per run, with counts and anomalies.
+    // A job_runs row for the run that did something (counts + anomalies); none for the idle second run.
     const rows = await runs(db, worldId, "reconcile");
-    expect(rows).toHaveLength(2);
+    expect(rows).toHaveLength(1);
     const output = rows[0]!.output as Data;
     expect(output).toHaveProperty("checkouts_checked");
     expect(output).toHaveProperty("anomalies");
@@ -342,12 +342,22 @@ describe("reconcile cron", () => {
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 
-  it("job_runs: one row per world per run", async () => {
+  it("job_runs (M2): idle runs write no rows; a row when something happened or the anomaly count changed", async () => {
     const a = await createSimWorld(db, "World A");
     const b = await createSimWorld(db, "World B");
     await runReconcile(db, { now: later() });
+    await runReconcile(db, { now: later(60_000) });
+    expect(await runs(db, a, "reconcile")).toHaveLength(0);
+    expect(await runs(db, b, "reconcile")).toHaveLength(0);
+
+    // An anomaly appears → one row; the same anomaly next run → no new row.
+    await fundPool(db, a, 1000);
+    await db.update(noteTransactions).set({ status: "review" }).where(eq(noteTransactions.worldId, a));
+    await runReconcile(db, { now: later(2 * 60_000) });
     expect(await runs(db, a, "reconcile")).toHaveLength(1);
-    expect(await runs(db, b, "reconcile")).toHaveLength(1);
+    await runReconcile(db, { now: later(3 * 60_000) });
+    expect(await runs(db, a, "reconcile")).toHaveLength(1);
+    expect(await runs(db, b, "reconcile")).toHaveLength(0);
   });
 });
 
@@ -385,7 +395,8 @@ describe("tick cron", () => {
 
     const again = await runTick(db);
     expect(again.expired).toBe(0);
-    expect((await runs(db, worldId, "tick")).length).toBeGreaterThanOrEqual(3);
+    // Only the run that expired something wrote a row (M2).
+    expect(await runs(db, worldId, "tick")).toHaveLength(1);
   });
 });
 

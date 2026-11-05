@@ -7,4 +7,6 @@ import { createPayPalWebhookHandler } from "@/server/jobs/webhookHandler";
  * dispatched to the payout appliers / checkout settlement. See
  * `src/server/jobs/webhookHandler.ts`.
  */
+export const maxDuration = 30;
+
 export const { POST } = createPayPalWebhookHandler({ getDb });

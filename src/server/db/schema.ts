@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  index,
   integer,
   jsonb,
   numeric,
@@ -125,7 +126,13 @@ export const paypalOperations = pgTable("paypal_operations", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  // P0 carry-forward M6 / Task 8 M3: reads by PayPal id within a world
+  // (order/payout poll throttles, order → create op lookups) …
+  index("paypal_operations_world_kind_paypal_id_idx").on(table.worldId, table.kind, table.paypalId),
+  // … and across worlds (a webhook's resource → its operation).
+  index("paypal_operations_kind_paypal_id_idx").on(table.kind, table.paypalId),
+]);
 
 export const clock = pgTable("clock", {
   worldId: uuid("world_id")

@@ -312,6 +312,20 @@ describe("paypalFetch (pure HTTP client — writes no rows)", () => {
     }
   }, 10_000);
 
+  it("a per-call deadlineMs caps one call below the global deadline", async () => {
+    server.use(
+      http.post(`${BASE_URL}/v2/checkout/orders`, async () => {
+        await delay(1_000);
+        return HttpResponse.json({ id: "late" });
+      }),
+    );
+    const startedAt = Date.now();
+    const caught = await paypalFetch({ ...orderRequest(), deadlineMs: 150 }).catch((err: unknown) => err);
+    expect(caught).toBeInstanceOf(PayPalNetworkError);
+    expect(caught).toMatchObject({ details: { stage: "deadline" } });
+    expect(Date.now() - startedAt).toBeLessThan(600);
+  }, 10_000);
+
   it("past the deadline after a 5xx, returns that last response instead of retrying further", async () => {
     __setTotalDeadlineMsForTests(100);
     __setBackoffMsForTests([200, 200]);

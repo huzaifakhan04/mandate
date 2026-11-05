@@ -1,4 +1,4 @@
-import { and, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, type SQL } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 
 import type { Db } from "./client";
@@ -59,6 +59,25 @@ export function scoped(db: Db, worldId: string) {
         .select()
         .from(anyTable)
         .where(worldCondition(table, where))
+        .limit(1)) as T["$inferSelect"][];
+      return rows[0];
+    },
+
+    /**
+     * The newest matching row by `orderBy` (descending), or `undefined` —
+     * one row, never a scan into memory.
+     */
+    async findLatest<T extends WorldScopedTable>(
+      table: T,
+      where: SQL,
+      orderBy: AnyPgColumn,
+    ): Promise<T["$inferSelect"] | undefined> {
+      const anyTable = table as unknown as PgTable;
+      const rows = (await db
+        .select()
+        .from(anyTable)
+        .where(worldCondition(table, where))
+        .orderBy(desc(orderBy))
         .limit(1)) as T["$inferSelect"][];
       return rows[0];
     },

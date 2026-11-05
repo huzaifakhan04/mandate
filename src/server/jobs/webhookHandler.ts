@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 
 import type { Db } from "../db/client";
-import { findOperationByPaypalId, getOperation } from "../paypal/operations";
+import { amountToCents, findOperationByPaypalId, getOperation } from "../paypal/operations";
 import {
   getWebhookEvent,
   markWebhookEventProcessed,
   recordWebhookEvent,
   verifyWebhookSignature,
 } from "../paypal/webhooks";
-import { settleCheckoutByOrderId } from "../services/checkouts";
+import { settleCheckoutByOrderId, type ObservedCapture } from "../services/checkouts";
 import { dispatchPayoutOutcome } from "../services/payoutPolling";
 import type { ObservedPayoutStatus } from "../services/payoutStatus";
 import { errorMessage } from "./jobRuns";
@@ -47,7 +47,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 type Target =
   | { kind: "payout"; worldId: string; sendOperationId: string; observed?: ObservedPayoutStatus }
-  | { kind: "checkout"; worldId: string; orderId: string };
+  | { kind: "checkout"; worldId: string; orderId: string; observedCapture?: ObservedCapture };
 
 interface PayPalEvent {
   id: string;
@@ -117,24 +117,53 @@ async function resolveTarget(db: Db, event: PayPalEvent): Promise<Target | null>
   }
 
   let orderId: string | null = null;
+  let observedCapture: ObservedCapture | undefined;
   if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
     orderId = str(resource.id);
   } else if (CAPTURE_EVENTS.has(event.event_type)) {
     orderId = str(record(record(resource.supplementary_data).related_ids).order_id);
+    observedCapture = captureFromResource(resource);
   }
   if (!orderId) {
     return null;
   }
   const create = await findOperationByPaypalId(db, "order.create", orderId);
-  return create ? { kind: "checkout", worldId: create.worldId, orderId } : null;
+  return create ? { kind: "checkout", worldId: create.worldId, orderId, observedCapture } : null;
 }
 
-async function dispatch(db: Db, target: Target): Promise<void> {
+/**
+ * Fix round 1 (I1): a `PAYMENT.CAPTURE.*` resource IS the capture — its
+ * id, status and amount. Settlement uses it directly for a capture it
+ * stored as PENDING (only when the ids match), with no extra GET.
+ */
+function captureFromResource(resource: Record<string, unknown>): ObservedCapture | undefined {
+  const captureId = str(resource.id);
+  const captureStatus = str(resource.status);
+  if (!captureId || !captureStatus) {
+    return undefined;
+  }
+  const value = str(record(resource.amount).value);
+  let amountCents: string | undefined;
+  if (value) {
+    try {
+      amountCents = amountToCents(value).toString();
+    } catch {
+      amountCents = undefined; // Malformed amount: keep the stored one.
+    }
+  }
+  return { captureId, captureStatus, ...(amountCents ? { amountCents } : {}) };
+}
+
+/** Applies the event's effect; returns whether the event is done (false while its capture is still PENDING). */
+async function dispatch(db: Db, target: Target): Promise<boolean> {
   if (target.kind === "payout") {
     await dispatchPayoutOutcome(db, target.sendOperationId, target.observed);
-    return;
+    return true;
   }
-  await settleCheckoutByOrderId(db, target.worldId, target.orderId);
+  const result = await settleCheckoutByOrderId(db, target.worldId, target.orderId, {
+    observedCapture: target.observedCapture,
+  });
+  return result.status !== "PENDING";
 }
 
 export async function handlePayPalWebhook(req: Request, getDb: () => Promise<Db>): Promise<NextResponse> {
@@ -193,16 +222,24 @@ export async function handlePayPalWebhook(req: Request, getDb: () => Promise<Db>
     return json({ received: true, duplicate: true }, 200);
   }
 
+  // Fix round 1 (M6): two concurrent deliveries of the same event id can
+  // both get here (both see it unprocessed). That is safe ONLY because
+  // every effect dispatched below is idempotent — payout appliers and
+  // capture handlers apply once via conditional status updates + journal
+  // idempotency keys — so the second delivery is a no-op, not a double.
+  let done = true;
   if (target) {
     try {
-      await dispatch(db, target);
+      done = await dispatch(db, target);
     } catch (err) {
       console.error(`[paypal-webhook] event ${id} (${eventType}) failed: ${errorMessage(err)}`);
       return json({ error: "processing_failed" }, 500);
     }
   }
-  await markWebhookEventProcessed(db, stored.row.id);
-  return json({ received: true }, 200);
+  if (done) {
+    await markWebhookEventProcessed(db, stored.row.id);
+  }
+  return json({ received: true, ...(done ? {} : { pending: true }) }, 200);
 }
 
 /** The route's handlers, with the database resolver injected (tests pass a PGlite db). */
