@@ -80,3 +80,22 @@ describe("loanMachine", () => {
     expect(() => fromDbStatus("pending")).toThrow();
   });
 });
+
+describe("M10: one OPEN_LOAN_DB_STATUSES constant", () => {
+  it("matches the loans_one_open_per_agent_idx partial-index predicate in schema.ts", async () => {
+    const { readFileSync } = await import("fs");
+    const { OPEN_LOAN_DB_STATUSES } = await import("@/server/domain/loanMachine");
+    const schemaSource = readFileSync("src/server/db/schema.ts", "utf8");
+    const predicate = `in (${OPEN_LOAN_DB_STATUSES.map((s) => `'${s}'`).join(", ")})`;
+    expect(schemaSource).toContain(predicate);
+  });
+
+  it("is the only open-loan status list in services (no private copies)", async () => {
+    const { readFileSync } = await import("fs");
+    for (const file of ["src/server/services/agents.ts", "src/server/services/loans.ts"]) {
+      const source = readFileSync(file, "utf8");
+      expect(source).not.toMatch(/OPEN_LOAN_STATUSES\s*=/);
+      expect(source).toContain("OPEN_LOAN_DB_STATUSES");
+    }
+  });
+});

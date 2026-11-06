@@ -7,17 +7,10 @@ import { agents, apiKeys, loans } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { availableLiquidity } from "../domain/liquidity";
+import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 
 /** The plan's fixed P1 loan cap — see `limits.max_principal_cents`. */
 export const MAX_PRINCIPAL_CENTS = 50000;
-
-/**
- * Open-loan statuses for `get_status`'s `open_loan` lookup. Loan status
- * values are stored lowercase (same DB-lowercase / API-uppercase split as
- * `agents.status` — Ruling E); this mirrors the plan's `DISBURSING` /
- * `ACTIVE` loan states.
- */
-const OPEN_LOAN_STATUSES = ["disbursing", "active"] as const;
 
 export interface RegisterAgentInput {
   name: string;
@@ -189,7 +182,7 @@ export async function getAgentStatus(
 
   const openLoanRows = await scoped(db, worldId).select(
     loans,
-    and(eq(loans.agentId, agentId), inArray(loans.status, [...OPEN_LOAN_STATUSES])),
+    and(eq(loans.agentId, agentId), inArray(loans.status, [...OPEN_LOAN_DB_STATUSES])),
   );
   // P1 enforces "one open loan per agent" (plan, Fixed P1 pricing), so
   // at most one row is expected; take the most recent defensively.
