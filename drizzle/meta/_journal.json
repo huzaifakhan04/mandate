@@ -183,6 +183,13 @@
       "when": 1793968013773,
       "tag": "0025_p4_reissue_exhausted",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793968666879,
+      "tag": "0026_p5_economy",
+      "breakpoints": true
     }
   ]
 }

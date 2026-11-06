@@ -42,6 +42,8 @@ export const REASON_PRIORITY = [
   // 8. capacity: one open loan, pool liquidity
   "open_loan_exists",
   "insufficient_liquidity",
+  // P5: the pool is more than 90% lent out
+  "pool_utilization_high",
 ] as const;
 
 export type ReasonCode = (typeof REASON_PRIORITY)[number];
@@ -68,6 +70,8 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   declaration_missing: "Required application declarations were not provided.",
   open_loan_exists: "You already have an open loan with us.",
   insufficient_liquidity: "The lending pool cannot fund this amount right now.",
+  pool_utilization_high:
+    "The lending pool is more than 90% lent out; we are not making new loans until repayments or new note purchases come in.",
 };
 
 export const MAX_SHOWN_REASONS = 4;

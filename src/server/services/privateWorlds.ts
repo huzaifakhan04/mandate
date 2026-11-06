@@ -11,6 +11,7 @@ import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
 import { failWorldOperations } from "../paypal/operations";
 import { processDue, totalDueCents } from "./collections";
+import { stepEconomyToNow } from "./economy";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -155,6 +156,8 @@ export async function advancePrivateWorld(
   }
   for (let i = 0; i < days; i += 1) {
     const simNow = await advanceClock(db, world.id, 1);
+    // P5: the day's economy (base rate, inflation, utilization) before the ladder and the bots.
+    await stepEconomyToNow(db, world.id);
     // P4: the delinquency ladder for the day that just passed, before the bots act.
     await processDue(db, world.id, simNow);
     await runBotsCatchUp(db, world.id, { maxDays: MAX_ADVANCE_DAYS });

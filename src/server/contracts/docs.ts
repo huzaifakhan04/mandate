@@ -29,6 +29,15 @@ import {
   priceLoan,
   totalBps,
 } from "../domain/pricingV2";
+import {
+  BASE_RATE_MAX_BPS,
+  BASE_RATE_MIN_BPS,
+  BASE_RATE_STEP_BPS,
+  UTILIZATION_DECLINE_ABOVE_BPS,
+  UTILIZATION_PREMIUM_FLOOR_BPS,
+  UTILIZATION_PREMIUM_MAX_BPS,
+  utilizationPremiumBps,
+} from "../domain/economy";
 import { MAX_SHOWN_REASONS, REASON_PRIORITY, REASON_TEXT } from "../domain/reasons";
 import { GRADE_D_AUTO_APPROVE_MAX_CENTS } from "../domain/rules";
 import {
@@ -605,10 +614,12 @@ A brand-new, claimed agent has no repayment history, so an **unsecured** first l
 
 The fee is the sum of four components, each in basis points (bps) of the principal for the whole term:
 
-- **cost of funds** = round(${BASE_RATE_BPS} bps a year × term_days ÷ 365);
+- **cost of funds** = round((base rate + utilization premium) bps a year × term_days ÷ 365);
 - **expected loss** = PD × LGD — probability of default by grade, times loss given default: ${pct(LGD_BPS.unsecured)} unsecured, ${pct(LGD_BPS.invoiceCovered)} when an invoice covers ≥ 1.1× the amount;
 - **operations** = ${OPS_BPS} bps;
 - **capital** = 8% × PD.
+
+**Base rate and utilization premium.** The bank's base rate starts at ${BASE_RATE_BPS} bps a year and moves once per simulated day (a seeded walk of at most ±${BASE_RATE_STEP_BPS} bps a day that pulls back toward ${BASE_RATE_BPS}, kept within ${BASE_RATE_MIN_BPS}–${BASE_RATE_MAX_BPS} bps). On top of it comes a **utilization premium**, measured at the moment you apply: utilization = loans outstanding ÷ (cash + loans outstanding). Up to ${pct(UTILIZATION_PREMIUM_FLOOR_BPS)} lent out the premium is 0; from there it rises linearly to +${UTILIZATION_PREMIUM_MAX_BPS} bps a year at ${pct(UTILIZATION_DECLINE_ABOVE_BPS)} (e.g. +${utilizationPremiumBps(7000)} at 70%). Above ${pct(UTILIZATION_DECLINE_ABOVE_BPS)} the bank makes no new loans: the application is declined with \`pool_utilization_high\`. \`check_eligibility\`'s quote and every offer's disclosure show both numbers (\`base_rate_bps\`, \`utilization_premium_bps\`; the disclosure's are covered by \`disclosure_hash\`). An offer keeps the terms it was quoted at, even if the rate moves before you accept.
 
 | Grade | PD | Expected loss, unsecured (bps) | Expected loss, invoice ≥ 1.1× (bps) | Capital (bps) |
 |---|---|---|---|---|
@@ -616,11 +627,11 @@ ${pdRows}
 
 \`fee_cents = max(${MIN_FEE_CENTS.toString()}, ceil(principal_cents × Σ bps ÷ 10000))\`, and \`apr_bps = round(fee ÷ principal × 365 ÷ term_days × 10000)\`. If the fee is above your mandate's \`max_fee_bps\`, the application is declined with \`mandate_fee\`. The disclosure flags an APR above ${pct(APR_FLAG_THRESHOLD_BPS)} (some US states cap consumer APRs there); short, small loans have high APRs even when the fee is a few cents.
 
-**Worked example — the newcomer loan:** ${ex.principal.toString()} cents for ${ex.term} days against a ${ex.invoice.toString()}-cent invoice (1.5×), grade ${ex.secured.grade}:
+**Worked example — the newcomer loan** (at the starting base rate of ${BASE_RATE_BPS} bps and a pool under ${pct(UTILIZATION_PREMIUM_FLOOR_BPS)} lent, so no premium): ${ex.principal.toString()} cents for ${ex.term} days against a ${ex.invoice.toString()}-cent invoice (1.5×), grade ${ex.secured.grade}:
 
 | Component | bps |
 |---|---|
-| cost of funds: round(${BASE_RATE_BPS} × ${ex.term} ÷ 365) | ${c.costOfFundsBps} |
+| cost of funds: round((${BASE_RATE_BPS} + 0) × ${ex.term} ÷ 365) | ${c.costOfFundsBps} |
 | expected loss: ${pct(PD_BPS.D)} × ${pct(LGD_BPS.invoiceCovered)} | ${c.expectedLossBps} |
 | operations | ${c.opsBps} |
 | capital: 8% × ${pct(PD_BPS.D)} | ${c.capitalBps} |
@@ -699,7 +710,8 @@ function renderMoneyRulesSection(): string {
 - **Application (ALA A–H):** see [Applying for a loan](#applying-for-a-loan); without \`declarations.no_other_debt: true\` and \`attest: true\` an application is \`DECLINED\` with \`declaration_missing\`.
 - **Disclosure:** \`apply_for_loan\` returns a \`disclosure\` and a \`disclosure_hash\`; \`accept_offer\` must echo the same \`disclosure_hash\` back, or the offer is rejected with \`DISCLOSURE_MISMATCH\`.
 - **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
-- **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%.
+- **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%. \`get_statement\` shows your \`nominal_annual_return_bps\` (interest earned ÷ net amount invested, annualised over the simulated days since your first purchase) and \`real_annual_return_bps\` (nominal minus the bank's simulated annual inflation rate, \`inflation_rate_bps\`, which walks between 2% and 6%).
+- **Pricing (risk-based):** the cost of funds is the bank's daily base rate plus a utilization premium; above 90% of the pool lent out, new loans are declined with \`pool_utilization_high\` (see [Pricing](#pricing)).
 - **Idempotency:** mutating tools (other than \`confirm_checkout\`, which is already idempotent by \`checkout_id\`) accept an \`Idempotency-Key\` HTTP header or an \`idempotency_key\` input argument, over both REST and MCP (if you send both, they must match) — reuse one to safely retry a call that may or may not have gone through.
 `;
 }

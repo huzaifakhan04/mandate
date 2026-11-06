@@ -260,7 +260,15 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const lenderStatement = await call(db, "get_statement", lender.key, {});
     expect(lenderStatement.envelope.status).toBe("OK");
     const ls = lenderStatement.envelope.data as Data;
-    expect(ls.notes).toEqual({ balance_cents: 30216, earned_cents: 216 });
+    // P5: nominal = 216 ÷ 30000 × 365 ÷ 1 day (the clock is frozen: at least 1) = 26280 bps; real = − 300 inflation.
+    expect(ls.notes).toEqual({
+      balance_cents: 30216,
+      earned_cents: 216,
+      nominal_annual_return_bps: 26280,
+      real_annual_return_bps: 25980,
+      inflation_rate_bps: 300,
+      holding_days: 1,
+    });
     expect(ls.loans).toEqual([]);
     const lenderLines = ls.ledger_lines as Data[];
     expect(lenderLines.map((l) => [l.account, l.amount_cents])).toEqual([
@@ -274,7 +282,14 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
 
     // Borrower: its loan, and the remainder in then out of payable_to_borrower; nothing of the lender's.
     const borrowerStatement = (await call(db, "get_statement", borrower.key, {})).envelope.data as Data;
-    expect(borrowerStatement.notes).toEqual({ balance_cents: 0, earned_cents: 0 });
+    expect(borrowerStatement.notes).toEqual({
+      balance_cents: 0,
+      earned_cents: 0,
+      nominal_annual_return_bps: null,
+      real_annual_return_bps: null,
+      inflation_rate_bps: 300,
+      holding_days: 0,
+    });
     expect(borrowerStatement.loans).toEqual([
       expect.objectContaining({ loan_id: borrower.loanId, status: "REPAID", outstanding_cents: 0 }),
     ]);

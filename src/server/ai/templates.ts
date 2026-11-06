@@ -48,6 +48,7 @@ const NEXT_STEP: Partial<Record<ReasonCode, string>> = {
     "Re-apply with declarations.no_other_debt: true and attest: true, but only if both are true (no other outstanding debts; the application is accurate).",
   open_loan_exists: "Repay your open loan before applying again.",
   insufficient_liquidity: "Try again later, or apply for a smaller amount.",
+  pool_utilization_high: "Try again after repayments or new note purchases bring the pool below 90% lent out.",
 };
 
 export function loanOfficerTemplate(input: LoanOfficerInput): LoanOfficerOutput {

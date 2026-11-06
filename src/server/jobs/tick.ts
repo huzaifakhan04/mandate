@@ -2,6 +2,7 @@ import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { runBotsCatchUp } from "../bots/runner";
 import { processDue } from "../services/collections";
+import { stepEconomyToNow } from "../services/economy";
 import { expireStaleOffers } from "../services/loans";
 import { listActivePrivateWorldIds, listActiveWorldsForTick } from "../services/worlds";
 import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
@@ -19,6 +20,11 @@ import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
  * fix I1: a private world whose clock is frozen (speed 0) is skipped by the
  * ladder here — its owner's advance runs it — and an idle late loan takes
  * no locks (`processDue`'s unlocked pre-check).
+ *
+ * P5 Task 1: first of all, each world's economy is stepped to its current
+ * simulated day (`stepEconomyToNow`: one `economy_state` row per day,
+ * catching up in order; the main world runs at speed 1, so once a real
+ * day). A frozen private world's day doesn't move here — its advance steps it.
  *
  * P2 Task 6: then, for every active private world, the bots act for each
  * simulated day the world's clock has passed since they last acted (at
@@ -43,6 +49,8 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     let accrued = 0;
     const errors: string[] = [];
     try {
+      // P5 Task 1: the world's economy for each sim day passed (idempotent; a no-op within a day).
+      await stepEconomyToNow(db, worldId, now);
       const simNow = await getSimNow(db, worldId, now);
       expired = await expireStaleOffers(db, worldId, simNow);
       // Final fix I1: a frozen-clock private world's ladder runs on its advance, not here.

@@ -50,6 +50,8 @@ import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } 
 import { checkoutUrl, refreshLinkRow } from "./paymentLinks";
 import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
+import { currentEconomy } from "./economy";
+import { annualisedReturnBps } from "../domain/economy";
 
 /**
  * Task 7 — repayment: the invoice payment link, `repay_loan`'s direct
@@ -1486,8 +1488,22 @@ export interface StatementLine {
   amountCents: bigint;
 }
 
+/**
+ * P5 Task 1: the holder's annualised return on notes. Nominal = interest
+ * earned ÷ net principal invested (Σ position cost) × 365 ÷ the holding
+ * period (sim days since the first note purchase, at least 1); real =
+ * nominal − the world's current annual inflation rate. `null` without a
+ * position (nothing invested).
+ */
+export interface NoteReturns {
+  nominalAnnualBps: number | null;
+  realAnnualBps: number | null;
+  inflationRateBps: number;
+  holdingDays: number;
+}
+
 export interface Statement {
-  notes: { balanceCents: bigint; earnedCents: bigint };
+  notes: { balanceCents: bigint; earnedCents: bigint; returns: NoteReturns };
   loans: LoanRow[];
   ledgerLines: StatementLine[];
 }
@@ -1537,5 +1553,21 @@ export async function getStatement(db: Db, worldId: string, agentId: string): Pr
     }
   }
 
-  return { notes: { balanceCents: -balance, earnedCents }, loans: agentLoans, ledgerLines };
+  // P5 Task 1: nominal and real annualised returns over the holding period.
+  const basisCents = positions.reduce((sum, position) => sum + position.costCents, 0n);
+  const firstPurchase = ledgerLines.find((line) => line.account === "notes_payable" && line.amountCents > 0n);
+  const simNow = await getSimNow(db, worldId);
+  const holdingDays = firstPurchase
+    ? Math.max(1, Math.ceil((simNow.getTime() - firstPurchase.simAt.getTime()) / 86_400_000))
+    : 0;
+  const { inflationRateBps } = await currentEconomy(db, worldId);
+  const nominalAnnualBps = annualisedReturnBps(earnedCents, basisCents, holdingDays);
+  const returns: NoteReturns = {
+    nominalAnnualBps,
+    realAnnualBps: nominalAnnualBps === null ? null : nominalAnnualBps - inflationRateBps,
+    inflationRateBps,
+    holdingDays,
+  };
+
+  return { notes: { balanceCents: -balance, earnedCents, returns }, loans: agentLoans, ledgerLines };
 }

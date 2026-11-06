@@ -1065,6 +1065,12 @@ export const scoreHistory = pgTable("score_history", {
     .defaultNow(),
 });
 
+/**
+ * P5 Task 1: one row per world per simulated day (`stepEconomy`): the
+ * seeded base-rate walk, the inflation index and its annual rate, and the
+ * utilization / reserve ratio measured from the ledger when the day was
+ * stepped. Unique per (world, sim_day) — stepping a day twice is a no-op.
+ */
 export const economyState = pgTable("economy_state", {
   id: uuid("id").primaryKey().defaultRandom(),
   worldId: uuid("world_id")
@@ -1073,6 +1079,8 @@ export const economyState = pgTable("economy_state", {
   simDay: integer("sim_day").notNull(),
   baseRateBps: integer("base_rate_bps").notNull(),
   inflationIndexBp: integer("inflation_index_bp").notNull(),
+  /** P5 Task 1: the annual inflation rate (bps) the index grew at that day. */
+  inflationRateBps: integer("inflation_rate_bps").notNull().default(300),
   utilizationBps: integer("utilization_bps").notNull(),
   reserveRatioBps: integer("reserve_ratio_bps").notNull(),
   ceclReserveCents: bigint("cecl_reserve_cents", { mode: "bigint" })
@@ -1083,4 +1091,6 @@ export const economyState = pgTable("economy_state", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("economy_state_world_day_idx").on(table.worldId, table.simDay),
+]);

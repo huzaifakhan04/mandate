@@ -47,6 +47,22 @@ function facts(overrides: Partial<ApplicationFacts> = {}): ApplicationFacts {
 }
 
 describe("evaluateApplication (rules pipeline)", () => {
+  it("P5: utilization above 90% declines with pool_utilization_high; at 90% it prices the 600 bps premium", () => {
+    const high = evaluateApplication(facts({ utilizationBps: 9001 }));
+    expect(high).toMatchObject({ decision: "decline", reasons: ["pool_utilization_high"], primary: "pool_utilization_high" });
+    const atCap = evaluateApplication(facts({ utilizationBps: 9000 }));
+    expect(atCap.decision).toBe("approve");
+    // round((400 + 600) × 14 / 365 = 38.36) = 38; Σ = 38 + 180 + 50 + 24 = 292.
+    expect(atCap.price).toMatchObject({ feeCents: 292n, utilizationPremiumBps: 600, baseRateBps: 400 });
+    expect(REASON_TEXT.pool_utilization_high).toMatch(/90%/);
+  });
+
+  it("P5: the base rate from the economy prices the cost of funds; low utilization adds nothing", () => {
+    const decision = evaluateApplication(facts({ baseRateBps: 800, utilizationBps: 4000 }));
+    // round(800 × 14 / 365 = 30.68) = 31 → 31 + 180 + 50 + 24 = 285.
+    expect(decision.price).toMatchObject({ feeCents: 285n, baseRateBps: 800, utilizationPremiumBps: 0 });
+  });
+
   it("golden (10000, 14, B, unsecured) → approve, auto, fee 269, cap = B limit 30000", () => {
     const decision = evaluateApplication(facts());
     expect(decision).toMatchObject({

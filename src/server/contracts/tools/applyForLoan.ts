@@ -76,6 +76,9 @@ const disclosureSchema = z.object({
     total_bps: z.number(),
   }),
   apr_flag: z.string().optional(),
+  /** P5 (disclosure v2): the annual base rate and utilization premium (bps) in the cost of funds. */
+  base_rate_bps: z.number(),
+  utilization_premium_bps: z.number(),
   right_to_statement: z.string(),
 });
 

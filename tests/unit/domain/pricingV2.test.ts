@@ -24,6 +24,8 @@ describe("priceLoan (pricing v2)", () => {
       aprBps: 7013,
       components: { costOfFundsBps: 15, expectedLossBps: 180, opsBps: 50, capitalBps: 24 },
       aprFlag: true,
+      baseRateBps: 400,
+      utilizationPremiumBps: 0,
     });
   });
 
@@ -35,6 +37,8 @@ describe("priceLoan (pricing v2)", () => {
       aprBps: 5058,
       components: { costOfFundsBps: 15, expectedLossBps: 105, opsBps: 50, capitalBps: 24 },
       aprFlag: true,
+      baseRateBps: 400,
+      utilizationPremiumBps: 0,
     });
   });
 
@@ -47,6 +51,8 @@ describe("priceLoan (pricing v2)", () => {
       aprBps: 13036,
       components: { costOfFundsBps: 8, expectedLossBps: 35, opsBps: 50, capitalBps: 8 },
       aprFlag: true,
+      baseRateBps: 400,
+      utilizationPremiumBps: 0,
     });
     expect(MIN_FEE_CENTS).toBe(25n);
   });
@@ -60,6 +66,8 @@ describe("priceLoan (pricing v2)", () => {
       aprBps: 10938,
       components: { costOfFundsBps: 33, expectedLossBps: 720, opsBps: 50, capitalBps: 96 },
       aprFlag: true,
+      baseRateBps: 400,
+      utilizationPremiumBps: 0,
     });
   });
 
@@ -85,6 +93,24 @@ describe("priceLoan (pricing v2)", () => {
     const price = priceLoan({ principalCents: 10000n, termDays: 14, grade: "B", coverageBps: null, baseRateBps: 800 });
     expect(price.components.costOfFundsBps).toBe(31);
     expect(price.feeCents).toBe(285n); // 31 + 180 + 50 + 24
+  });
+
+  it("P5: the utilization premium adds to the base in the cost of funds", () => {
+    // round((400 + 300) × 14 / 365 = 26.85) = 27; Σ = 27 + 180 + 50 + 24 = 281 → fee 281.
+    const price = priceLoan({ principalCents: 10000n, termDays: 14, grade: "B", coverageBps: null, utilizationPremiumBps: 300 });
+    expect(price).toMatchObject({ feeCents: 281n, baseRateBps: 400, utilizationPremiumBps: 300 });
+    expect(price.components.costOfFundsBps).toBe(27);
+  });
+
+  it("P5: the newcomer loan stays 58 at 400 bps and no premium; 59 at the 600 bps premium cap", () => {
+    expect(priceLoan({ principalCents: 1000n, termDays: 7, grade: "D", coverageBps: 15000, baseRateBps: 400, utilizationPremiumBps: 0 }).feeCents).toBe(58n);
+    // round(1000 × 7 / 365 = 19.18) = 19; Σ = 19 + 420 + 50 + 96 = 585 → ceil(58.5) = 59.
+    expect(priceLoan({ principalCents: 1000n, termDays: 7, grade: "D", coverageBps: 15000, utilizationPremiumBps: 600 }).feeCents).toBe(59n);
+  });
+
+  it("P5: rejects a negative or fractional utilization premium", () => {
+    expect(() => priceLoan({ principalCents: 1000n, termDays: 7, grade: "A", coverageBps: null, utilizationPremiumBps: -1 })).toThrow();
+    expect(() => priceLoan({ principalCents: 1000n, termDays: 7, grade: "A", coverageBps: null, utilizationPremiumBps: 1.5 })).toThrow();
   });
 
   it("rounds the fee up once, at the end, on integers", () => {

@@ -5,7 +5,9 @@ import type { Grade } from "./scorecard";
  * flat P1 `price()`). Every component is in bps of the principal for the
  * whole term:
  *
- *   cost of funds = round(base APR bps × term ÷ 365)     (base 400; P5 makes it dynamic)
+ *   cost of funds = round((base + utilization premium) APR bps × term ÷ 365)
+ *                                                         (P5: base from the world's economy_state,
+ *                                                          default 400; premium 0..600 by utilization)
  *   expected loss = PD × LGD ÷ 10000                      (PD by grade; LGD 6000 unsecured,
  *                                                          3500 when an invoice covers ≥ 1.1×)
  *   ops           = 50
@@ -44,6 +46,8 @@ export interface PriceLoanInput {
   coverageBps: number | null;
   /** The annual cost-of-funds base in bps (default 400). */
   baseRateBps?: number;
+  /** P5: the annual utilization premium in bps added to the base (default 0). */
+  utilizationPremiumBps?: number;
 }
 
 export interface PriceComponents {
@@ -59,6 +63,10 @@ export interface LoanPrice {
   components: PriceComponents;
   /** APR above 3600 bps. */
   aprFlag: boolean;
+  /** P5: the annual base rate (bps) the cost of funds used. */
+  baseRateBps: number;
+  /** P5: the annual utilization premium (bps) the cost of funds used. */
+  utilizationPremiumBps: number;
 }
 
 /** round(n ÷ d), half-up, for non-negative bigints. */
@@ -82,6 +90,7 @@ export function aprBpsFor(feeCents: bigint, principalCents: bigint, termDays: nu
 export function priceLoan(input: PriceLoanInput): LoanPrice {
   const { principalCents, termDays, grade, coverageBps } = input;
   const baseRateBps = input.baseRateBps ?? BASE_RATE_BPS;
+  const utilizationPremiumBps = input.utilizationPremiumBps ?? 0;
   if (principalCents <= 0n) {
     throw new Error(`priceLoan: principal must be positive, got ${principalCents.toString()}`);
   }
@@ -91,6 +100,9 @@ export function priceLoan(input: PriceLoanInput): LoanPrice {
   if (!Number.isInteger(baseRateBps) || baseRateBps < 0) {
     throw new Error(`priceLoan: base rate must be a non-negative integer of bps, got ${baseRateBps}`);
   }
+  if (!Number.isInteger(utilizationPremiumBps) || utilizationPremiumBps < 0) {
+    throw new Error(`priceLoan: utilization premium must be a non-negative integer of bps, got ${utilizationPremiumBps}`);
+  }
   const pd = PD_BPS[grade];
   if (pd === undefined) {
     throw new Error(`priceLoan: grade ${String(grade)} is not priced (grade E always declines)`);
@@ -99,7 +111,7 @@ export function priceLoan(input: PriceLoanInput): LoanPrice {
   const covered = coverageBps !== null && coverageBps >= COVERED_MIN_COVERAGE_BPS;
   const lgd = covered ? LGD_BPS.invoiceCovered : LGD_BPS.unsecured;
   const components: PriceComponents = {
-    costOfFundsBps: Number(roundDiv(BigInt(baseRateBps) * BigInt(termDays), 365n)),
+    costOfFundsBps: Number(roundDiv(BigInt(baseRateBps + utilizationPremiumBps) * BigInt(termDays), 365n)),
     expectedLossBps: (pd * lgd) / 10000,
     opsBps: OPS_BPS,
     capitalBps: (CAPITAL_PCT_OF_PD_BPS * pd) / 10000,
@@ -108,5 +120,12 @@ export function priceLoan(input: PriceLoanInput): LoanPrice {
   const computed = ceilDiv(principalCents * BigInt(totalBps(components)), 10000n);
   const feeCents = computed < MIN_FEE_CENTS ? MIN_FEE_CENTS : computed;
   const aprBps = aprBpsFor(feeCents, principalCents, termDays);
-  return { feeCents, aprBps, components, aprFlag: aprBps > APR_FLAG_THRESHOLD_BPS };
+  return {
+    feeCents,
+    aprBps,
+    components,
+    aprFlag: aprBps > APR_FLAG_THRESHOLD_BPS,
+    baseRateBps,
+    utilizationPremiumBps,
+  };
 }
