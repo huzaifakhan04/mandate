@@ -670,6 +670,30 @@ export async function applyLadderStep(
   });
 }
 
+/** The candidate columns `processDue` reads without locks. */
+interface DueCandidate {
+  id: string;
+  dueSimAt: Date;
+  delinquencyStep: string | null;
+  penaltyAccruedDays: number;
+  dpd: number;
+}
+
+/**
+ * Final fix I1: whether `accrueLoan` would change nothing — judged from an
+ * UNLOCKED read, so an idle tick on a late loan takes no locks. The penalty
+ * has not started, or is accrued through today's (capped) days late; and
+ * `dpd` is already today's. Both only grow with the clock, and every writer
+ * (accrual, capture) advances them under the loan lock, so a stale read
+ * can only make this return `false` (then the locked path re-checks).
+ */
+export function accrualIsCurrent(candidate: DueCandidate, simNow: Date): boolean {
+  const penaltyCurrent =
+    candidate.penaltyAccruedDays <= 0 || penaltyDays(candidate.dueSimAt, simNow) <= candidate.penaltyAccruedDays;
+  const dpdCurrent = !candidate.delinquencyStep || daysLate(candidate.dueSimAt, simNow) <= candidate.dpd;
+  return penaltyCurrent && dpdCurrent;
+}
+
 /** Accrues the penalty (and refreshes `dpd`) for one loan up to `simNow`, in its own transaction. */
 async function accrueLoan(db: Db, worldId: string, loanId: string, simNow: Date): Promise<boolean> {
   return db.transaction(async (tx) => {
@@ -713,15 +737,23 @@ export async function processDue(db: Db, worldId: string, simNow: Date): Promise
   const lateBy = new Date(simNow.getTime() - 86_400_000);
   const candidates = await scoped(db, worldId).selectFields(
     loans,
-    { id: loans.id, dueSimAt: loans.dueSimAt, delinquencyStep: loans.delinquencyStep },
+    {
+      id: loans.id,
+      dueSimAt: loans.dueSimAt,
+      delinquencyStep: loans.delinquencyStep,
+      penaltyAccruedDays: loans.penaltyAccruedDays,
+      dpd: loans.dpd,
+    },
     and(inArray(loans.status, [...OWING_LOAN_DB_STATUSES]), lte(loans.dueSimAt, lateBy))!,
     asc(loans.dueSimAt),
   );
   for (const candidate of candidates) {
     report.loans += 1;
     try {
+      let applied = 0;
       for (const step of dueSteps(candidate.delinquencyStep, daysLate(candidate.dueSimAt, simNow))) {
         if ((await applyLadderStep(db, worldId, candidate.id, step, simNow)) === "applied") {
+          applied += 1;
           report.steps[step] += 1;
           if (step === "charged_off") {
             // After commit: create the guarantee's order (the reconcile cron retries a failure).
@@ -730,6 +762,10 @@ export async function processDue(db: Db, worldId: string, simNow: Date): Promise
             });
           }
         }
+      }
+      // Final fix I1: no step ran and nothing is due to accrue → no transaction, no locks.
+      if (applied === 0 && accrualIsCurrent(candidate, simNow)) {
+        continue;
       }
       if (await accrueLoan(db, worldId, candidate.id, simNow)) {
         report.accrued += 1;

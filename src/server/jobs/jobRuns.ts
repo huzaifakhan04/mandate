@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { safeErrorMessage } from "../db/errors";
@@ -34,4 +34,45 @@ export async function previousAnomalyCount(db: Db, worldId: string, job: string)
   );
   const anomalies = (row?.output as { anomalies?: unknown } | null | undefined)?.anomalies;
   return Array.isArray(anomalies) ? anomalies.length : 0;
+}
+
+/** How long a repeated, identical error set is kept out of `job_runs` (final fix minor c). */
+export const REPEATED_ERROR_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * Final fix (minor c): whether the world already has an every-minute row
+ * of `job` finished within the last hour (before `now`) recording exactly
+ * these errors — then a run that did nothing but fail the same way again
+ * leaves no row (a stuck loan would otherwise write one a minute). Errors
+ * compared as a set. A failure to check counts as "not recorded".
+ */
+export async function errorsRecentlyRecorded(
+  db: Db,
+  worldId: string,
+  job: string,
+  errors: string[],
+  now: Date,
+): Promise<boolean> {
+  if (errors.length === 0) {
+    return false;
+  }
+  const key = JSON.stringify([...errors].sort());
+  try {
+    const rows = await scoped(db, worldId).selectFields(
+      jobRuns,
+      { output: jobRuns.output },
+      and(
+        eq(jobRuns.job, job),
+        isNull(jobRuns.simDay),
+        gt(jobRuns.finishedAt, new Date(now.getTime() - REPEATED_ERROR_WINDOW_MS)),
+      )!,
+    );
+    return rows.some((row) => {
+      const recorded = (row.output as { errors?: unknown } | null)?.errors;
+      return Array.isArray(recorded) && JSON.stringify([...(recorded as string[])].sort()) === key;
+    });
+  } catch (err) {
+    console.error(`[jobs] could not check ${job} runs for world ${worldId}: ${errorMessage(err)}`);
+    return false;
+  }
 }
