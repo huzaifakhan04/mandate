@@ -19,6 +19,7 @@ import {
   repayments,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { SMALL_BALANCE_WAIVER_CENTS } from "../domain/delinquency";
 import { distribute } from "../domain/distribution";
 import { fromDbStatus, isOwingStatus, toDbStatus, transition } from "../domain/loanMachine";
 import { holdersShare, waterfall } from "../domain/waterfall";
@@ -736,8 +737,18 @@ export async function applyRepaymentCapture(
     }
 
     const newOutstanding = loan.outstandingCents - split.fee - split.principal;
-    const newLateFees = loan.lateFeeOutstandingCents - split.lateFee;
-    const newPenalty = loan.penaltyOutstandingCents - split.penalty;
+    const leftLateFees = loan.lateFeeOutstandingCents - split.lateFee;
+    const leftPenalty = loan.penaltyOutstandingCents - split.penalty;
+    // Final fix (minor a): base principal + fee fully paid and at most
+    // SMALL_BALANCE_WAIVER_CENTS of late fees + penalty left → waived (memo
+    // balances, so no journal; recorded in waived_cents) and the loan cures.
+    const residue = leftLateFees + leftPenalty;
+    const smallBalanceWaived =
+      isOwingStatus(loan.status) && newOutstanding === 0n && residue > 0n && residue <= SMALL_BALANCE_WAIVER_CENTS
+        ? residue
+        : 0n;
+    const newLateFees = smallBalanceWaived > 0n ? 0n : leftLateFees;
+    const newPenalty = smallBalanceWaived > 0n ? 0n : leftPenalty;
     // Cure (P4): everything owed — base, late fees and penalty — is paid.
     const repaidNow = isOwingStatus(loan.status) && newOutstanding === 0n && newLateFees === 0n && newPenalty === 0n;
     const [after] = await scoped(tx, worldId).update(
@@ -746,10 +757,24 @@ export async function applyRepaymentCapture(
         outstandingCents: newOutstanding,
         lateFeeOutstandingCents: newLateFees,
         penaltyOutstandingCents: newPenalty,
+        ...(smallBalanceWaived > 0n ? { waivedCents: loan.waivedCents + smallBalanceWaived } : {}),
         ...(repaidNow ? { status: toDbStatus(transition(fromDbStatus(loan.status), "REPAY")) } : {}),
       },
       eq(loans.id, loan.id),
     );
+    if (smallBalanceWaived > 0n) {
+      await appendEvent(tx, worldId, {
+        type: "loan.charges_waived",
+        aggregateId: loan.id,
+        simAt: simNow,
+        payload: {
+          repayment_id: repayment.id,
+          waived_penalty_cents: Number(leftPenalty),
+          waived_late_fee_cents: Number(leftLateFees),
+          reason: "small_balance",
+        },
+      });
+    }
 
     await appendEvent(tx, worldId, {
       type: "loan.repayment_received",
@@ -771,8 +796,9 @@ export async function applyRepaymentCapture(
     if (repaidNow) {
       await appendEvent(tx, worldId, { type: "loan.repaid", aggregateId: loan.id, simAt: simNow });
       if (loan.status !== "active") {
-        // A delinquent loan cured: restore the agent, notify.
+        // A delinquent loan cured: restore the agent, notify, stop polling its other links.
         await onLoanCured(tx, worldId, after!, simNow);
+        await closeOpenLinksLocked(tx, worldId, loan.id, simNow);
       }
     }
 
@@ -859,6 +885,31 @@ async function waivePostQuoteChargesLocked(
     },
   });
   return updated!;
+}
+
+/**
+ * Final fix (minor b), inside the capture transaction that cured or fully
+ * recovered a loan (loan row locked; links after it, the re-issue's
+ * order): its still-`pending`/`open` repayment, direct and guarantee links
+ * go to `closed`, so the reconcile cron stops polling their orders and the
+ * views stop offering them. A capture that still lands on a closed link
+ * (webhook, confirm_checkout) is booked as a stray capture — applied to
+ * the loan, the excess refunded.
+ */
+async function closeOpenLinksLocked(tx: Db, worldId: string, loanId: string, simNow: Date): Promise<void> {
+  const closed = await scoped(tx, worldId).update(
+    repaymentLinks,
+    { status: "closed" },
+    and(eq(repaymentLinks.loanId, loanId), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
+  );
+  if (closed.length > 0) {
+    await appendEvent(tx, worldId, {
+      type: "loan.links_closed",
+      aggregateId: loanId,
+      simAt: simNow,
+      payload: { link_ids: closed.map((row) => row.id) },
+    });
+  }
 }
 
 /**
@@ -1076,6 +1127,7 @@ async function applyRecoveryLocked(
   }
   if (fullyRecovered) {
     await appendEvent(tx, worldId, { type: "loan.recovered", aggregateId: loan.id, simAt: simNow });
+    await closeOpenLinksLocked(tx, worldId, loan.id, simNow);
   }
   if (recovery > 0n) {
     await onLoanRecovery(tx, worldId, after!, simNow, { recoveredNowCents: recovery, fullyRecovered });
@@ -1282,8 +1334,13 @@ export async function remainderPayoutNeedsPolling(db: Db, worldId: string, repay
 // P4-F: guarantee link re-issue
 // ---------------------------------------------------------------------
 
-/** How many times a guarantee link may be issued in total (the first + 3 re-issues). */
-export const MAX_GUARANTEE_LINK_ISSUES = 4;
+/**
+ * How many times a guarantee link may be issued in total (the first + 7
+ * re-issues — each partial recovery re-issues it). Final fix I3: once
+ * exhausted, the link is marked (`reissue_exhausted_at`) and the reconcile
+ * cron reports it once and stops retrying.
+ */
+export const MAX_GUARANTEE_LINK_ISSUES = 8;
 
 /** The `guarantee` checkout's sourceId for issue `n`: the loan id, then `${loanId}:g<n>`. */
 export function guaranteeSourceId(loanId: string, issue: number): string {
@@ -1298,7 +1355,8 @@ export function loanIdFromGuaranteeSourceId(sourceId: string): string {
 export type ReissueGuaranteeOutcome =
   | { outcome: "reissued"; issue: number; link: LinkRow }
   | { outcome: "not_needed" }
-  | { outcome: "exhausted"; issues: number };
+  /** `firstTime`: this call marked the link exhausted (report it once). */
+  | { outcome: "exhausted"; issues: number; firstTime: boolean };
 
 /**
  * Ruling P4-F: re-issues a CHARGED_OFF loan's guarantee link at what is
@@ -1308,13 +1366,19 @@ export type ReissueGuaranteeOutcome =
  * sourceId `${loanId}:g<n>` (deterministic, so a repeat resolves to the
  * same operation), status `pending`, no order/URL yet, amount = quote =
  * the recoverable amount, `quote_sim_at` = now. At most
- * `MAX_GUARANTEE_LINK_ISSUES` issues. Locks loan → link (the capture
+ * `MAX_GUARANTEE_LINK_ISSUES` issues; `markExhausted` (the reconcile cron)
+ * records `reissue_exhausted_at` the first time that limit is hit. Locks loan → link (the capture
  * path's order). An owner paying an OLDER issue afterwards is still
  * applied — as a stray capture: a recovery, any excess refunded — see
  * `applyRepaymentCapture`. Executes the create after commit. Never call
  * inside a transaction.
  */
-export async function reissueGuaranteeLink(db: Db, worldId: string, loanId: string): Promise<ReissueGuaranteeOutcome> {
+export async function reissueGuaranteeLink(
+  db: Db,
+  worldId: string,
+  loanId: string,
+  options: { markExhausted?: boolean } = {},
+): Promise<ReissueGuaranteeOutcome> {
   const result = await db.transaction(async (tx): Promise<ReissueGuaranteeOutcome> => {
     const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, loanId));
     if (!loan || loan.status !== "charged_off") {
@@ -1341,7 +1405,11 @@ export async function reissueGuaranteeLink(db: Db, worldId: string, loanId: stri
     }
     const next = current + 1;
     if (next > MAX_GUARANTEE_LINK_ISSUES) {
-      return { outcome: "exhausted", issues: current };
+      // Only the reconcile cron marks it (and so reports it, once).
+      if (options.markExhausted && !link.reissueExhaustedAt) {
+        await scoped(tx, worldId).update(repaymentLinks, { reissueExhaustedAt: new Date() }, eq(repaymentLinks.id, link.id));
+      }
+      return { outcome: "exhausted", issues: current, firstTime: Boolean(options.markExhausted) && !link.reissueExhaustedAt };
     }
     const simNow = await getSimNow(tx, worldId);
     const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));

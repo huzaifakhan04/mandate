@@ -9,7 +9,7 @@
  * the cure rules, and the trial balance stays 0 throughout.
  */
 import { and, eq } from "drizzle-orm";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { advanceClock, getSimNow } from "@/server/clock/clock";
 import type { Db } from "@/server/db/client";
@@ -17,6 +17,7 @@ import {
   agentNotices,
   agents,
   events,
+  jobRuns,
   loanLadderSteps,
   loans,
   principals,
@@ -634,5 +635,156 @@ describe("the delinquency ladder (P4 Task 1)", () => {
     const { worldId } = await ensureMainWorld(db);
     const [row] = await db.select().from(clock).where(eq(clock.worldId, worldId));
     expect(Number(row!.speed)).toBe(1);
+  });
+});
+
+describe("P4 final fixes: tick cost, small-balance waiver, closed links, tick error dedupe", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  async function moveTo(worldId: string, target: Date) {
+    const now = await getSimNow(db, worldId);
+    const days = Math.ceil((target.getTime() - now.getTime()) / DAY_MS);
+    if (days > 0) {
+      await advanceClock(db, worldId, days);
+    }
+    return getSimNow(db, worldId);
+  }
+
+  it("I1: an idle tick on a late loan opens no transaction (no series/loan lock) and changes nothing", async () => {
+    const worldId = (await createWorld(db, { name: "Idle", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveTo(worldId, at(due, 4));
+    const first = await runTick(db);
+    expect(first.ladderSteps).toBe(2);
+    const before = await loanRow(db, borrower.loanId);
+    expect(before).toMatchObject({ delinquencyStep: "penalty", penaltyAccruedDays: 4, dpd: 4 });
+    const runsBefore = await db.select().from(jobRuns).where(eq(jobRuns.worldId, worldId));
+
+    const transactions = vi.spyOn(db, "transaction");
+    const idle = await runTick(db);
+    expect(idle.ladderSteps).toBe(0);
+    expect(idle.errors).toEqual([]);
+    expect(transactions).not.toHaveBeenCalled();
+    expect(await loanRow(db, borrower.loanId)).toEqual(before);
+    expect(await db.select().from(jobRuns).where(eq(jobRuns.worldId, worldId))).toHaveLength(runsBefore.length);
+
+    // The next sim day still accrues (under the locks).
+    await moveTo(worldId, at(due, 5));
+    const report = await processDue(db, worldId, await getSimNow(db, worldId));
+    expect(report.accrued).toBe(1);
+    expect(transactions).toHaveBeenCalled();
+    expect(await loanRow(db, borrower.loanId)).toMatchObject({ penaltyAccruedDays: 5, dpd: 5 });
+  });
+
+  it("I1: the tick skips a frozen-clock private world's ladder (it runs on the owner's advance)", async () => {
+    const [owner] = await db
+      .insert(principals)
+      .values({ email: "owner@example.com", name: "Owner", entityType: "individual", verifiedAt: new Date() })
+      .returning();
+    const { worldId } = await createWorld(db, { name: "Frozen", ownerPrincipalId: owner!.id, railMode: "sim", kind: "private" });
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId, { principalId: owner!.id });
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveTo(worldId, at(due, 4));
+
+    expect((await runTick(db)).ladderSteps).toBe(0);
+    expect((await loanRow(db, borrower.loanId)).status).toBe("active");
+    await advancePrivateWorld(db, owner!.id, worldId, 1);
+    expect((await loanRow(db, borrower.loanId)).delinquencyStep).toBe("penalty");
+  });
+
+  it("minor a + b: a partial payment leaving ≤ 100 cents of late fees + penalty (base paid) waives them and cures; other open links close", async () => {
+    const worldId = (await createWorld(db, { name: "Small", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveTo(worldId, at(due, 7));
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    expect(await agentStatus(db, borrower.agentId)).toBe("restricted");
+    // The defensive state: principal + fee already settled, only memo charges left (500 late fee + penalty).
+    await db.update(loans).set({ outstandingCents: 0n }).where(eq(loans.id, borrower.loanId));
+    const penalty = (await loanRow(db, borrower.loanId)).penaltyOutstandingCents;
+    const charges = 500n + penalty;
+
+    // An unpaid checkout left open (the agent started it and never had it approved).
+    const abandoned = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: 100 });
+    expect(abandoned.envelope.status).toBe("AWAITING_APPROVAL");
+
+    // More than 100 cents left → nothing waived.
+    await repay(db, borrower.key, borrower.loanId, 300);
+    expect(await loanRow(db, borrower.loanId)).toMatchObject({ status: "substandard", waivedCents: 0n });
+
+    // 100 cents or less left → waived, cured.
+    const left = charges - 300n - 150n;
+    expect(left).toBeGreaterThan(0n);
+    expect(left).toBeLessThanOrEqual(100n);
+    const paid = await repay(db, borrower.key, borrower.loanId, 150);
+    expect(paid).toMatchObject({ loan_status: "REPAID", outstanding_cents: 0 });
+    const row = await loanRow(db, borrower.loanId);
+    expect(row).toMatchObject({ status: "repaid", waivedCents: left, lateFeeOutstandingCents: 0n, penaltyOutstandingCents: 0n });
+    expect(await agentStatus(db, borrower.agentId)).toBe("active");
+    const waived = await db
+      .select()
+      .from(events)
+      .where(and(eq(events.aggregateId, borrower.loanId), eq(events.type, "loan.charges_waived")));
+    expect(waived.map((e) => (e.payload as Data).reason)).toEqual(["small_balance"]);
+    expect((await noticesFor(db, borrower.loanId)).some((n) => n.kind === "cured")).toBe(true);
+
+    // minor b: the abandoned checkout's link is closed (no more polling) …
+    const links = await db.select().from(repaymentLinks).where(eq(repaymentLinks.loanId, borrower.loanId));
+    expect(links.map((l) => l.status).sort()).toEqual(["closed", "paid", "paid"]);
+    // … and approving it anyway is still booked: all of it refunded (held — no payout receiver set).
+    const abandonedId = (abandoned.envelope.data as Data).checkout_id as string;
+    await simApprove(db, abandonedId);
+    const late = await settleCheckoutByOrderId(db, worldId, abandonedId);
+    expect(late.status).toBe("COMPLETED");
+    expect(late.data).toMatchObject({ loan_status: "REPAID", remainder_cents: 100 });
+    expect((await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId))).length).toBe(3);
+    await expectBalanced(db, worldId);
+  });
+
+  it("minor c: a tick failing the same way again within the hour records no new job_runs row", async () => {
+    const worldId = (await createWorld(db, { name: "Stuck", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const loan = await loanRow(db, borrower.loanId);
+    // A corrupt balance makes the late step throw on every tick.
+    await db
+      .update(loans)
+      .set({ outstandingCents: loan.principalCents + loan.feeCents + 1n })
+      .where(eq(loans.id, borrower.loanId));
+    await moveTo(worldId, at(loan.dueSimAt, 2));
+    const tickRows = () =>
+      db
+        .select()
+        .from(jobRuns)
+        .where(and(eq(jobRuns.worldId, worldId), eq(jobRuns.job, "tick")));
+
+    for (let i = 0; i < 3; i += 1) {
+      expect((await runTick(db)).errors).toHaveLength(1);
+    }
+    const rows = await tickRows();
+    expect(rows).toHaveLength(1);
+    expect((rows[0]!.output as Data).errors).toEqual([expect.stringContaining(borrower.loanId)]);
+
+    // An hour later the same error is recorded again.
+    await db
+      .update(jobRuns)
+      .set({ finishedAt: new Date(Date.now() - 61 * 60 * 1000) })
+      .where(eq(jobRuns.id, rows[0]!.id));
+    await runTick(db);
+    expect(await tickRows()).toHaveLength(2);
   });
 });

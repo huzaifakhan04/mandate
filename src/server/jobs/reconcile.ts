@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { loans, noteTransactions, repaymentLinks, repayments } from "../db/schema";
@@ -475,13 +475,19 @@ async function pollCheckouts(run: Run, worldId: string): Promise<void> {
 /**
  * P4-F: a charged-off loan's guarantee link whose `order.create` failed
  * terminally (or that quotes more than is still recoverable) is re-issued
- * in place at the recoverable amount (at most 3 times).
+ * in place at the recoverable amount (up to `MAX_GUARANTEE_LINK_ISSUES`
+ * issues). Final fix I3: a link that ran out of issues is reported once
+ * (`guarantee_reissue_exhausted`) and skipped from then on.
  */
 async function reissueStaleGuaranteeLinks(run: Run, worldId: string): Promise<void> {
   const state = run.world(worldId);
   const links = await scoped(run.db, worldId).select(
     repaymentLinks,
-    and(eq(repaymentLinks.kind, "guarantee"), inArray(repaymentLinks.status, ["failed", "pending", "open"]))!,
+    and(
+      eq(repaymentLinks.kind, "guarantee"),
+      inArray(repaymentLinks.status, ["failed", "pending", "open"]),
+      isNull(repaymentLinks.reissueExhaustedAt),
+    )!,
   );
   for (const link of links) {
     const loan = await scoped(run.db, worldId).findOne(loans, eq(loans.id, link.loanId));
@@ -496,10 +502,10 @@ async function reissueStaleGuaranteeLinks(run: Run, worldId: string): Promise<vo
     }
     run.used += 1;
     await run.item(worldId, `reissue_guarantee:${link.id}`, async () => {
-      const result = await reissueGuaranteeLink(run.db, worldId, loan.id);
+      const result = await reissueGuaranteeLink(run.db, worldId, loan.id, { markExhausted: true });
       if (result.outcome === "reissued") {
         state.counts.linksReissued += 1;
-      } else if (result.outcome === "exhausted") {
+      } else if (result.outcome === "exhausted" && result.firstTime) {
         state.anomalies.push(invoiceLinkAnomaly(worldId, link.id, link.loanId, `guarantee_reissue_exhausted:${result.issues}`));
       }
     });

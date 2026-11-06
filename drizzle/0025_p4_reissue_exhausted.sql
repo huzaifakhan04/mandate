@@ -1,0 +1,1 @@
+ALTER TABLE "repayment_links" ADD COLUMN "reissue_exhausted_at" timestamp with time zone;

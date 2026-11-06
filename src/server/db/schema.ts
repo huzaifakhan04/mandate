@@ -697,6 +697,12 @@ export const repaymentLinks = pgTable(
      */
     quoteSimAt: timestamp("quote_sim_at", { withTimezone: true }),
     quotedCents: bigint("quoted_cents", { mode: "bigint" }),
+    /**
+     * Final fix I3: set when a guarantee link ran out of re-issues
+     * (`MAX_GUARANTEE_LINK_ISSUES`) — reported once as an anomaly, then the
+     * reconcile cron stops retrying it. Null otherwise.
+     */
+    reissueExhaustedAt: timestamp("reissue_exhausted_at", { withTimezone: true }),
     approveUrl: text("approve_url"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

@@ -37,6 +37,13 @@ export const LATE_FEE_MIN_CENTS = 100n;
 export const LATE_FEE_MAX_CENTS = 500n;
 export const LATE_FEE_PERCENT = 5n;
 export const PENALTY_RATE_BPS = 200n;
+/**
+ * Final fix (minor a): once the base principal + fee are fully paid, late
+ * fees + penalty left at or below this are waived and the loan cures — a
+ * cent of penalty accrued between a quote and its capture never keeps a
+ * loan delinquent.
+ */
+export const SMALL_BALANCE_WAIVER_CENTS = 100n;
 /** Score history entry recorded at the `late` step (the scorecard's late-repayment penalty). */
 export const LATE_SCORE_DELTA = -15;
 

@@ -176,6 +176,13 @@
       "when": 1793966207440,
       "tag": "0024_p4_owner_notice_read",
       "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1793968013773,
+      "tag": "0025_p4_reissue_exhausted",
+      "breakpoints": true
     }
   ]
 }

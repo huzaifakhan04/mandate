@@ -382,10 +382,12 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     expect(refund.remainderStatus).toBe("paid");
     expect(await getAccountBalance(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect(await agentStatus(db, borrower.agentId)).toBe("active");
-    // The superseded order didn't touch the current link row; paying the re-issued link now is refunded in full.
-    expect((await link(db, borrower.loanId, "guarantee"))!.status).toBe("open");
+    // Final fix (minor b): the recovery closed the re-issued link (no more polling); paying it
+    // anyway is still booked (stray capture) and refunded in full.
+    expect((await link(db, borrower.loanId, "guarantee"))!.status).toBe("closed");
     const second = await payLink(db, worldId, borrower.loanId, "guarantee");
     expect(second.data).toMatchObject({ loan_status: "RECOVERED", applied_recovery_cents: 0, remainder_cents: Number(total - 9000n) });
+    expect((await link(db, borrower.loanId, "guarantee"))!.status).toBe("closed");
     expect(await units(db, l1.agentId)).toBe(20000n);
     expect((await loanRow(db, borrower.loanId)).recoveredCents).toBe(total);
     await expectUnitsMatchLedger(db, worldId);
@@ -620,7 +622,7 @@ describe("charge-off fix round 1 (P4-D deferred holder loss, P4-F re-issue, M5, 
     await expectBalanced(db, worldId);
   });
 
-  it("P4-F: a guarantee whose order.create failed is re-issued in place by the reconcile cron, at most 3 times", async () => {
+  it("P4-F: a guarantee whose order.create failed is re-issued in place by the reconcile cron, up to MAX_GUARANTEE_LINK_ISSUES issues", async () => {
     const worldId = (await createWorld(db, { name: "Reissue", ownerPrincipalId: null, railMode: "sim" })).worldId;
     await fundPool(db, worldId, 30000, "l1@example.com");
     const borrower = await borrow(db, worldId);
@@ -643,9 +645,23 @@ describe("charge-off fix round 1 (P4-D deferred holder loss, P4-F re-issue, M5, 
       expect((await reissueGuaranteeLink(db, worldId, borrower.loanId)).outcome).toBe("reissued");
     }
     await db.update(repaymentLinks).set({ status: "failed" }).where(eq(repaymentLinks.id, first.id));
-    expect(await reissueGuaranteeLink(db, worldId, borrower.loanId)).toEqual({ outcome: "exhausted", issues: MAX_GUARANTEE_LINK_ISSUES });
+    expect(await reissueGuaranteeLink(db, worldId, borrower.loanId)).toEqual({
+      outcome: "exhausted",
+      issues: MAX_GUARANTEE_LINK_ISSUES,
+      firstTime: false,
+    });
     row = (await link(db, borrower.loanId, "guarantee"))!;
     expect(row.status).toBe("failed");
+    expect(row.reissueExhaustedAt).toBeNull();
+
+    // Final fix I3: the reconcile cron reports the exhausted link once, marks it, then skips it.
+    const exhausted = await runReconcile(db);
+    expect(exhausted.anomalies.filter((a) => a.sourceId === first.id).map((a) => a.detail)).toEqual([
+      { loan_id: borrower.loanId, reason: `guarantee_reissue_exhausted:${MAX_GUARANTEE_LINK_ISSUES}` },
+    ]);
+    expect((await link(db, borrower.loanId, "guarantee"))!.reissueExhaustedAt).not.toBeNull();
+    const again = await runReconcile(db);
+    expect(again.anomalies.filter((a) => a.sourceId === first.id)).toEqual([]);
     await expectBalanced(db, worldId);
   });
 
