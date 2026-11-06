@@ -8,6 +8,7 @@ import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { agents, apiKeys, loans } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { totalDueCents } from "./collections";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
@@ -134,6 +135,10 @@ export interface OpenLoanStatus {
   status: string;
   outstandingCents: bigint;
   dueSimAt: Date;
+  /** P4: late fees and rate penalty still owed, and everything owed in total. */
+  lateFeeOutstandingCents: bigint;
+  penaltyOutstandingCents: bigint;
+  totalDueCents: bigint;
 }
 
 export interface AgentStatus {
@@ -227,6 +232,9 @@ export async function getAgentStatus(
           status: openLoanRow.status,
           outstandingCents: openLoanRow.outstandingCents,
           dueSimAt: openLoanRow.dueSimAt,
+          lateFeeOutstandingCents: openLoanRow.lateFeeOutstandingCents,
+          penaltyOutstandingCents: openLoanRow.penaltyOutstandingCents,
+          totalDueCents: totalDueCents(openLoanRow),
         }
       : null,
     limits: {

@@ -7,6 +7,9 @@ import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleA
 import { getAgentStatus } from "../../services/agents";
 import { scoreAgent } from "../../services/credit";
 import { creditSchema, creditView } from "../credit";
+import { noticeSchema } from "../notices";
+import { daysLate } from "../../domain/delinquency";
+import { noticeView, unreadNotices } from "../../services/collections";
 
 const outputSchema = z.object({
   agent: z.object({
@@ -25,8 +28,16 @@ const outputSchema = z.object({
       status: z.string(),
       outstanding_cents: z.number(),
       due_sim_at: z.string(),
+      /** P4: whole sim days past due (0 if not yet due). */
+      days_late: z.number(),
+      late_fee_cents: z.number(),
+      penalty_cents: z.number(),
+      /** Everything owed: outstanding principal + fee, late fees and penalty. */
+      total_due_cents: z.number(),
     })
     .nullable(),
+  /** P4: notices you haven't acknowledged (late, penalty, substandard, cured…); clear them with ack_notices. */
+  notices: z.array(noticeSchema),
   limits: z.object({
     max_principal_cents: z.number(),
     available_liquidity_cents: z.number(),
@@ -54,6 +65,7 @@ export const getStatusTool = defineTool({
     "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url " +
     "to give your human while you are unclaimed), note and payable balances, any open loan, " +
     "lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), " +
+    "unread notices (late fees, penalty, substandard — acknowledge with ack_notices), " +
     "and the current simulated time. Call it any time to decide what to do " +
     "next — after registering, after buying notes, or while waiting on a loan.",
   auth: "agent",
@@ -68,6 +80,7 @@ export const getStatusTool = defineTool({
 
     const status = await getAgentStatus(ctx.db, ctx.worldId, ctx.agentId);
     const credit = await scoreAgent(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow);
+    const notices = await unreadNotices(ctx.db, ctx.worldId, ctx.agentId);
 
     const data = {
       agent: {
@@ -87,8 +100,13 @@ export const getStatusTool = defineTool({
             status: status.openLoan.status.toUpperCase(),
             outstanding_cents: Number(status.openLoan.outstandingCents),
             due_sim_at: status.openLoan.dueSimAt.toISOString(),
+            days_late: daysLate(status.openLoan.dueSimAt, ctx.simNow),
+            late_fee_cents: Number(status.openLoan.lateFeeOutstandingCents),
+            penalty_cents: Number(status.openLoan.penaltyOutstandingCents),
+            total_due_cents: Number(status.openLoan.totalDueCents),
           }
         : null,
+      notices: notices.map(noticeView),
       limits: {
         max_principal_cents: status.limits.maxPrincipalCents,
         available_liquidity_cents: Number(status.limits.availableLiquidityCents),
@@ -111,7 +129,14 @@ export const getStatusTool = defineTool({
     const claimUrl = status.kya.claimLink?.url ?? null;
 
     let nextActions: NextAction[];
-    if (status.openLoan) {
+    const delinquent = status.openLoan && (status.openLoan.status === "late" || status.openLoan.status === "substandard");
+    if (status.openLoan && delinquent) {
+      // P4: past due — repaying comes first (a restricted agent may still repay).
+      nextActions = [
+        { tool: "repay_loan", args: { loan_id: status.openLoan.loanId } },
+        { tool: "get_loan", args: { loan_id: status.openLoan.loanId } },
+      ];
+    } else if (status.openLoan) {
       nextActions = [{ tool: "get_loan", args: { loan_id: status.openLoan.loanId } }];
     } else if (blockers.length > 0) {
       // Can't borrow yet: the human's step comes first; lending is open.
@@ -132,11 +157,23 @@ export const getStatusTool = defineTool({
     const tierText = blockers.length > 0
       ? `tier ${data.kya.tier} (can lend, cannot borrow yet). ${blockerInstruction(blockers, claimUrl)}`
       : `tier ${data.kya.tier} (can lend and borrow).`;
+    if (notices.length > 0) {
+      nextActions.push({ tool: "ack_notices", args: {} });
+    }
+    const loanText =
+      data.open_loan && delinquent
+        ? ` Your loan is ${data.open_loan.status}, ${data.open_loan.days_late} days past due: ` +
+          `${data.open_loan.total_due_cents} cents owed (incl. ${data.open_loan.late_fee_cents} late fees, ` +
+          `${data.open_loan.penalty_cents} penalty). Repay it with repay_loan.`
+        : "";
+    const noticeText = notices.length > 0 ? ` ${notices.length} unread notice(s).` : "";
     return ok(data, {
       status: "OK",
       summary:
         `Agent ${status.agent.name} is ${data.agent.status} at ${tierText} ` +
-        `Agent Credit Score ${credit.score} (grade ${credit.grade}).`,
+        `Agent Credit Score ${credit.score} (grade ${credit.grade}).` +
+        loanText +
+        noticeText,
       next_actions: nextActions,
     });
   },

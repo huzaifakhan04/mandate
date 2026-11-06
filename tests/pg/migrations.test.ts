@@ -79,7 +79,9 @@ describe("migration dry run: P0 data → 0002..latest (real Postgres)", () => {
     );
     const worldId = world.rows[0].id as string;
     await pool.query(
-      `insert into clock (world_id, anchor_real, anchor_sim, speed, manual_offset_ms) values ($1, now(), now(), '0', 0)`,
+      // A frozen main clock that was advanced 3 days by hand (sim now = 2030-01-04).
+      `insert into clock (world_id, anchor_real, anchor_sim, speed, manual_offset_ms)
+       values ($1, now() - interval '2 days', '2030-01-01T00:00:00Z', '0', 259200000)`,
       [worldId],
     );
     for (const [code, type] of Object.entries(P0_CHART)) {
@@ -142,6 +144,13 @@ describe("migration dry run: P0 data → 0002..latest (real Postgres)", () => {
       ].sort(),
     );
     expect(statuses.rows.every((r) => r.has_updated_at)).toBe(true);
+    // Ruling P4-A data migration: speed 1, re-anchored at now, sim time preserved.
+    const mainClock = await pool.query(
+      `select speed::float8 as speed, manual_offset_ms::text as offset, anchor_sim, anchor_real > now() - interval '1 minute' as fresh from clock where world_id = $1`,
+      [worldId],
+    );
+    expect(mainClock.rows[0]).toMatchObject({ speed: 1, offset: "0", fresh: true });
+    expect((mainClock.rows[0].anchor_sim as Date).toISOString()).toBe("2030-01-04T00:00:00.000Z");
     const idem = await pool.query(`select http_status, response from idempotency_keys`);
     expect(idem.rows).toEqual([{ http_status: null, response: { status: "OK", data: {} } }]);
 

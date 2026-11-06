@@ -3,6 +3,7 @@ import { and, eq, inArray, isNotNull } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { loans, noteTransactions, repaymentLinks, repayments } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { isOwingStatus } from "../domain/loanMachine";
 import {
   deriveOperationId,
   executeOperation,
@@ -472,7 +473,7 @@ async function reissueFailedInvoiceLinks(run: Run, worldId: string): Promise<voi
   );
   for (const link of failed) {
     const loan = await scoped(run.db, worldId).findOne(loans, eq(loans.id, link.loanId));
-    if (loan?.status !== "active") {
+    if (!loan || !isOwingStatus(loan.status)) {
       continue; // Nothing left to collect through it.
     }
     if (!run.canStart()) {

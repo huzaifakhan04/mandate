@@ -41,6 +41,7 @@ import {
   checkAgentMandate,
   mandateLimits,
   mandateSummary,
+  principalHasSubstandardLoan,
   resolveCurrentMandate,
   type MandateRow,
   type MandateSummary,
@@ -240,6 +241,7 @@ async function underwrite(
     invoiceCoverageBps: coverageBps,
     sanctions: { name: agent.name, operator: agent.operator, list: sanctionsStubList() },
     declarations: request.declarations,
+    delinquentPrincipal: await principalHasSubstandardLoan(db, worldId, agent.principalId),
     openLoanExists: await hasOpenLoan(db, worldId, agentId),
     availableLiquidityCents,
   });
@@ -786,6 +788,8 @@ export type AcceptOfferOutcome =
   | { outcome: "mandate_revoked"; reason: "mandate_revoked" | "mandate_superseded"; retry: EligibilityArgs }
   /** P2 Task 4: the offer no longer fits the mandate (e.g. the principal's exposure rose) or the tier cap. */
   | { outcome: "mandate_limit"; reasons: Array<MandateReason | TierReason>; mandate: MandateSummary; retry: EligibilityArgs }
+  /** P4: a loan of the principal's is substandard — the mandate is frozen for new loans. */
+  | { outcome: "delinquent_principal" }
   | { outcome: "disbursing"; loanId: string; payoutOperationId: string };
 
 /**
@@ -871,6 +875,11 @@ export async function beginAcceptOffer(
       mandate: mandateSummary(mandateCheck.mandate, mandateCheck.exposureCents, tier.tier),
       retry: retryArgs(offer),
     };
+  }
+
+  // P4 mandate freeze, under the series lock (the ladder's substandard step takes it too).
+  if (await principalHasSubstandardLoan(tx, worldId, kyaAgent.principalId)) {
+    return { outcome: "delinquent_principal" };
   }
 
   if (await hasOpenLoan(tx, worldId, agentId)) {

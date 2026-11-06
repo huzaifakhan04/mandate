@@ -15,7 +15,8 @@ import { GRADE_LIMIT_CENTS, type Grade, type ScoreResult } from "./scorecard";
  *
  *   0. product range       amount_out_of_range, term_out_of_range (P1 limits)
  *   1. tier / claim        tier_per_loan (the claim itself is the tool's tier gate)
- *   2. mandate             mandate_missing | mandate_per_loan, _total_owed, _fee, _term, _collateral
+ *   2. mandate             mandate_missing | mandate_per_loan, _total_owed, _fee, _term, _collateral;
+ *                          delinquent_principal (P4: a loan of the principal's is substandard)
  *   3. sanctions stub      sanctions_hit (agent name or operator matches SANCTIONS_STUB)
  *   4. grade E             insufficient_credit_history (history component 0), else score_too_low
  *   5. amount vs cap       amount_exceeds_limit; grade D above 5000 → manual_review_declined
@@ -56,6 +57,12 @@ export interface ApplicationFacts {
   mandate: MandateLimits | null;
   /** The principal's current exposure across all their agents (not counting this application). */
   exposureCents: bigint;
+  /**
+   * P4: a loan of any agent of this agent's principal (in the world) is
+   * SUBSTANDARD — the mandate is frozen for new loans (`delinquent_principal`).
+   * Optional: absent = false.
+   */
+  delinquentPrincipal?: boolean;
   /** The collateral kind for the mandate rule; `null` skips it (check_eligibility without a kind). */
   collateral: MandateCollateral | null;
   /** Invoice face ÷ principal in bps; `null` without an invoice. */
@@ -160,6 +167,9 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
       collateral: facts.collateral ?? "none",
     }).filter((reason) => facts.collateral !== null || reason !== "mandate_collateral"),
   );
+  if (facts.delinquentPrincipal) {
+    reasons.push("delinquent_principal");
+  }
 
   // 3. Sanctions stub.
   if (sanctionsHit(facts.sanctions.name, facts.sanctions.operator, facts.sanctions.list)) {

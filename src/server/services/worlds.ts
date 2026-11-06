@@ -170,7 +170,7 @@ function slugify(name: string): string {
 
 /**
  * Ensures the singleton "main" world exists (slug `main`, rail mode
- * `paypal`, clock speed 0, anchors set to now), seeding its chart of
+ * `paypal`, clock speed 1 — Ruling P4-A — anchors set to now), seeding its chart of
  * accounts. Idempotent and race-safe: uses `ON CONFLICT (slug) DO
  * NOTHING` followed by a reselect (never select-then-insert), so two
  * concurrent cold starts racing to create the main world never create
@@ -211,7 +211,9 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
         worldId: world.id,
         anchorReal: now,
         anchorSim: now,
-        speed: "0",
+        // Ruling P4-A: the main world's clock runs in real time (1 sim day = 1
+        // real day) so due dates pass and the delinquency ladder runs.
+        speed: "1",
         manualOffsetMs: 0n,
       })
       .onConflictDoNothing({ target: clock.worldId });

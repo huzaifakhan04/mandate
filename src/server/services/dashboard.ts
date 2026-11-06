@@ -165,7 +165,7 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
         feeCents: loan.feeCents,
         lateFeesCents: loan.lateFeesCents,
         outstandingCents: loan.outstandingCents,
-        totalDueCents: loan.principalCents + loan.feeCents + loan.lateFeesCents,
+        totalDueCents: loan.principalCents + loan.feeCents + loan.lateFeesCents + loan.penaltyCents,
         termDays,
         aprBps: offer?.aprBps ?? null,
         dayOfTerm: dayOfTerm(loan, termDays, simNow),

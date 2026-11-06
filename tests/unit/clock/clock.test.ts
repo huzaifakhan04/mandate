@@ -101,13 +101,13 @@ describe("ensureMainWorld", () => {
     expect(second.worldId).toBe(first.worldId);
   });
 
-  it("seeds a clock row with speed 0 and anchors set to now", async () => {
+  it("seeds a clock row with speed 1 (Ruling P4-A: real time) and anchors set to now", async () => {
     const db = await createTestDb();
     const { worldId } = await ensureMainWorld(db);
 
     const [row] = await db.select().from(clock).where(eq(clock.worldId, worldId));
     expect(row).toBeDefined();
-    expect(row?.speed).toBe("0.0000");
+    expect(row?.speed).toBe("1.0000");
   });
 
   it("seeds the chart of accounts for the main world", async () => {

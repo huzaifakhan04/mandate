@@ -30,6 +30,7 @@ const LOAN_PILL: Record<string, { tone: Tone; label: string }> = {
   active: { tone: "ok", label: "Active" },
   repaid: { tone: "plain", label: "Repaid" },
   late: { tone: "warn", label: "Late" },
+  substandard: { tone: "risk", label: "Substandard" },
   defaulted: { tone: "risk", label: "Defaulted" },
   charged_off: { tone: "risk", label: "Charged off" },
   disbursement_failed: { tone: "risk", label: "Disbursement failed" },

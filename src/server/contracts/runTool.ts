@@ -308,8 +308,14 @@ function signatureFailure(status: string, reason: string): Envelope<unknown> {
 export const MONEY_IN_TOOLS: ReadonlySet<string> = new Set(["repay_loan", "confirm_checkout"]);
 const MONEY_IN_STATUSES: ReadonlySet<string> = new Set(["frozen", "restricted"]);
 
+/**
+ * P4 Task 1: tools a frozen or restricted agent may also call because they
+ * move no money and borrow nothing — acknowledging its delinquency notices.
+ */
+export const HOUSEKEEPING_TOOLS: ReadonlySet<string> = new Set(["ack_notices"]);
+
 function mayBringMoneyIn(status: string, toolName: string): boolean {
-  return MONEY_IN_STATUSES.has(status) && MONEY_IN_TOOLS.has(toolName);
+  return MONEY_IN_STATUSES.has(status) && (MONEY_IN_TOOLS.has(toolName) || HOUSEKEEPING_TOOLS.has(toolName));
 }
 
 export async function runTool(

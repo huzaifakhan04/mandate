@@ -27,9 +27,10 @@ export const repayLoanTool = defineTool({
   name: "repay_loan",
   title: "Repay Loan",
   description:
-    "Repays the calling agent's ACTIVE loan directly through a PayPal checkout the agent's human " +
-    "approves. amount_cents defaults to everything outstanding and may not exceed it; the fee is " +
-    "paid first, then principal. Present the approve_url to the payer, then call confirm_checkout.",
+    "Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout " +
+    "the agent's human approves (a restricted agent may still repay). amount_cents defaults to " +
+    "everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate " +
+    "penalty, the fee, then principal. Present the approve_url to the payer, then call confirm_checkout.",
   auth: "agent",
   mutating: true,
   readOnly: false,
@@ -52,13 +53,13 @@ export const repayLoanTool = defineTool({
       case "not_found":
         return fail("NOT_FOUND", "No such loan.", ["loan_not_found"]);
       case "invalid_transition":
-        return fail("INVALID_TRANSITION", `This loan is ${result.state}, not ACTIVE; nothing to repay.`, [
+        return fail("INVALID_TRANSITION", `This loan is ${result.state}; nothing to repay.`, [
           "invalid_transition",
         ], { loan_status: result.state });
       case "amount_exceeds_outstanding":
         return fail(
           "AMOUNT_EXCEEDS_OUTSTANDING",
-          `amount_cents exceeds the ${result.outstandingCents.toString()} cents outstanding on this loan.`,
+          `amount_cents exceeds the ${result.outstandingCents.toString()} cents owed on this loan.`,
           ["amount_exceeds_outstanding"],
           { outstanding_cents: Number(result.outstandingCents) },
         );

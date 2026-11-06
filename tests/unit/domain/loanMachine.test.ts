@@ -21,6 +21,10 @@ const VALID: Array<[LoanState, LoanEvent, LoanState]> = [
   ["DISBURSING", "PAYOUT_SUCCEEDED", "ACTIVE"],
   ["DISBURSING", "PAYOUT_FAILED", "DISBURSEMENT_FAILED"],
   ["ACTIVE", "REPAY", "REPAID"],
+  ["ACTIVE", "MARK_LATE", "LATE"],
+  ["LATE", "MARK_SUBSTANDARD", "SUBSTANDARD"],
+  ["LATE", "REPAY", "REPAID"],
+  ["SUBSTANDARD", "REPAY", "REPAID"],
 ];
 
 const EVENTS: LoanEvent[] = [
@@ -33,6 +37,8 @@ const EVENTS: LoanEvent[] = [
   "PAYOUT_SUCCEEDED",
   "PAYOUT_FAILED",
   "REPAY",
+  "MARK_LATE",
+  "MARK_SUBSTANDARD",
 ];
 
 describe("loanMachine", () => {

@@ -19,7 +19,7 @@ import {
 } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { distribute } from "../domain/distribution";
-import { fromDbStatus, toDbStatus, transition } from "../domain/loanMachine";
+import { fromDbStatus, isOwingStatus, toDbStatus, transition } from "../domain/loanMachine";
 import { holdersShare, waterfall } from "../domain/waterfall";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { postJournal } from "../ledger/postJournal";
@@ -37,6 +37,7 @@ import {
   type OrderCaptureResult,
 } from "../paypal/operations";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
+import { accruePenaltyLocked, onLoanCured, outstandingParts, totalDueCents } from "./collections";
 import { registerLoanActivatedHook } from "./loans";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { postCaptureFee, postPayoutFee } from "./paypalFees";
@@ -48,10 +49,15 @@ import { railForWorld } from "./worlds";
  * `get_statement`.
  *
  * Money flow (Global Constraints journal templates):
- * - capture of gross G against outstanding fee F' / principal P'
- *   (fee first): Dr `cash_paypal` G / Cr `fee_income` f / Cr
- *   `loans_receivable` p / Cr `payable_to_borrower[borrower]` r;
- * - holders' share of the fee collected BY THIS CAPTURE, cumulative so
+ * - capture of gross G against outstanding late fees L', penalty N',
+ *   fee F' and principal P' (P4 waterfall: late fees → penalty → fee →
+ *   principal → remainder): Dr `cash_paypal` G / Cr `late_fee_income` l /
+ *   Cr `penalty_income` n / Cr `fee_income` f / Cr `loans_receivable` p /
+ *   Cr `payable_to_borrower[borrower]` r. Late fees and the penalty are
+ *   recognised here, on collection (they were memo balances on the loan —
+ *   `services/collections.ts`);
+ * - holders' share of the BASE fee collected by this capture (never the
+ *   late fees or penalty — those are the bank's), cumulative so
  *   flooring never loses a cent across partial payments:
  *   H = floor((F_before+f)×80/100) − floor(F_before×80/100),
  *   Dr `note_interest_expense` H / Cr `notes_payable[holder_i]` h_i,
@@ -101,26 +107,8 @@ async function appendEvent(
   });
 }
 
-/**
- * What's still owed on a loan, split fee / principal. P1 has no late fees
- * and the waterfall always pays the fee first, so the split is derived
- * from `outstanding_cents` alone: paid so far = (P + F) − outstanding,
- * of which min(paid, F) went to the fee. A loan that isn't ACTIVE owes
- * nothing (REPAID, or never funded).
- */
-export function outstandingParts(loan: LoanRow): { principalCents: bigint; feeCents: bigint } {
-  if (loan.status !== "active") {
-    return { principalCents: 0n, feeCents: 0n };
-  }
-  const paid = loan.principalCents + loan.feeCents - loan.outstandingCents;
-  const feePaid = paid < loan.feeCents ? paid : loan.feeCents;
-  const feeCents = loan.feeCents - feePaid;
-  const principalCents = loan.outstandingCents - feeCents;
-  if (paid < 0n || principalCents < 0n) {
-    throw new Error(`loan ${loan.id} has an inconsistent outstanding balance ${loan.outstandingCents.toString()}`);
-  }
-  return { principalCents, feeCents };
-}
+/** What's still owed on a loan by bucket (moved to `collections.ts` in P4; re-exported). */
+export { outstandingParts, totalDueCents } from "./collections";
 
 // ---------------------------------------------------------------------
 // The invoice payment link
@@ -247,7 +235,7 @@ export async function reissueInvoiceLink(db: Db, worldId: string, linkId: string
       return { outcome: "not_needed" };
     }
     const loan = await scoped(tx, worldId).findOne(loans, eq(loans.id, link.loanId));
-    if (!loan || loan.status !== "active") {
+    if (!loan || !isOwingStatus(loan.status)) {
       return { outcome: "not_needed" };
     }
     const invoice = await loanInvoice(tx, loan);
@@ -389,8 +377,9 @@ export type BeginDirectRepaymentOutcome =
   | { outcome: "submitted"; linkId: string; createOperationId: string; amountCents: bigint; loanId: string };
 
 /**
- * `repay_loan`'s transactional half: the caller's own ACTIVE loan
- * (row-locked), an amount of at most what's outstanding (default: all of
+ * `repay_loan`'s transactional half: the caller's own ACTIVE (or LATE /
+ * SUBSTANDARD) loan (row-locked), an amount of at most everything it owes
+ * — base outstanding plus late fees and penalty (default: all of
  * it — a direct repayment can never overpay; only an invoice link can
  * produce a remainder), a `repayment_links` row of kind `direct` and its
  * queued `order.create` (purpose `repayment_direct`, sourceId = the link
@@ -408,12 +397,14 @@ export async function beginDirectRepayment(
   if (!loan) {
     return { outcome: "not_found" };
   }
-  if (loan.status !== "active") {
+  if (!isOwingStatus(loan.status)) {
     return { outcome: "invalid_transition", state: fromDbStatus(loan.status) };
   }
-  const amount = amountCents ?? loan.outstandingCents;
-  if (amount > loan.outstandingCents) {
-    return { outcome: "amount_exceeds_outstanding", outstandingCents: loan.outstandingCents };
+  // P4: a late loan owes its late fees and penalty too (paid first).
+  const due = totalDueCents(loan);
+  const amount = amountCents ?? due;
+  if (amount > due) {
+    return { outcome: "amount_exceeds_outstanding", outstandingCents: due };
   }
 
   const [link] = await scoped(tx, worldId).insert(repaymentLinks, {
@@ -471,7 +462,7 @@ async function findLinkForCheckout(
 async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): Promise<CaptureApplyResult> {
   const loan = await scoped(db, worldId).findOne(loans, eq(loans.id, repayment.loanId));
   const state = loan ? fromDbStatus(loan.status) : "ACTIVE";
-  const outstanding = loan?.outstandingCents ?? 0n;
+  const outstanding = loan ? totalDueCents(loan) : 0n;
   const remainderNote =
     repayment.remainderCents > 0n
       ? ` ${repayment.remainderCents.toString()} cents over what was owed is being returned to the borrower (${repayment.remainderStatus}).`
@@ -479,7 +470,11 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
   return {
     outcome: "applied",
     summary:
-      `Repayment of ${repayment.grossCents.toString()} cents applied: fee ${repayment.appliedFeeCents.toString()}, ` +
+      `Repayment of ${repayment.grossCents.toString()} cents applied: ` +
+      (repayment.appliedLateFeeCents > 0n || repayment.appliedPenaltyCents > 0n
+        ? `late fees ${repayment.appliedLateFeeCents.toString()}, penalty ${repayment.appliedPenaltyCents.toString()}, `
+        : "") +
+      `fee ${repayment.appliedFeeCents.toString()}, ` +
       `principal ${repayment.appliedPrincipalCents.toString()}. Loan is ${state}; ${outstanding.toString()} cents outstanding.` +
       remainderNote,
     data: {
@@ -487,6 +482,8 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
       loan_status: state,
       repayment_id: repayment.id,
       gross_cents: Number(repayment.grossCents),
+      applied_late_fee_cents: Number(repayment.appliedLateFeeCents),
+      applied_penalty_cents: Number(repayment.appliedPenaltyCents),
       applied_fee_cents: Number(repayment.appliedFeeCents),
       applied_principal_cents: Number(repayment.appliedPrincipalCents),
       remainder_cents: Number(repayment.remainderCents),
@@ -571,8 +568,8 @@ export async function applyRepaymentCapture(
 
   const applied = await db.transaction(async (tx) => {
     const [series] = await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
-    const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, link.loanId));
-    if (!loan) {
+    const [lockedLoan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, link.loanId));
+    if (!lockedLoan) {
       throw new Error(`loan ${link.loanId} not found for repayment link ${link.id}`);
     }
 
@@ -585,8 +582,17 @@ export async function applyRepaymentCapture(
       return null; // Lost a race with another settlement of this checkout.
     }
 
+    // P4: the penalty is owed up to the cure date — accrue it to now first
+    // (under the loan lock, so it can't race processDue's accrual).
+    const loan = await accruePenaltyLocked(tx, worldId, lockedLoan, simNow);
     const owed = outstandingParts(loan);
-    const split = waterfall({ grossCents: capturedCents, principalCents: owed.principalCents, feeCents: owed.feeCents });
+    const split = waterfall({
+      grossCents: capturedCents,
+      principalCents: owed.principalCents,
+      feeCents: owed.feeCents,
+      lateFeeCents: owed.lateFeeCents,
+      penaltyCents: owed.penaltyCents,
+    });
 
     const [repayment] = await scoped(tx, worldId).insertOnConflictDoNothing(
       repayments,
@@ -596,7 +602,8 @@ export async function applyRepaymentCapture(
         grossCents: capturedCents,
         appliedPrincipalCents: split.principal,
         appliedFeeCents: split.fee,
-        appliedLateFeeCents: 0n,
+        appliedLateFeeCents: split.lateFee,
+        appliedPenaltyCents: split.penalty,
         remainderCents: split.remainder,
         captureId,
         linkId: link.id,
@@ -612,6 +619,8 @@ export async function applyRepaymentCapture(
       { accountCode: "cash_paypal" as const, amountCents: capturedCents },
       { accountCode: "loans_receivable" as const, amountCents: -split.principal },
       { accountCode: "fee_income" as const, amountCents: -split.fee },
+      { accountCode: "late_fee_income" as const, amountCents: -split.lateFee },
+      { accountCode: "penalty_income" as const, amountCents: -split.penalty },
       { accountCode: "payable_to_borrower" as const, ownerRef: loan.agentId, amountCents: -split.remainder },
     ].filter((posting) => posting.amountCents !== 0n);
     await postJournal(tx, {
@@ -670,11 +679,16 @@ export async function applyRepaymentCapture(
     }
 
     const newOutstanding = loan.outstandingCents - split.fee - split.principal;
-    const repaidNow = loan.status === "active" && newOutstanding === 0n;
-    await scoped(tx, worldId).update(
+    const newLateFees = loan.lateFeeOutstandingCents - split.lateFee;
+    const newPenalty = loan.penaltyOutstandingCents - split.penalty;
+    // Cure (P4): everything owed — base, late fees and penalty — is paid.
+    const repaidNow = isOwingStatus(loan.status) && newOutstanding === 0n && newLateFees === 0n && newPenalty === 0n;
+    const [after] = await scoped(tx, worldId).update(
       loans,
       {
         outstandingCents: newOutstanding,
+        lateFeeOutstandingCents: newLateFees,
+        penaltyOutstandingCents: newPenalty,
         ...(repaidNow ? { status: toDbStatus(transition(fromDbStatus(loan.status), "REPAY")) } : {}),
       },
       eq(loans.id, loan.id),
@@ -688,15 +702,21 @@ export async function applyRepaymentCapture(
         repayment_id: repayment.id,
         source: link.kind,
         gross_cents: Number(capturedCents),
+        late_fee_cents: Number(split.lateFee),
+        penalty_cents: Number(split.penalty),
         fee_cents: Number(split.fee),
         principal_cents: Number(split.principal),
         remainder_cents: Number(split.remainder),
         holders_share_cents: Number(holdersPaid),
-        outstanding_cents: Number(newOutstanding),
+        outstanding_cents: Number(newOutstanding + newLateFees + newPenalty),
       },
     });
     if (repaidNow) {
       await appendEvent(tx, worldId, { type: "loan.repaid", aggregateId: loan.id, simAt: simNow });
+      if (loan.status !== "active") {
+        // A delinquent loan cured: restore the agent, notify.
+        await onLoanCured(tx, worldId, after!, simNow);
+      }
     }
 
     let payoutOperationId: string | null = null;

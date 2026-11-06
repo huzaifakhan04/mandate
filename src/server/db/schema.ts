@@ -496,6 +496,26 @@ export const loans = pgTable(
     // Task 6: when the disbursement payout SUCCEEDED (sim time). `due_sim_at`
     // is re-based on it (disbursed + term) at activation.
     disbursedSimAt: timestamp("disbursed_sim_at", { withTimezone: true }),
+    /**
+     * P4 Task 1 (delinquency ladder). Late fees and the rate penalty are
+     * memo balances: assessed here with no journal, recognised as
+     * `late_fee_income` / `penalty_income` when a repayment collects them
+     * (P1 convention: fee income is booked on collection). `late_fees_cents`
+     * (P0) is the total late fee ever assessed; `outstanding_cents` stays
+     * the base principal + fee still owed.
+     */
+    lateFeeOutstandingCents: bigint("late_fee_outstanding_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    /** Total rate penalty accrued (whole days late through `penalty_accrued_days`). */
+    penaltyCents: bigint("penalty_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    penaltyOutstandingCents: bigint("penalty_outstanding_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    /** Days late the penalty has been accrued through (0 = not started). */
+    penaltyAccruedDays: integer("penalty_accrued_days").notNull().default(0),
+    /** The last ladder step applied: null | `late` | `penalty` | `substandard` (Task 2 adds `charged_off`). */
+    delinquencyStep: text("delinquency_step"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -504,10 +524,74 @@ export const loans = pgTable(
     // Task 6: DB backstop for "one open loan per agent" (P1), under the
     // application-level check `accept_offer` makes while holding the note
     // series row lock. Keep the status list in sync with
-    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts.
+    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts (P4: late and
+    // substandard loans are still open).
     uniqueIndex("loans_one_open_per_agent_idx")
       .on(table.worldId, table.agentId)
-      .where(sql`${table.status} in ('accepted', 'disbursing', 'active')`),
+      .where(sql`${table.status} in ('accepted', 'disbursing', 'active', 'late', 'substandard')`),
+  ],
+);
+
+/**
+ * P4 Task 1: one row per delinquency ladder step applied to a loan — the
+ * exactly-once key `(world_id, loan_id, step)`. Each step inserts its row
+ * (ON CONFLICT DO NOTHING) in the same transaction as its effects, under
+ * the series → loan locks, so a concurrent tick and manual advance (or a
+ * retry after a crash) apply it once.
+ */
+export const loanLadderSteps = pgTable(
+  "loan_ladder_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    step: text("step").notNull(),
+    /** The sim time the step fell due (due_sim_at + its day offset). */
+    dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
+    /** The sim time it was applied. */
+    appliedSimAt: timestamp("applied_sim_at", { withTimezone: true }).notNull(),
+    /** Step-specific amounts (e.g. the late fee), for audit. */
+    detail: jsonb("detail"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("loan_ladder_steps_loan_step_idx").on(table.worldId, table.loanId, table.step)],
+);
+
+/**
+ * P4 Task 1: notices to an agent and its owner (late, penalty,
+ * substandard, cured…). One row is visible to both: the agent through
+ * `get_status` / `get_loan` (`read_at` = the agent acknowledged it with
+ * `ack_notices`), the owner (`principal_id`) on the dashboard.
+ */
+export const agentNotices = pgTable(
+  "agent_notices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    principalId: uuid("principal_id").references(() => principals.id),
+    kind: text("kind").notNull(),
+    loanId: uuid("loan_id").references(() => loans.id),
+    simAt: timestamp("sim_at", { withTimezone: true }).notNull(),
+    body: text("body").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("agent_notices_agent_idx").on(table.worldId, table.agentId, table.readAt),
+    index("agent_notices_principal_idx").on(table.worldId, table.principalId),
   ],
 );
 
@@ -570,6 +654,10 @@ export const repayments = pgTable("repayments", {
   appliedLateFeeCents: bigint("applied_late_fee_cents", {
     mode: "bigint",
   }).notNull(),
+  /** P4 Task 1: the rate penalty this repayment collected (Cr `penalty_income`). */
+  appliedPenaltyCents: bigint("applied_penalty_cents", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
   remainderCents: bigint("remainder_cents", { mode: "bigint" })
     .notNull()
     .default(sql`0`),

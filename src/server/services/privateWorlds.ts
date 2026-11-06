@@ -9,6 +9,7 @@ import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
 import { failWorldOperations } from "../paypal/operations";
+import { processDue } from "./collections";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -134,8 +135,9 @@ export type AdvanceOutcome =
 
 /**
  * Moves the owner's world clock forward `days` (1–7) one day at a time,
- * running the bots for each day as it passes — so a loan taken on day 3
- * is disbursed on day 3, not on the last day of the jump.
+ * running the delinquency ladder (`processDue`) and then the bots for each
+ * day as it passes — so a loan taken on day 3 is disbursed on day 3, not
+ * on the last day of the jump, and a late loan's notices land on their days.
  */
 export async function advancePrivateWorld(
   db: Db,
@@ -151,7 +153,9 @@ export async function advancePrivateWorld(
     return { outcome: "invalid" };
   }
   for (let i = 0; i < days; i += 1) {
-    await advanceClock(db, world.id, 1);
+    const simNow = await advanceClock(db, world.id, 1);
+    // P4: the delinquency ladder for the day that just passed, before the bots act.
+    await processDue(db, world.id, simNow);
     await runBotsCatchUp(db, world.id, { maxDays: MAX_ADVANCE_DAYS });
   }
   const { simNow, day } = await getSimDay(db, world.id);

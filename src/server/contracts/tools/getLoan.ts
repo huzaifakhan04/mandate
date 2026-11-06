@@ -4,6 +4,9 @@ import { fail, ok, type NextAction } from "../envelope";
 import { defineTool } from "../registry";
 import { disbursementFailureReasonCodes, getLoanView } from "../../services/loans";
 import { getRepaymentLinkView } from "../../services/repayments";
+import { daysLate } from "../../domain/delinquency";
+import { noticeView, totalDueCents, unreadNotices } from "../../services/collections";
+import { noticeSchema } from "../notices";
 
 const inputSchema = z.object({
   loan_id: z.uuid(),
@@ -16,6 +19,13 @@ const outputSchema = z.object({
   fee_cents: z.number(),
   outstanding_cents: z.number(),
   due_sim_at: z.string(),
+  /** P4 delinquency: whole sim days past due, late fees and penalty still owed, and everything owed. */
+  days_late: z.number(),
+  late_fee_cents: z.number(),
+  penalty_cents: z.number(),
+  total_due_cents: z.number(),
+  /** P4: unread notices about this loan (acknowledge with ack_notices). */
+  notices: z.array(noticeSchema),
   repayment_link: z.object({ url: z.string().nullable(), amount_cents: z.number(), status: z.string() }).optional(),
   history: z.array(z.object({ type: z.string(), occurred_sim_at: z.string(), payload: z.unknown() })),
 });
@@ -24,8 +34,9 @@ export const getLoanTool = defineTool({
   name: "get_loan",
   title: "Get Loan",
   description:
-    "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, DISBURSEMENT_FAILED, " +
-    "REPAID), principal, fee, outstanding balance, due date, the invoice repayment link to forward " +
+    "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, " +
+    "DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days " +
+    "late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward " +
     "to the client (if the loan has an invoice) and full event history. Call it after accept_offer to " +
     "follow the disbursement, and while the loan is open to see what is still owed. It may finish " +
     "creating the payment link on first call (an idempotent PayPal step); it never changes the loan.",
@@ -47,12 +58,15 @@ export const getLoanTool = defineTool({
     const { loan, state } = view;
     // Task 7: the invoice link (executing a still-queued create lazily).
     const link = await getRepaymentLinkView(ctx.db, ctx.worldId, loan.id);
+    const notices = await unreadNotices(ctx.db, ctx.worldId, ctx.agentId, loan.id);
+    const totalDue = totalDueCents(loan);
+    const owing = state === "ACTIVE" || state === "LATE" || state === "SUBSTANDARD";
     let nextActions: NextAction[] = [];
     if (state === "DISBURSING") {
       nextActions = [{ tool: "get_loan", args: { loan_id: loan.id } }];
     } else if (state === "DISBURSEMENT_FAILED" || state === "REPAID") {
       nextActions = [{ tool: "get_status", args: {} }];
-    } else if (state === "ACTIVE") {
+    } else if (state === "ACTIVE" || state === "LATE" || state === "SUBSTANDARD") {
       nextActions = [
         ...(link?.url && link.orderId && link.status === "open"
           ? [
@@ -78,6 +92,11 @@ export const getLoanTool = defineTool({
         fee_cents: Number(loan.feeCents),
         outstanding_cents: Number(loan.outstandingCents),
         due_sim_at: loan.dueSimAt.toISOString(),
+        days_late: owing ? daysLate(loan.dueSimAt, ctx.simNow) : 0,
+        late_fee_cents: Number(loan.lateFeeOutstandingCents),
+        penalty_cents: Number(loan.penaltyOutstandingCents),
+        total_due_cents: Number(totalDue),
+        notices: notices.map(noticeView),
         ...(link
           ? {
               repayment_link: {
@@ -102,7 +121,11 @@ export const getLoanTool = defineTool({
               "Loan is DISBURSING: the principal payout to your PayPal account is settling, which " +
               "usually takes a minute or two. Nothing is owed until it lands. Check back with " +
               "get_loan in a minute (don't poll in a tight loop). The invoice repayment_link appears once the loan is ACTIVE."
-            : `Loan is ${state}; ${loan.outstandingCents.toString()} cents outstanding.`,
+            : state === "LATE" || state === "SUBSTANDARD"
+              ? `Loan is ${state}, ${daysLate(loan.dueSimAt, ctx.simNow)} days past due; ${totalDue.toString()} cents owed ` +
+                `(${loan.outstandingCents.toString()} principal + fee, ${loan.lateFeeOutstandingCents.toString()} late fees, ` +
+                `${loan.penaltyOutstandingCents.toString()} rate penalty). Repay with repay_loan; late fees and the penalty are paid first.`
+              : `Loan is ${state}; ${loan.outstandingCents.toString()} cents outstanding.`,
         reason_codes: state === "DISBURSEMENT_FAILED" ? disbursementFailureReasonCodes(view.disbursementFailureReason) : [],
         next_actions: nextActions,
       },
