@@ -6,7 +6,8 @@ import { REVEAL_COOKIE_NAME, REVEAL_COOKIE_PATH, REVEAL_HEADER_NAME } from "./se
 const API_KEY_PAGE_RE = /^\/dashboard\/agents\/[^/]+\/api-key\/?$/;
 
 /**
- * Runs on the owner dashboard, claim, verify and checkout pages:
+ * Runs on the owner dashboard, claim, verify and checkout pages, and the
+ * console (P6: it can show a signed-in owner's private world):
  *
  * - **Caching (P2 final review, I-2):** every response gets
  *   `cache-control: private, no-store`, so no CDN or shared cache keeps a
@@ -46,5 +47,5 @@ export function proxy(request: NextRequest): NextResponse {
 }
 
 export const config = {
-  matcher: ["/dashboard/:path*", "/claim/:path*", "/verify/:path*", "/checkout/:path*"],
+  matcher: ["/dashboard/:path*", "/claim/:path*", "/verify/:path*", "/checkout/:path*", "/console"],
 };
