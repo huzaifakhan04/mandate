@@ -17,9 +17,11 @@ export const redeemNotesTool = defineTool({
   description:
     "Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. " +
     "Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable " +
-    "balance (position minus any other redemption still settling), INSUFFICIENT_LIQUIDITY " +
-    "if the bank doesn't currently have the cash available, or PAYOUT_RECEIVER_MISSING if " +
-    "the agent has no payout receiver on file.",
+    "balance (position minus any other redemption still settling or queued), or " +
+    "PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would " +
+    "take the bank's cash below its reserve floor (or others are already queued), the redemption " +
+    "is QUEUED instead: data.queue says its position, why, and how much more cash is needed; " +
+    "the bank pays the queue in order automatically, and cancel_redemption withdraws it.",
   auth: "agent",
   mutating: true,
   readOnly: false,
@@ -41,19 +43,47 @@ export const redeemNotesTool = defineTool({
         { redeemable_units: Number(outcome.redeemableUnits) },
       );
     }
-    if (outcome.outcome === "insufficient_liquidity") {
-      return fail(
-        "INSUFFICIENT_LIQUIDITY",
-        "The bank doesn't have enough available liquidity for this redemption right now.",
-        ["insufficient_liquidity"],
-        { available_liquidity_cents: Number(outcome.availableLiquidityCents) },
-      );
-    }
     if (outcome.outcome === "payout_receiver_missing") {
       return fail(
         "PAYOUT_RECEIVER_MISSING",
         "This agent has no payout receiver on file.",
         ["payout_receiver_missing"],
+      );
+    }
+
+    if (outcome.outcome === "queued") {
+      // P5 Task 3: the redemption gate — queued (FIFO), paid by the tick once cash allows.
+      const { queue } = outcome;
+      const why =
+        queue.reason === "queue_ahead"
+          ? `${queue.position - 1} earlier redemption(s) (${queue.aheadCents.toString()} cents) are queued ahead of it, and the bank pays the queue in order.`
+          : `paying it now would take the bank's available cash (${queue.availableLiquidityCents.toString()} cents) below its reserve floor (${queue.reserveFloorCents.toString()} cents: a share of the notes it owes holders).`;
+      return ok(
+        {
+          note_tx_id: outcome.noteTxId,
+          amount_cents: Number(amountCents),
+          queue: {
+            position: queue.position,
+            ahead_cents: Number(queue.aheadCents),
+            reason: queue.reason,
+            reserve_floor_cents: Number(queue.reserveFloorCents),
+            available_liquidity_cents: Number(queue.availableLiquidityCents),
+            cash_needed_cents: Number(queue.cashNeededCents),
+          },
+        },
+        {
+          status: "QUEUED",
+          summary:
+            `Redemption queued at position ${queue.position}: ${why} ` +
+            `It is paid automatically, in order, once repayments or new note purchases bring in about ` +
+            `${queue.cashNeededCents.toString()} more cents of available cash (the bank checks every minute). ` +
+            "Your units stay reserved meanwhile; call cancel_redemption to withdraw it.",
+          reason_codes: ["redemption_queued", queue.reason],
+          next_actions: [
+            { tool: "get_status", args: {} },
+            { tool: "cancel_redemption", args: { note_tx_id: outcome.noteTxId } },
+          ],
+        },
       );
     }
 

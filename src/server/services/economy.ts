@@ -12,6 +12,7 @@ import {
   utilizationPremiumBps,
   type EconomyRates,
 } from "../domain/economy";
+import { availableLiquidity } from "../domain/liquidity";
 import { getCodeBalance } from "../ledger/trialBalance";
 import { bookCecl } from "./cecl";
 import { lockPoolSeries } from "./collections";
@@ -30,6 +31,10 @@ import { lockPoolSeries } from "./collections";
  * is computed live at offer time (`liveUtilization`), because the pool can
  * move a lot within a day. The base rate is the latest row's (it only
  * changes once a day).
+ *
+ * P5 Task 3: the row also snapshots available liquidity
+ * (`day_start_liquidity_cents`), the base of that day's lending budget; a
+ * catch-up's back-filled days share the value measured at catch-up time.
  *
  * P5 Task 2: each day's row is inserted in a transaction under the note
  * series lock together with that day's CECL allowance booking
@@ -68,11 +73,19 @@ export async function liveUtilization(db: Db, worldId: string): Promise<LiveUtil
   return { cashCents, loansReceivableCents, utilizationBps: utilization, premiumBps: utilizationPremiumBps(utilization) };
 }
 
-async function measure(db: Db, worldId: string): Promise<{ utilizationBps: number; reserveRatioBps: number }> {
+async function measure(
+  db: Db,
+  worldId: string,
+): Promise<{ utilizationBps: number; reserveRatioBps: number; dayStartLiquidityCents: bigint }> {
   const live = await liveUtilization(db, worldId);
   // notes_payable is a credit balance: negate to get what the bank owes holders.
   const notesPayableCents = -(await getCodeBalance(db, worldId, "notes_payable"));
-  return { utilizationBps: live.utilizationBps, reserveRatioBps: reserveRatioBps(live.cashCents, notesPayableCents) };
+  return {
+    utilizationBps: live.utilizationBps,
+    reserveRatioBps: reserveRatioBps(live.cashCents, notesPayableCents),
+    // P5 Task 3: the base of the day's lending budget.
+    dayStartLiquidityCents: await availableLiquidity(db, worldId),
+  };
 }
 
 /** The world's walk seed: its bot seed, else its id (same rule as the bots). */
@@ -136,6 +149,7 @@ export async function stepEconomy(db: Db, worldId: string, simDay: number): Prom
           inflationRateBps: rates.inflationRateBps,
           utilizationBps: measured.utilizationBps,
           reserveRatioBps: measured.reserveRatioBps,
+          dayStartLiquidityCents: measured.dayStartLiquidityCents,
         },
         [economyState.worldId, economyState.simDay],
       );

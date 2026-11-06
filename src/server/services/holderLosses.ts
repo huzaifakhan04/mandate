@@ -1,8 +1,9 @@
-import { and, eq, gt } from "drizzle-orm";
+import { and, eq, gt, inArray } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { events, loanHolderLosses, loans, notePositions, noteTransactions } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { OPEN_REDEMPTION_STATUSES } from "../domain/treasury";
 import { postJournal } from "../ledger/postJournal";
 
 /**
@@ -14,6 +15,10 @@ import { postJournal } from "../ledger/postJournal";
  * settlement's transaction (series → position locked; it runs only after
  * that transaction's conditional `pending → completed|failed` update won,
  * so it runs once per redemption):
+ *
+ * P5 Task 3: a `queued` redemption reserves its units exactly like a
+ * pending one (both are "still pending" below), and cancelling a queued
+ * redemption settles like a FAILED one.
  *
  * - FAILED: the reserved units are the holder's again, so the deferred
  *   loss is applied, oldest first, up to the units no longer reserved by
@@ -40,7 +45,8 @@ export async function settleDeferredHolderLosses(
     positionId: string;
     agentId: string;
     redemptionId: string;
-    outcome: "completed" | "failed";
+    /** `cancelled` (P5 Task 3: a queued redemption the holder withdrew) is applied like `failed`. */
+    outcome: "completed" | "failed" | "cancelled";
     simAt: Date;
   },
 ): Promise<void> {
@@ -62,13 +68,13 @@ export async function settleDeferredHolderLosses(
     and(
       eq(noteTransactions.positionId, position.id),
       eq(noteTransactions.kind, "redeem"),
-      eq(noteTransactions.status, "pending"),
+      inArray(noteTransactions.status, [...OPEN_REDEMPTION_STATUSES]),
     )!,
   );
   const pendingCents = stillPending.reduce((sum, row) => sum + row.amountCents, 0n);
 
   let units = position.units;
-  let applyLeft = args.outcome === "failed" ? units - pendingCents : 0n;
+  let applyLeft = args.outcome === "completed" ? 0n : units - pendingCents;
   let capLeft = pendingCents;
   for (const row of rows) {
     let deferred = row.deferredCents;

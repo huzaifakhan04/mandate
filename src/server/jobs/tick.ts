@@ -4,6 +4,8 @@ import { runBotsCatchUp } from "../bots/runner";
 import { processDue } from "../services/collections";
 import { stepEconomyToNow } from "../services/economy";
 import { expireStaleOffers } from "../services/loans";
+import { processRedemptionQueue } from "../services/notes";
+import { writeDailyTreasuryMemo } from "../services/treasuryMemo";
 import { listActivePrivateWorldIds, listActiveWorldsForTick } from "../services/worlds";
 import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
 
@@ -26,6 +28,12 @@ import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
  * catching up in order; the main world runs at speed 1, so once a real
  * day). A frozen private world's day doesn't move here — its advance steps it.
  *
+ * P5 Task 3: after the ladder, the world's queued redemptions are paid in
+ * FIFO order while cash allows (`processRedemptionQueue`; a frozen private
+ * world's queue moves on its advance, like its ladder). Last, after all of
+ * that has committed, the day's treasury memo (`writeDailyTreasuryMemo`:
+ * once per world per sim day; templates only in private worlds).
+ *
  * P2 Task 6: then, for every active private world, the bots act for each
  * simulated day the world's clock has passed since they last acted (at
  * most 7 per tick; a frozen clock → nothing, however often this runs).
@@ -36,17 +44,30 @@ export interface TickReport {
   expired: number;
   /** P4: delinquency ladder steps applied across all worlds. */
   ladderSteps: number;
+  /** P5 Task 3: queued redemptions paid (promoted to a payout) across all worlds. */
+  queuedRedemptionsPaid: number;
+  /** P5 Task 3: treasury memos written. */
+  treasuryMemos: number;
   botDays: number;
   errors: { worldId: string; message: string }[];
 }
 
 export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {}): Promise<TickReport> {
-  const report: TickReport = { worlds: 0, expired: 0, ladderSteps: 0, botDays: 0, errors: [] };
+  const report: TickReport = {
+    worlds: 0,
+    expired: 0,
+    ladderSteps: 0,
+    queuedRedemptionsPaid: 0,
+    treasuryMemos: 0,
+    botDays: 0,
+    errors: [],
+  };
   for (const { id: worldId, ladderOnTick } of await listActiveWorldsForTick(db)) {
     report.worlds += 1;
     let expired = 0;
     let steps = { late: 0, penalty: 0, substandard: 0, charged_off: 0 };
     let accrued = 0;
+    let queuePaid = 0;
     const errors: string[] = [];
     try {
       // P5 Task 1: the world's economy for each sim day passed (idempotent; a no-op within a day).
@@ -63,6 +84,9 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
           errors.push(message);
           report.errors.push({ worldId, message });
         }
+        // P5 Task 3: queued redemptions, FIFO, while cash allows (no-op without a queue).
+        const queue = await processRedemptionQueue(db, worldId);
+        queuePaid = queue.paid + queue.failed;
       }
     } catch (err) {
       const message = errorMessage(err);
@@ -70,10 +94,23 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
       errors.push(message);
       report.errors.push({ worldId, message });
     }
+    // P5 Task 3: the day's treasury memo, after everything above committed (once per sim day).
+    let memo = false;
+    try {
+      memo = (await writeDailyTreasuryMemo(db, worldId, { now })).written;
+    } catch (err) {
+      const message = `treasury memo: ${errorMessage(err)}`;
+      console.error(`[tick] world ${worldId} ${message}`);
+      errors.push(message);
+      report.errors.push({ worldId, message });
+    }
     report.expired += expired;
+    report.queuedRedemptionsPaid += queuePaid;
+    report.treasuryMemos += memo ? 1 : 0;
     const stepCount = steps.late + steps.penalty + steps.substandard + steps.charged_off;
     report.ladderSteps += stepCount;
-    const didWork = expired > 0 || stepCount > 0 || accrued > 0;
+    // The memo lives on economy_state (and ai_runs); on its own it leaves no job_runs row.
+    const didWork = expired > 0 || stepCount > 0 || accrued > 0 || queuePaid > 0;
     // Final fix (minor c): the same errors again within the hour, and nothing else → no row.
     const record = didWork || (errors.length > 0 && !(await errorsRecentlyRecorded(db, worldId, "tick", errors, now)));
     if (record) {
@@ -81,6 +118,8 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
       await recordJobRun(db, worldId, "tick", {
         expired_offers: expired,
         ...(stepCount > 0 || accrued > 0 ? { ladder_steps: steps, penalty_accruals: accrued } : {}),
+        ...(queuePaid > 0 ? { queued_redemptions_settled: queuePaid } : {}),
+        ...(memo ? { treasury_memo: true } : {}),
         errors,
       });
     }

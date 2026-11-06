@@ -849,8 +849,15 @@ export const noteTransactions = pgTable("note_transactions", {
    * the journal + position-units increment against a double-apply on
    * replay). A `redeem` starts `pending` and moves to `completed` on a
    * SUCCEEDED payout or `failed` on a FAILED/UNCLAIMED/etc. payout item.
+   *
+   * P5 Task 3: a `redeem` the reserve floor gates starts `queued` (no
+   * payout yet; its units stay reserved like a pending one's). The tick
+   * promotes it `queued -> pending` (and enqueues its payout) in FIFO
+   * order once cash allows; `cancel_redemption` moves it to `cancelled`.
    */
   status: text("status").notNull().default("pending"),
+  /** P5 Task 3: when a redemption was queued (FIFO order: `queued_at`, then id); `null` if never queued. */
+  queuedAt: timestamp("queued_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -1088,9 +1095,40 @@ export const economyState = pgTable("economy_state", {
     .default(sql`0`),
   roiBps: integer("roi_bps"),
   scenario: text("scenario"),
+  /**
+   * P5 Task 3: available liquidity when the day was stepped — the base of
+   * that day's lending budget (`daily_budget_bps` of it).
+   */
+  dayStartLiquidityCents: bigint("day_start_liquidity_cents", { mode: "bigint" }),
+  /** P5 Task 3: the daily AI treasury memo `{headline, observations, risks}` (advisory; the console shows it). */
+  treasuryMemo: jsonb("treasury_memo"),
+  /** P5 Task 3: when a tick claimed the day's memo (at most one writer per world per day). */
+  treasuryMemoClaimedAt: timestamp("treasury_memo_claimed_at", { withTimezone: true }),
+  /** P5 Task 3: the memo's `ai_runs` row (`null` for a template-only private world). */
+  treasuryMemoAiRunId: uuid("treasury_memo_ai_run_id").references(() => aiRuns.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 }, (table) => [
   uniqueIndex("economy_state_world_day_idx").on(table.worldId, table.simDay),
 ]);
+
+/**
+ * P5 Task 3: a world's treasury policy (`domain/treasury.ts`). At most one
+ * row per world; a world without one uses `TREASURY_DEFAULTS` (reserve
+ * floor 1500 bps of notes outstanding, concentration 3000 bps, daily
+ * lending budget 4000 bps of the day's starting liquidity).
+ */
+export const treasuryPolicy = pgTable("treasury_policy", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  worldId: uuid("world_id")
+    .notNull()
+    .unique()
+    .references(() => worlds.id),
+  reserveFloorBps: integer("reserve_floor_bps").notNull().default(1500),
+  concentrationBps: integer("concentration_bps").notNull().default(3000),
+  dailyBudgetBps: integer("daily_budget_bps").notNull().default(4000),
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow(),
+});

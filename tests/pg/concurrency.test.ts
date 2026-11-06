@@ -27,6 +27,9 @@ import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
 import { settleCheckoutByOrderId } from "@/server/services/checkouts";
 import { revokeMandate } from "@/server/services/mandates";
+import { stepEconomyToNow } from "@/server/services/economy";
+import { processRedemptionQueue } from "@/server/services/notes";
+import { setTreasuryPolicy } from "@/server/services/treasury";
 
 import {
   call,
@@ -157,6 +160,104 @@ describe("real Postgres (TEST_PG=1)", () => {
     expect(loser.envelope.reason_codes).toEqual(["mandate_total_owed"]);
     expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
     expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(10000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  async function raceTwoAccepts(worldId: string, a: { key: string }, b: { key: string }, amountCents: number) {
+    const apply = (key: string) =>
+      call(db, "apply_for_loan", key, { amount_cents: amountCents, term_days: 14, purpose: "Working capital" });
+    const offerA = (await apply(a.key)).envelope.data as Data;
+    const offerB = (await apply(b.key)).envelope.data as Data;
+    expect(offerA.offer_id).toBeDefined();
+    expect(offerB.offer_id).toBeDefined();
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      call(db, "accept_offer", a.key, { offer_id: offerA.offer_id, disclosure_hash: offerA.disclosure_hash }),
+      call(db, "accept_offer", b.key, { offer_id: offerB.offer_id, disclosure_hash: offerB.disclosure_hash }),
+    ]);
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    return racing;
+  }
+
+  it("P5 Review Focus 2: two in-budget acceptances overlapping, together over the daily budget → exactly one loan", async () => {
+    const worldId = await createSimWorld(db);
+    await setTreasuryPolicy(db, worldId, { reserveFloorBps: 0, concentrationBps: 10000, dailyBudgetBps: 4000 });
+    await fundPool(db, worldId, 30000);
+    await stepEconomyToNow(db, worldId); // budget = 40% of ~40000 ≈ 16000
+    const a = await createTestAgent(db, worldId, "a@example.com");
+    const b = await createTestAgent(db, worldId, "b@example.com");
+    const [ra, rb] = await raceTwoAccepts(worldId, a, b, 10000);
+
+    expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "TREASURY_LIMIT"]);
+    const loser = ra.envelope.status === "TREASURY_LIMIT" ? ra : rb;
+    expect(loser.httpStatus).toBe(409);
+    expect(loser.envelope.reason_codes).toEqual(["daily_budget_exhausted"]);
+    expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("P5 Review Focus 2: two agents of one principal accept at once, together over the concentration limit → exactly one loan", async () => {
+    const worldId = await createSimWorld(db);
+    await setTreasuryPolicy(db, worldId, { reserveFloorBps: 0, concentrationBps: 3000, dailyBudgetBps: 10000 });
+    await fundPool(db, worldId, 60000); // cap = 30% of ~70000 ≈ 21000
+    const a = await createTestAgent(db, worldId, "a@example.com");
+    const b = await createTestAgent(db, worldId, "b@example.com", { principalId: a.principalId });
+    const [ra, rb] = await raceTwoAccepts(worldId, a, b, 15000);
+
+    expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "TREASURY_LIMIT"]);
+    const loser = ra.envelope.status === "TREASURY_LIMIT" ? ra : rb;
+    expect(loser.envelope.reason_codes).toEqual(["concentration_limit"]);
+    expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
+  });
+
+  it("P5 Review Focus 2: two acceptances overlapping, together below the reserve floor → exactly one loan", async () => {
+    const worldId = await createSimWorld(db);
+    await setTreasuryPolicy(db, worldId, { reserveFloorBps: 5000, concentrationBps: 10000, dailyBudgetBps: 10000 });
+    await fundPool(db, worldId, 40000); // ~50000 cash, floor 20000 → headroom ~30000
+    const a = await createTestAgent(db, worldId, "a@example.com");
+    const b = await createTestAgent(db, worldId, "b@example.com");
+    const [ra, rb] = await raceTwoAccepts(worldId, a, b, 20000);
+
+    expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "TREASURY_LIMIT"]);
+    const loser = ra.envelope.status === "TREASURY_LIMIT" ? ra : rb;
+    expect(loser.envelope.reason_codes).toEqual(["reserve_floor"]);
+    expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
+  });
+
+  it("P5 Review Focus 4: a redemption and the queue run overlapping → FIFO kept, never paid beyond cash", async () => {
+    const worldId = await createSimWorld(db);
+    await setTreasuryPolicy(db, worldId, { reserveFloorBps: 1500, concentrationBps: 10000, dailyBudgetBps: 10000 });
+    const l1 = await fundPool(db, worldId, 30000, "l1@example.com");
+    const l2 = await fundPool(db, worldId, 30000, "l2@example.com");
+    const b1 = await createTestAgent(db, worldId, "b1@example.com");
+    const b2 = await createTestAgent(db, worldId, "b2@example.com");
+    for (const borrower of [b1, b2]) {
+      const offer = (
+        await call(db, "apply_for_loan", borrower.key, { amount_cents: 25000, term_days: 14, purpose: "Working capital" })
+      ).envelope.data as Data;
+      const accepted = await call(db, "accept_offer", borrower.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash });
+      expect(accepted.envelope.status).toBe("ACTIVE");
+    }
+    const queued = await call(db, "redeem_notes", l1.key, { amount_cents: 15000 });
+    expect(queued.envelope.status).toBe("QUEUED");
+
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      processRedemptionQueue(db, worldId),
+      call(db, "redeem_notes", l2.key, { amount_cents: 1000 }),
+    ]);
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    const [, second] = await racing;
+    // Whichever ran first, the small one never jumps the queued head.
+    expect(second.envelope.status).toBe("QUEUED");
+    const redeems = await db
+      .select()
+      .from(noteTransactions)
+      .where(and(eq(noteTransactions.worldId, worldId), eq(noteTransactions.kind, "redeem"))!);
+    expect(redeems.map((row) => row.status).sort()).toEqual(["queued", "queued"]);
+    expect(await getAccountBalance(db, worldId, "cash_paypal", null)).toBeGreaterThanOrEqual(0n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 

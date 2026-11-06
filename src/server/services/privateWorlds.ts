@@ -12,6 +12,7 @@ import { trialBalance } from "../ledger/trialBalance";
 import { failWorldOperations } from "../paypal/operations";
 import { processDue, totalDueCents } from "./collections";
 import { stepEconomyToNow } from "./economy";
+import { processRedemptionQueue } from "./notes";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -160,6 +161,8 @@ export async function advancePrivateWorld(
     await stepEconomyToNow(db, world.id);
     // P4: the delinquency ladder for the day that just passed, before the bots act.
     await processDue(db, world.id, simNow);
+    // P5 Task 3: queued redemptions the day's cash now allows (FIFO).
+    await processRedemptionQueue(db, world.id);
     await runBotsCatchUp(db, world.id, { maxDays: MAX_ADVANCE_DAYS });
   }
   const { simNow, day } = await getSimDay(db, world.id);

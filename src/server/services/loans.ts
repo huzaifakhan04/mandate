@@ -36,6 +36,8 @@ import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } 
 import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 import { currentEconomy, liveUtilization } from "./economy";
+import { loanTreasuryFacts } from "./treasury";
+import { loanTreasuryReasons, type LoanTreasuryFacts } from "../domain/treasury";
 import { borrowGate, loadAgentKya } from "./kya";
 import type { BorrowBlocker } from "../domain/kya";
 import {
@@ -251,6 +253,8 @@ async function underwrite(
     availableLiquidityCents,
     baseRateBps: economy.baseRateBps,
     utilizationBps: utilization.utilizationBps,
+    // P5 Task 3: reserve floor, concentration, daily budget (under the series lock for apply).
+    treasury: (await loanTreasuryFacts(db, worldId, agent, availableLiquidityCents)) ?? undefined,
   });
   return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents, coverageBps };
 }
@@ -562,7 +566,7 @@ function buildDisclosure(
  * most one live offer.
  *
  * The offer's terms are fixed here: `accept_offer` re-checks the mandate,
- * tier, open loan and liquidity, not the grade.
+ * tier, open loan, liquidity and (P5 Task 3) the treasury gates, not the grade.
  *
  * Ruling P: the loan is due `term_days` after the funds are sent (the
  * borrower always gets the full term). The disclosure says so in
@@ -808,6 +812,12 @@ export type AcceptOfferOutcome =
   | { outcome: "mandate_limit"; reasons: Array<MandateReason | TierReason>; mandate: MandateSummary; retry: EligibilityArgs }
   /** P4: a loan of the principal's is substandard — the mandate is frozen for new loans. */
   | { outcome: "delinquent_principal" }
+  /**
+   * P5 Task 3 (Review Focus 2): the treasury policy, re-checked under the
+   * series lock, no longer allows this loan (another acceptance used the
+   * budget, the floor or the principal's concentration headroom).
+   */
+  | { outcome: "treasury_limit"; reasons: ReasonCode[]; facts: LoanTreasuryFacts }
   | { outcome: "disbursing"; loanId: string; payoutOperationId: string };
 
 /**
@@ -907,6 +917,17 @@ export async function beginAcceptOffer(
   const availableLiquidityCents = await availableLiquidity(tx, worldId);
   if (offer.principalCents > availableLiquidityCents) {
     return { outcome: "insufficient_liquidity", availableLiquidityCents };
+  }
+
+  // P5 Task 3 (Review Focus 2): the treasury gates again, under the series
+  // lock every acceptance takes first — so the second of two concurrent
+  // acceptances sees the first one's DISBURSING principal in liquidity,
+  // the principal's exposure and today's budget use, and the two can
+  // never jointly breach the floor, the concentration limit or the budget.
+  const treasury = await loanTreasuryFacts(tx, worldId, kyaAgent, availableLiquidityCents);
+  const treasuryReasons = treasury ? loanTreasuryReasons(treasury, offer.principalCents) : [];
+  if (treasury && treasuryReasons.length > 0) {
+    return { outcome: "treasury_limit", reasons: treasuryReasons, facts: treasury };
   }
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));

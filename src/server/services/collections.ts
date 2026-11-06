@@ -38,6 +38,7 @@ import {
   toDbStatus,
   transition,
 } from "../domain/loanMachine";
+import { OPEN_REDEMPTION_STATUSES } from "../domain/treasury";
 import { postJournal } from "../ledger/postJournal";
 import { getCodeBalance } from "../ledger/trialBalance";
 import { buildCreateOrderRequest, enqueueOperation } from "../paypal/operations";
@@ -456,7 +457,8 @@ async function applyChargeOffStep(
             positions.map((position) => position.id),
           ),
           eq(noteTransactions.kind, "redeem"),
-          eq(noteTransactions.status, "pending"),
+          // P5 Task 3: a queued redemption reserves its units too.
+          inArray(noteTransactions.status, [...OPEN_REDEMPTION_STATUSES]),
         )!,
       )
     : [];

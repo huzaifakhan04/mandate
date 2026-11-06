@@ -38,6 +38,7 @@ import {
   UTILIZATION_PREMIUM_MAX_BPS,
   utilizationPremiumBps,
 } from "../domain/economy";
+import { TREASURY_DEFAULTS } from "../domain/treasury";
 import { MAX_SHOWN_REASONS, REASON_PRIORITY, REASON_TEXT } from "../domain/reasons";
 import { GRADE_D_AUTO_APPROVE_MAX_CENTS } from "../domain/rules";
 import {
@@ -621,6 +622,8 @@ The fee is the sum of four components, each in basis points (bps) of the princip
 
 **Base rate and utilization premium.** The bank's base rate starts at ${BASE_RATE_BPS} bps a year and moves once per simulated day (a seeded walk of at most ±${BASE_RATE_STEP_BPS} bps a day that pulls back toward ${BASE_RATE_BPS}, kept within ${BASE_RATE_MIN_BPS}–${BASE_RATE_MAX_BPS} bps). On top of it comes a **utilization premium**, measured at the moment you apply: utilization = loans outstanding ÷ (cash + loans outstanding). Up to ${pct(UTILIZATION_PREMIUM_FLOOR_BPS)} lent out the premium is 0; from there it rises linearly to +${UTILIZATION_PREMIUM_MAX_BPS} bps a year at ${pct(UTILIZATION_DECLINE_ABOVE_BPS)} (e.g. +${utilizationPremiumBps(7000)} at 70%). Above ${pct(UTILIZATION_DECLINE_ABOVE_BPS)} the bank makes no new loans: the application is declined with \`pool_utilization_high\`. \`check_eligibility\`'s quote and every offer's disclosure show both numbers (\`base_rate_bps\`, \`utilization_premium_bps\`; the disclosure's are covered by \`disclosure_hash\`). An offer keeps the terms it was quoted at, even if the rate moves before you accept.
 
+**Treasury policy.** Even when the pool can fund a loan, the bank's treasury policy can decline it: \`reserve_floor\` if it would leave available cash (after any queued redemptions) below ${pct(TREASURY_DEFAULTS.reserveFloorBps)} of the notes the bank owes holders; \`concentration_limit\` if your human's outstanding principal across all their agents would exceed ${pct(TREASURY_DEFAULTS.concentrationBps)} of the bank's loans plus available cash; \`daily_budget_exhausted\` if the principal accepted today would exceed ${pct(TREASURY_DEFAULTS.dailyBudgetBps)} of the available cash at the start of the simulated day. \`accept_offer\` checks all three again and answers \`TREASURY_LIMIT\` (409) with the reason if another acceptance used the room meanwhile — apply again later or for less.
+
 | Grade | PD | Expected loss, unsecured (bps) | Expected loss, invoice ≥ 1.1× (bps) | Capital (bps) |
 |---|---|---|---|---|
 ${pdRows}
@@ -712,6 +715,7 @@ function renderMoneyRulesSection(): string {
 - **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
 - **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%. \`get_statement\` shows your \`nominal_annual_return_bps\` (interest earned ÷ net amount invested, annualised over the simulated days since your first purchase) and \`real_annual_return_bps\` (nominal minus the bank's simulated annual inflation rate, \`inflation_rate_bps\`, which walks between 2% and 6%).
 - **Pricing (risk-based):** the cost of funds is the bank's daily base rate plus a utilization premium; above 90% of the pool lent out, new loans are declined with \`pool_utilization_high\` (see [Pricing](#pricing)).
+- **Redemption queue:** a \`redeem_notes\` that would take the bank's available cash below its reserve floor (${pct(TREASURY_DEFAULTS.reserveFloorBps)} of the notes left) — or that arrives while others are queued — is \`QUEUED\`, not refused: \`data.queue\` gives its position, the reason and roughly how much more cash the bank needs. Queued redemptions are paid automatically, oldest first, as repayments and note purchases bring cash in; your units stay reserved meanwhile (and still count for loss sharing). \`cancel_redemption\` withdraws a queued one.
 - **Idempotency:** mutating tools (other than \`confirm_checkout\`, which is already idempotent by \`checkout_id\`) accept an \`Idempotency-Key\` HTTP header or an \`idempotency_key\` input argument, over both REST and MCP (if you send both, they must match) — reuse one to safely retry a call that may or may not have gone through.
 `;
 }

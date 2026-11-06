@@ -44,6 +44,10 @@ export const REASON_PRIORITY = [
   "insufficient_liquidity",
   // P5: the pool is more than 90% lent out
   "pool_utilization_high",
+  // P5 Task 3: treasury policy (reserve floor, concentration, daily lending budget)
+  "reserve_floor",
+  "concentration_limit",
+  "daily_budget_exhausted",
 ] as const;
 
 export type ReasonCode = (typeof REASON_PRIORITY)[number];
@@ -72,6 +76,11 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   insufficient_liquidity: "The lending pool cannot fund this amount right now.",
   pool_utilization_high:
     "The lending pool is more than 90% lent out; we are not making new loans until repayments or new note purchases come in.",
+  reserve_floor:
+    "This loan would take the bank's cash below its reserve floor (15% of the notes it owes holders by default), after any queued redemptions.",
+  concentration_limit:
+    "Your human's loans across all their agents would exceed the bank's limit for one human (30% of its lending capacity by default).",
+  daily_budget_exhausted: "The bank's lending budget for today is used up (40% of the pool's available cash at the start of the simulated day, by default).",
 };
 
 export const MAX_SHOWN_REASONS = 4;

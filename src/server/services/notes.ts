@@ -1,4 +1,4 @@
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
 import type { NextAction } from "../contracts/envelope";
@@ -17,6 +17,9 @@ import {
 import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { availableLiquidity } from "../domain/liquidity";
+import { OPEN_REDEMPTION_STATUSES, redemptionPayable, reserveFloorCents } from "../domain/treasury";
+import { describeError } from "../db/errors";
+import { getTreasuryPolicy, notesPayableCents, redemptionTotals } from "./treasury";
 import { railForWorld } from "./worlds";
 import { settleDeferredHolderLosses } from "./holderLosses";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
@@ -322,37 +325,54 @@ registerCaptureHandler("note_purchase", {
 
 export type RedeemNotesOutcome =
   | { outcome: "insufficient_note_balance"; redeemableUnits: bigint }
-  | { outcome: "insufficient_liquidity"; availableLiquidityCents: bigint }
   | { outcome: "payout_receiver_missing" }
-  | { outcome: "submitted"; noteTxId: string; payoutOperationId: string };
+  | { outcome: "submitted"; noteTxId: string; payoutOperationId: string }
+  /** P5 Task 3: the reserve floor gates it — queued (FIFO) until the tick can pay it. */
+  | { outcome: "queued"; noteTxId: string; queue: QueuePosition };
 
-/** Redemption statuses that still count against the position (not yet settled either way). */
-const OPEN_REDEMPTION_STATUSES = ["pending"] as const;
+/** Where a queued redemption stands (P5 Task 3), for the holder. */
+export interface QueuePosition {
+  /** 1 = next to be paid. */
+  position: number;
+  /** Σ queued redemptions ahead of this one. */
+  aheadCents: bigint;
+  /** The reserve floor on the notes left after this redemption and those ahead. */
+  reserveFloorCents: bigint;
+  availableLiquidityCents: bigint;
+  /** How much more available cash the bank needs before it can pay this one (0 = next tick). */
+  cashNeededCents: bigint;
+  /** Why it waits: the floor itself, or other redemptions already queued ahead of it. */
+  reason: "reserve_floor" | "queue_ahead";
+}
 
 /**
  * `redeem_notes`'s transactional half: checks the amount against the
- * agent's *redeemable* balance and the world's available liquidity (both
- * computed under the note series row's lock, per Review Focus #4),
- * creates the redemption (`note_transactions` kind `redeem`, pending)
- * and enqueues the payout — never executes it inside the transaction.
+ * agent's *redeemable* balance (computed under the note series row's lock,
+ * per Review Focus #4) and either creates the redemption
+ * (`note_transactions` kind `redeem`, pending) and enqueues the payout —
+ * never executing it inside the transaction — or, P5 Task 3, queues it.
  *
  * Fix round 1 (C1): redeemable = `position.units` − the sum of this
- * position's own *other* `redeem` transactions still `pending` — so a
- * second redemption submitted while a first one hasn't settled yet (its
- * payout item came back `PENDING`, or hasn't been executed at all) can't
- * also pass the balance check and double-spend the same units. Combined
- * with the series row lock, two concurrent `redeem_notes` calls for the
- * same agent can never both read a stale `positionUnits` snapshot.
+ * position's own *other* open redemptions (`OPEN_REDEMPTION_STATUSES`:
+ * `pending`, and P5's `queued`) — so a second redemption submitted while
+ * a first one hasn't settled yet can't also pass the balance check and
+ * double-spend the same units. Combined with the series row lock, two
+ * concurrent `redeem_notes` calls for the same agent can never both read a
+ * stale `positionUnits` snapshot.
  *
  * Fix round 2 (C1 race, item 2): the series row AND the agent's own
  * `note_positions` row are both locked with `SELECT … FOR UPDATE`
- * *before* `units`/the pending-redemption sum are read — otherwise two
- * concurrent `redeem_notes` calls for the same agent could each read the
- * position before either had inserted its pending redemption row, and
- * both pass the balance check. Lock order everywhere in this module is
- * **series row, then position row** (never the reverse) — `
- * applyRedemptionPayoutOutcome`'s settlement follows the same order — so
- * the two can never deadlock against each other.
+ * *before* `units`/the open-redemption sum are read. Lock order
+ * everywhere in this module is **series row, then position row** (never
+ * the reverse) — the settlement, the queue and cancellation follow it too.
+ *
+ * P5 Task 3 (redemption gate): it is paid now only if no redemption is
+ * already queued (FIFO: nobody jumps the queue) and paying it keeps the
+ * bank's available cash at or above the reserve floor on the notes left
+ * (`redemptionPayable`). Otherwise it is created `queued` (no payout) and
+ * the tick pays it in order once cash allows (`processRedemptionQueue`).
+ * This replaces P1's INSUFFICIENT_LIQUIDITY refusal: a redemption larger
+ * than the available cash waits in the queue instead.
  */
 export async function beginNoteRedemption(
   tx: Db,
@@ -369,14 +389,14 @@ export async function beginNoteRedemption(
     and(eq(notePositions.seriesId, seriesId), eq(notePositions.agentId, agentId))!,
   );
   // Lock the position row itself (if it exists) before trusting its
-  // `units` or querying its pending redemptions — a brand-new agent with
+  // `units` or querying its open redemptions — a brand-new agent with
   // no position row yet has nothing to lock, and trivially redeems 0.
   const position = positionRow
     ? (await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.id, positionRow.id)))[0]
     : undefined;
   const positionUnits = position?.units ?? 0n;
 
-  const pendingRedemptions = position
+  const openRedemptions = position
     ? await scoped(tx, worldId).select(
         noteTransactions,
         and(
@@ -386,16 +406,11 @@ export async function beginNoteRedemption(
         )!,
       )
     : [];
-  const pendingRedeemCents = pendingRedemptions.reduce((sum, row) => sum + row.amountCents, 0n);
-  const redeemableUnits = positionUnits - pendingRedeemCents;
+  const openRedeemCents = openRedemptions.reduce((sum, row) => sum + row.amountCents, 0n);
+  const redeemableUnits = positionUnits - openRedeemCents;
 
   if (amountCents > redeemableUnits) {
     return { outcome: "insufficient_note_balance", redeemableUnits };
-  }
-
-  const availableLiquidityCents = await availableLiquidity(tx, worldId);
-  if (amountCents > availableLiquidityCents) {
-    return { outcome: "insufficient_liquidity", availableLiquidityCents };
   }
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));
@@ -404,6 +419,30 @@ export async function beginNoteRedemption(
     // Fix round 1 (M1): a clean domain outcome, not a thrown error — the
     // tool maps this to 400 `PAYOUT_RECEIVER_MISSING`.
     return { outcome: "payout_receiver_missing" };
+  }
+
+  // P5 Task 3: the redemption gate.
+  const policy = await getTreasuryPolicy(tx, worldId);
+  const availableLiquidityCents = await availableLiquidity(tx, worldId);
+  const totals = await redemptionTotals(tx, worldId);
+  const notesOutstandingCents = (await notesPayableCents(tx, worldId)) - totals.pendingCents;
+  const payable =
+    totals.queuedCount === 0 &&
+    redemptionPayable(availableLiquidityCents, notesOutstandingCents, amountCents, policy?.reserveFloorBps ?? 0);
+
+  if (!payable) {
+    const [queued] = await scoped(tx, worldId).insert(noteTransactions, {
+      positionId: position!.id,
+      kind: "redeem",
+      amountCents,
+      status: "queued",
+      queuedAt: sql`clock_timestamp()` as unknown as Date,
+    });
+    if (!queued) {
+      throw new Error("Expected a note_transactions row to be inserted");
+    }
+    const queue = await queuePosition(tx, worldId, queued.id);
+    return { outcome: "queued", noteTxId: queued.id, queue: queue! };
   }
 
   const [noteTx] = await scoped(tx, worldId).insert(noteTransactions, {
@@ -416,25 +455,242 @@ export async function beginNoteRedemption(
     throw new Error("Expected a note_transactions row to be inserted");
   }
 
+  const operationId = await enqueueRedemptionPayout(tx, worldId, noteTx.id, amountCents, agent.payoutReceiver, recipientType);
+  return { outcome: "submitted", noteTxId: noteTx.id, payoutOperationId: operationId };
+}
+
+async function enqueueRedemptionPayout(
+  tx: Db,
+  worldId: string,
+  noteTxId: string,
+  amountCents: bigint,
+  receiver: string,
+  receiverType: NonNullable<ReturnType<typeof payoutRecipientType>>,
+): Promise<string> {
   const rail = await railForWorld(tx, worldId);
   const { operationId } = await enqueueOperation(tx, {
     worldId,
     rail,
     kind: "payout.send",
     purpose: "note_redemption",
-    sourceId: noteTx.id,
+    sourceId: noteTxId,
     request: buildSendPayoutRequest({
-      receiver: agent.payoutReceiver,
-      receiverType: recipientType,
+      receiver,
+      receiverType,
       amountCents,
       note: "Mandate note redemption",
-      senderItemId: noteTx.id,
+      senderItemId: noteTxId,
     }),
   });
+  await scoped(tx, worldId).update(noteTransactions, { opId: operationId }, eq(noteTransactions.id, noteTxId));
+  return operationId;
+}
 
-  await scoped(tx, worldId).update(noteTransactions, { opId: operationId }, eq(noteTransactions.id, noteTx.id));
+/** The world's queued redemptions, oldest first (`queued_at`, then id). */
+async function queuedRedemptions(db: Db, worldId: string): Promise<Array<typeof noteTransactions.$inferSelect>> {
+  const rows = await scoped(db, worldId).select(
+    noteTransactions,
+    and(eq(noteTransactions.kind, "redeem"), eq(noteTransactions.status, "queued"))!,
+  );
+  return rows.sort(
+    (a, b) =>
+      (a.queuedAt?.getTime() ?? 0) - (b.queuedAt?.getTime() ?? 0) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+}
 
-  return { outcome: "submitted", noteTxId: noteTx.id, payoutOperationId: operationId };
+/**
+ * P5 Task 3: where queued redemption `noteTxId` stands, or `null` if it
+ * isn't queued. `cashNeededCents` is how much more available cash would
+ * let the bank pay everything ahead of it and it, keeping the floor.
+ */
+export async function queuePosition(db: Db, worldId: string, noteTxId: string): Promise<QueuePosition | null> {
+  const queue = await queuedRedemptions(db, worldId);
+  const index = queue.findIndex((row) => row.id === noteTxId);
+  if (index < 0) {
+    return null;
+  }
+  const aheadCents = queue.slice(0, index).reduce((sum, row) => sum + row.amountCents, 0n);
+  const through = aheadCents + queue[index]!.amountCents;
+  const policy = await getTreasuryPolicy(db, worldId);
+  const available = await availableLiquidity(db, worldId);
+  const totals = await redemptionTotals(db, worldId);
+  const notesOutstanding = (await notesPayableCents(db, worldId)) - totals.pendingCents;
+  const floorBps = policy?.reserveFloorBps ?? 0;
+  const floor = reserveFloorCents(notesOutstanding - through, floorBps);
+  const needed = through + floor - available;
+  return {
+    position: index + 1,
+    aheadCents,
+    reserveFloorCents: floor,
+    availableLiquidityCents: available,
+    cashNeededCents: needed > 0n ? needed : 0n,
+    reason: index > 0 && redemptionPayable(available, notesOutstanding, queue[index]!.amountCents, floorBps)
+      ? "queue_ahead"
+      : "reserve_floor",
+  };
+}
+
+/** Each holder's queued redemptions with their queue positions (for `get_status`/`get_statement`). */
+export async function queuedRedemptionsFor(
+  db: Db,
+  worldId: string,
+  agentId: string,
+): Promise<Array<{ noteTxId: string; amountCents: bigint; queuedAt: Date | null; position: number }>> {
+  const queue = await queuedRedemptions(db, worldId);
+  if (queue.length === 0) {
+    return [];
+  }
+  const positions = await scoped(db, worldId).select(notePositions, eq(notePositions.agentId, agentId));
+  const ids = new Set(positions.map((row) => row.id));
+  return queue
+    .map((row, index) => ({ row, index }))
+    .filter(({ row }) => ids.has(row.positionId))
+    .map(({ row, index }) => ({ noteTxId: row.id, amountCents: row.amountCents, queuedAt: row.queuedAt, position: index + 1 }));
+}
+
+export interface ProcessQueueResult {
+  /** Redemptions promoted `queued -> pending` (their payouts were then executed). */
+  paid: number;
+  /** Redemptions failed at promotion (the holder no longer has a payout receiver). */
+  failed: number;
+  /** Still queued after this run. */
+  remaining: number;
+}
+
+/**
+ * P5 Task 3 (Review Focus 4): pays queued redemptions in FIFO order while
+ * cash allows. Under the note series lock (then each position's row, the
+ * module's lock order), from the head of the queue: if
+ * `redemptionPayable(available liquidity, notes outstanding, amount)` holds
+ * — so it never pays more than the cash available, and keeps the floor —
+ * the redemption moves `queued -> pending` and its payout is enqueued
+ * (available liquidity drops by it, as for any pending redemption); the
+ * first one that doesn't fit stops the run (no smaller one jumps it).
+ * After commit each promoted payout is executed through the normal
+ * settlement (`applyRedemptionPayoutOutcome`; a failure there leaves it
+ * pending for the reconcile cron). A holder whose payout receiver vanished
+ * meanwhile has its redemption failed (the reserved units are its own
+ * again: Ruling P4-D applies). Called by the tick for every world;
+ * never inside a transaction.
+ */
+export async function processRedemptionQueue(db: Db, worldId: string): Promise<ProcessQueueResult> {
+  if ((await queuedRedemptions(db, worldId)).length === 0) {
+    return { paid: 0, failed: 0, remaining: 0 }; // Unlocked pre-check: an empty queue takes no locks.
+  }
+  const simAt = await getSimNow(db, worldId);
+  const result = await db.transaction(async (tx) => {
+    const seriesId = await getNoteSeriesId(tx, worldId);
+    await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.id, seriesId));
+    const policy = await getTreasuryPolicy(tx, worldId);
+    const queue = await queuedRedemptions(tx, worldId);
+    const promoted: string[] = [];
+    let failed = 0;
+    let handled = 0;
+    for (const row of queue) {
+      const available = await availableLiquidity(tx, worldId);
+      const totals = await redemptionTotals(tx, worldId);
+      const notesOutstanding = (await notesPayableCents(tx, worldId)) - totals.pendingCents;
+      if (!redemptionPayable(available, notesOutstanding, row.amountCents, policy?.reserveFloorBps ?? 0)) {
+        break;
+      }
+      const [position] = await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.id, row.positionId));
+      if (!position) {
+        throw new Error(`note_positions row ${row.positionId} not found in world ${worldId}`);
+      }
+      handled += 1;
+      const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, position.agentId));
+      const recipientType = payoutRecipientType(agent?.payoutReceiverType ?? null);
+      if (!agent || !agent.payoutReceiver || !recipientType) {
+        const updated = await scoped(tx, worldId).update(
+          noteTransactions,
+          { status: "failed" },
+          and(eq(noteTransactions.id, row.id), eq(noteTransactions.status, "queued"))!,
+        );
+        if (updated.length === 1) {
+          failed += 1;
+          await settleDeferredHolderLosses(tx, worldId, {
+            positionId: position.id,
+            agentId: position.agentId,
+            redemptionId: row.id,
+            outcome: "failed",
+            simAt,
+          });
+        }
+        continue;
+      }
+      const updated = await scoped(tx, worldId).update(
+        noteTransactions,
+        { status: "pending" },
+        and(eq(noteTransactions.id, row.id), eq(noteTransactions.status, "queued"))!,
+      );
+      if (updated.length !== 1) {
+        continue;
+      }
+      promoted.push(
+        await enqueueRedemptionPayout(tx, worldId, row.id, row.amountCents, agent.payoutReceiver, recipientType),
+      );
+    }
+    return { promoted, failed, remaining: queue.length - handled };
+  });
+  for (const operationId of result.promoted) {
+    try {
+      await applyRedemptionPayoutOutcome(db, operationId);
+    } catch (err) {
+      // Stays pending; the reconcile cron polls it.
+      console.error(`[notes] queued redemption payout ${operationId} failed to settle: ${describeError(err)}`);
+    }
+  }
+  return { paid: result.promoted.length, failed: result.failed, remaining: result.remaining };
+}
+
+export type CancelRedemptionOutcome =
+  | { outcome: "not_found" }
+  | { outcome: "not_queued"; status: string }
+  | { outcome: "cancelled"; amountCents: bigint };
+
+/**
+ * P5 Task 3: the holder withdraws one of its own QUEUED redemptions
+ * (`queued -> cancelled`; nothing was paid, so nothing is journaled). Its
+ * units are the holder's again, so a deferred charge-off loss share on
+ * them now applies (Ruling P4-D, like a failed redemption). A redemption
+ * already `pending` (its payout is on its way) can't be cancelled. Locks:
+ * series row, then the position row.
+ */
+export async function cancelQueuedRedemption(
+  tx: Db,
+  worldId: string,
+  agentId: string,
+  noteTxId: string,
+): Promise<CancelRedemptionOutcome> {
+  const seriesId = await getNoteSeriesId(tx, worldId);
+  await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.id, seriesId));
+  const noteTx = await scoped(tx, worldId).findOne(
+    noteTransactions,
+    and(eq(noteTransactions.id, noteTxId), eq(noteTransactions.kind, "redeem"))!,
+  );
+  if (!noteTx) {
+    return { outcome: "not_found" };
+  }
+  const [position] = await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.id, noteTx.positionId));
+  if (!position || position.agentId !== agentId) {
+    return { outcome: "not_found" }; // Fail closed: someone else's redemption looks like none.
+  }
+  const updated = await scoped(tx, worldId).update(
+    noteTransactions,
+    { status: "cancelled" },
+    and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "queued"))!,
+  );
+  if (updated.length !== 1) {
+    return { outcome: "not_queued", status: noteTx.status };
+  }
+  await settleDeferredHolderLosses(tx, worldId, {
+    positionId: position.id,
+    agentId,
+    redemptionId: noteTx.id,
+    outcome: "cancelled",
+    simAt: await getSimNow(tx, worldId),
+  });
+  return { outcome: "cancelled", amountCents: noteTx.amountCents };
 }
 
 /**

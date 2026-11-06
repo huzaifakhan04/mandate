@@ -11,6 +11,7 @@ import { noticeSchema } from "../notices";
 import { daysLate } from "../../domain/delinquency";
 import { isOwingStatus } from "../../domain/loanMachine";
 import { noticeView, unreadNotices } from "../../services/collections";
+import { queuedRedemptionsFor } from "../../services/notes";
 
 const outputSchema = z.object({
   agent: z.object({
@@ -41,6 +42,10 @@ const outputSchema = z.object({
     .nullable(),
   /** P4: notices you haven't acknowledged (late, penalty, substandard, cured…); clear them with ack_notices. */
   notices: z.array(noticeSchema),
+  /** P5 Task 3: your redemptions waiting behind the reserve floor (paid in queue order; cancel_redemption withdraws one). */
+  queued_redemptions: z.array(
+    z.object({ note_tx_id: z.string(), amount_cents: z.number(), position: z.number(), queued_at: z.string().nullable() }),
+  ),
   limits: z.object({
     max_principal_cents: z.number(),
     available_liquidity_cents: z.number(),
@@ -118,6 +123,12 @@ export const getStatusTool = defineTool({
           }
         : null,
       notices: notices.map(noticeView),
+      queued_redemptions: (await queuedRedemptionsFor(ctx.db, ctx.worldId, ctx.agentId)).map((row) => ({
+        note_tx_id: row.noteTxId,
+        amount_cents: Number(row.amountCents),
+        position: row.position,
+        queued_at: row.queuedAt?.toISOString() ?? null,
+      })),
       limits: {
         max_principal_cents: status.limits.maxPrincipalCents,
         available_liquidity_cents: Number(status.limits.availableLiquidityCents),

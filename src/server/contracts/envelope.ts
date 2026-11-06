@@ -116,6 +116,8 @@ const STATUS_HTTP: Record<string, number> = {
   MANDATE_FROZEN: 409,
   // P3 Task 4 (ALA G): apply_for_loan named a mandate version that is no longer current.
   MANDATE_CHANGED: 409,
+  // P5 Task 3: accept_offer re-checks the treasury policy (reserve floor, concentration, daily budget).
+  TREASURY_LIMIT: 409,
   // P2 Task 3 (Ed25519 request signing).
   SIGNATURE_REQUIRED: 401,
   SIGNATURE_INVALID: 401,

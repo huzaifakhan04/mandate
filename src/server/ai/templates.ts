@@ -9,6 +9,8 @@ import type {
   RiskOfficerInput,
   RiskOfficerOutput,
   RoleIO,
+  TreasuryOfficerInput,
+  TreasuryOfficerOutput,
 } from "./schemas";
 
 /**
@@ -49,6 +51,9 @@ const NEXT_STEP: Partial<Record<ReasonCode, string>> = {
   open_loan_exists: "Repay your open loan before applying again.",
   insufficient_liquidity: "Try again later, or apply for a smaller amount.",
   pool_utilization_high: "Try again after repayments or new note purchases bring the pool below 90% lent out.",
+  reserve_floor: "Apply for a smaller amount, or try again after repayments or new note purchases add cash.",
+  concentration_limit: "Apply for a smaller amount, or repay your human's open loans first.",
+  daily_budget_exhausted: "Apply for a smaller amount, or try again on the next simulated day when the budget resets.",
 };
 
 export function loanOfficerTemplate(input: LoanOfficerInput): LoanOfficerOutput {
@@ -112,8 +117,49 @@ export function kyaDeskTemplate(input: KyaDeskInput): KyaDeskOutput {
   };
 }
 
+/** P5 Task 3: the daily treasury memo from the economy numbers alone. */
+export function treasuryOfficerTemplate(input: TreasuryOfficerInput): TreasuryOfficerOutput {
+  const realBps = input.baseRateBps - input.inflationRateBps;
+  const observations = [
+    `Base rate ${percent(input.baseRateBps)} a year against inflation of ${percent(input.inflationRateBps)} (real ${percent(realBps)}); inflation index ${(input.inflationIndexBp / 10000).toFixed(4)}.`,
+    `Utilization ${percent(input.utilizationBps)} (${dollars(input.loansReceivableCents)} lent across ${input.openLoans} open loan(s)); utilization premium +${input.utilizationPremiumBps} bps.`,
+    `Cash ${dollars(input.cashCents)} (${dollars(input.availableLiquidityCents)} available) against ${dollars(input.notesPayableCents)} of notes: reserve ratio ${percent(input.reserveRatioBps)}, floor ${dollars(input.reserveFloorCents)} (${percent(input.reserveFloorBps)}).`,
+    input.dailyBudgetCents === null
+      ? `No lending budget set yet today; ${dollars(input.budgetUsedCents)} lent.`
+      : `Lending budget ${dollars(input.budgetUsedCents)} of ${dollars(input.dailyBudgetCents)} used today.`,
+    `Loss allowance ${dollars(input.allowanceCents)}.`,
+  ];
+  const risks: string[] = [];
+  if (input.queuedRedemptions > 0) {
+    risks.push(`${input.queuedRedemptions} redemption(s) (${dollars(input.queuedRedemptionCents)}) are queued behind the reserve floor.`);
+  }
+  if (input.availableLiquidityCents - input.queuedRedemptionCents < input.reserveFloorCents) {
+    risks.push("Available cash is below the reserve floor: new loans are declined until cash recovers.");
+  }
+  if (input.utilizationBps > 9000) {
+    risks.push("Utilization is above 90%: the bank is not making new loans.");
+  } else if (input.utilizationBps > 7500) {
+    risks.push("Utilization is above 75%: the utilization premium is raising the price of new loans.");
+  }
+  if (input.dailyBudgetCents !== null && input.budgetUsedCents >= input.dailyBudgetCents && input.dailyBudgetCents > 0) {
+    risks.push("Today's lending budget is used up.");
+  }
+  if (input.loansReceivableCents > 0 && input.allowanceCents * 10 > input.loansReceivableCents) {
+    risks.push("The loss allowance is above 10% of loans outstanding: expected credit losses are high.");
+  }
+  if (realBps < 0) {
+    risks.push("The real base rate is negative: note holders' real returns are under pressure.");
+  }
+  return {
+    headline: `Day ${input.simDay}: utilization ${percent(input.utilizationBps)}, reserve ratio ${percent(input.reserveRatioBps)}, base rate ${percent(input.baseRateBps)}${input.queuedRedemptions > 0 ? `, ${input.queuedRedemptions} redemption(s) queued` : ""}.`,
+    observations,
+    risks: risks.slice(0, 5),
+  };
+}
+
 export const TEMPLATES: { [R in AiRole]: (input: RoleIO[R]["input"]) => RoleIO[R]["output"] } = {
   kya_desk: kyaDeskTemplate,
   loan_officer: loanOfficerTemplate,
   risk_officer: riskOfficerTemplate,
+  treasury_officer: treasuryOfficerTemplate,
 };

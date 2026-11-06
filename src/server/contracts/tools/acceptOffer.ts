@@ -10,7 +10,8 @@ import {
   getLoanView,
 } from "../../services/loans";
 import { refreshRepaymentLink } from "../../services/repayments";
-import { REASON_TEXT } from "../../domain/reasons";
+import { principalReasons, REASON_TEXT } from "../../domain/reasons";
+import { loanTreasuryLimits } from "../../domain/treasury";
 
 const inputSchema = z.object({
   offer_id: z.uuid(),
@@ -115,7 +116,8 @@ export const acceptOfferTool = defineTool({
     "MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the " +
     "mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with " +
     "mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) " +
-    "and liquidity, creates the loan and " +
+    "liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or " +
+    "daily_budget_exhausted — apply again later or for less), creates the loan and " +
     "pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING " +
     "(poll get_loan) or DISBURSEMENT_FAILED (with the reason).",
   auth: "agent",
@@ -169,6 +171,27 @@ export const acceptOfferTool = defineTool({
         return mandateLimitEnvelope(result.reasons, result.mandate, result.retry);
       case "delinquent_principal": {
         const envelope = fail("MANDATE_FROZEN", REASON_TEXT.delinquent_principal, ["delinquent_principal"]);
+        envelope.next_actions = [{ tool: "get_status", args: {} }];
+        return envelope;
+      }
+      case "treasury_limit": {
+        // P5 Task 3: re-checked under the series lock; nothing was written.
+        const limits = loanTreasuryLimits(result.facts);
+        const envelope = fail(
+          "TREASURY_LIMIT",
+          principalReasons(result.reasons)
+            .map((reason) => reason.text)
+            .join(" "),
+          result.reasons,
+          {
+            reserve_floor_cents: Number(limits.reserveFloorCents),
+            floor_headroom_cents: Number(limits.floorHeadroomCents),
+            concentration_cap_cents: Number(limits.concentrationCapCents),
+            principal_exposure_cents: Number(result.facts.principalExposureCents),
+            daily_budget_cents: limits.dailyBudgetCents === null ? null : Number(limits.dailyBudgetCents),
+            daily_budget_used_cents: Number(result.facts.budgetUsedCents),
+          },
+        );
         envelope.next_actions = [{ tool: "get_status", args: {} }];
         return envelope;
       }

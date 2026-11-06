@@ -11,6 +11,7 @@ import { loanOfficerPolicyViolation } from "./policy";
 import { KYA_DESK_PROMPT } from "./prompts/kya_desk";
 import { LOAN_OFFICER_PROMPT } from "./prompts/loan_officer";
 import { RISK_OFFICER_PROMPT } from "./prompts/risk_officer";
+import { TREASURY_OFFICER_PROMPT } from "./prompts/treasury_officer";
 import { redact } from "./redact";
 import { type AiRole, INPUT_SCHEMAS, OUTPUT_JSON_SCHEMAS, OUTPUT_SCHEMAS, type RoleIO } from "./schemas";
 import { TEMPLATES } from "./templates";
@@ -35,6 +36,7 @@ export const PROMPTS: Record<AiRole, string> = {
   kya_desk: KYA_DESK_PROMPT,
   loan_officer: LOAN_OFFICER_PROMPT,
   risk_officer: RISK_OFFICER_PROMPT,
+  treasury_officer: TREASURY_OFFICER_PROMPT,
 };
 
 export type AiErrorCode =

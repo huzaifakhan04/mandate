@@ -13,7 +13,7 @@ export default defineConfig({
     environment: "node",
     globalSetup: ["tests/pg/globalSetup.ts"],
     setupFiles: ["tests/pg/setup.ts"],
-    env: { TEST_PG: "1" },
+    env: { TEST_PG: "1", TREASURY_POLICY_DISABLED: "1" },
     // The real-Postgres-only suites (concurrency with lock-wait proof,
     // migration dry run) plus the WHOLE unit suite re-run on real Postgres
     // — a superset of the money suites (loans, notes, repayments,
