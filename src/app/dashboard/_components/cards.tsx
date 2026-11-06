@@ -38,14 +38,14 @@ export function SummaryStrip({ summary }: { summary: DashboardSummary }) {
   );
 }
 
-/** The tier ring: T0 empty, T1 half, T2 full. */
-function TierRing({ tier }: { tier: 0 | 1 | 2 }) {
+/** The score ring (P3): the Agent Credit Score out of 100, with its grade in the middle. */
+function ScoreRing({ score, grade }: { score: number; grade: string }) {
   const circumference = 2 * Math.PI * 24;
-  const filled = (circumference * tier) / 2;
+  const filled = (circumference * Math.min(Math.max(score, 0), 100)) / 100;
   return (
-    <svg className="tier-ring" viewBox="0 0 58 58" role="img" aria-label={`KYA tier T${tier} of T2`}>
+    <svg className="tier-ring" viewBox="0 0 58 58" role="img" aria-label={`Agent Credit Score ${score} of 100, grade ${grade}`}>
       <circle cx="29" cy="29" r="24" fill="none" stroke="#EEF0F3" strokeWidth="6" />
-      {tier > 0 ? (
+      {score > 0 ? (
         <circle
           cx="29"
           cy="29"
@@ -58,8 +58,11 @@ function TierRing({ tier }: { tier: 0 | 1 | 2 }) {
           transform="rotate(-90 29 29)"
         />
       ) : null}
-      <text x="29" y="34" textAnchor="middle" fontSize="15" fontWeight="700" fill="var(--ink)">
-        T{tier}
+      <text x="29" y="28" textAnchor="middle" fontSize="15" fontWeight="700" fill="var(--ink)">
+        {score}
+      </text>
+      <text x="29" y="41" textAnchor="middle" fontSize="9" fontWeight="600" fill="var(--muted)">
+        {grade}
       </text>
     </svg>
   );
@@ -118,10 +121,18 @@ export function AgentCard({ agent, selected }: { agent: AgentCardView; selected:
     <article className={`card${selected ? " sel" : ""}`} data-testid="agent-card" data-agent-id={agent.id}>
       {head}
       <div className="score">
-        <TierRing tier={agent.tier.tier} />
+        <ScoreRing score={agent.credit.score} grade={agent.credit.grade} />
         <div className="kv num">
+          <span>Credit score</span>
+          <b data-testid="card-score">
+            {agent.credit.score} · <span data-testid="card-grade">{agent.credit.grade}</span>
+          </b>
           <span>KYA tier</span>
-          <b data-testid="card-tier">T{agent.tier.tier}</b>
+          <b>
+            <Pill tone={agent.tier.tier === 0 ? "warn" : agent.tier.tier === 1 ? "blue" : "ok"} label={`KYA tier T${agent.tier.tier}`}>
+              <span data-testid="card-tier">T{agent.tier.tier}</span>
+            </Pill>
+          </b>
           <span>Per-loan cap</span>
           <b data-testid="card-cap">{formatCents(agent.perLoanCapCents)}</b>
         </div>

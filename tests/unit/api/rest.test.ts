@@ -210,7 +210,11 @@ describe("M2: GET parses query params into the tool's input", () => {
     );
     const body = await res.json();
     expect(res.status).toBe(200);
-    expect(body.data.quote.fee_cents).toBe(15);
+    // Parsed as numbers: 1000 / 7 are in range. A fresh unclaimed agent is grade E, so no quote (P3 Task 2).
+    expect(body.data.reasons).not.toContain("amount_out_of_range");
+    expect(body.data.reasons).not.toContain("term_out_of_range");
+    expect(body.data.reasons).toContain("insufficient_credit_history");
+    expect(body.data.quote).toBeNull();
   });
 
   it("does not coerce non-integer strings (the schema still rejects them)", async () => {

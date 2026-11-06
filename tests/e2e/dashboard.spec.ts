@@ -114,6 +114,8 @@ for (const width of [1280, 390]) {
     const card = page.getByTestId("agent-card").filter({ hasText: `Nova ${width}` });
     await expect(card.getByText("Active", { exact: true })).toBeVisible();
     await expect(card.getByTestId("card-tier")).toHaveText("T1");
+    // P3: the ring shows the Agent Credit Score — claimed (10) + nothing owed (10) = 20, grade E.
+    await expect(card.getByTestId("card-score")).toHaveText("20 · E");
     await expect(card.getByTestId("card-cap")).toHaveText("$250.00");
     await expect(page.getByTestId("stat-ceiling")).toContainText("$500.00");
     await expect(page.getByTestId("stat-active")).toContainText("1 / 1");

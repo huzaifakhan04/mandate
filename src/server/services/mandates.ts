@@ -107,6 +107,24 @@ export interface MandateCheck {
 }
 
 /**
+ * The agent's mandate in force at `now` (its current signed row, owned by
+ * the agent's principal and not expired) and that principal's exposure
+ * across all their agents; `{ mandate: null, exposureCents: 0n }` without
+ * one. Shared by `checkAgentMandate` and underwriting (`services/loans.ts`).
+ */
+export async function resolveCurrentMandate(
+  db: Db,
+  worldId: string,
+  agent: { id: string; principalId: string | null },
+  now: Date = new Date(),
+): Promise<{ mandate: MandateRow | null; exposureCents: bigint }> {
+  const row = await currentMandateRow(db, worldId, agent.id, agent.principalId);
+  const mandate = row && isCurrentMandate(row, agent.principalId, now) ? row : null;
+  const exposureCents = mandate ? await principalExposure(db, worldId, mandate.principalId) : 0n;
+  return { mandate, exposureCents };
+}
+
+/**
  * The full limit check for `agentId`'s offer: the current mandate (at
  * `now`), the principal's exposure and the tier's per-loan cap. Callers
  * that need it consistent with concurrent acceptances hold the note
@@ -120,9 +138,7 @@ export async function checkAgentMandate(
   offer: Omit<MandateOffer, "collateral"> & { collateral: MandateOffer["collateral"] | null },
   now: Date = new Date(),
 ): Promise<MandateCheck> {
-  const row = await currentMandateRow(db, worldId, agent.id, agent.principalId);
-  const mandate = row && isCurrentMandate(row, agent.principalId, now) ? row : null;
-  const exposureCents = mandate ? await principalExposure(db, worldId, mandate.principalId) : 0n;
+  const { mandate, exposureCents } = await resolveCurrentMandate(db, worldId, agent, now);
   // Without a collateral kind (check_eligibility) the collateral rule is skipped.
   const reasons: Array<MandateReason | TierReason> = checkMandate(
     mandate ? mandateLimits(mandate) : null,

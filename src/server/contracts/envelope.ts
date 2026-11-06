@@ -112,6 +112,8 @@ const STATUS_HTTP: Record<string, number> = {
   // P2 Task 4 (mandates): accept_offer re-checks the mandate the offer was made under.
   MANDATE_REVOKED: 409,
   MANDATE_LIMIT: 400,
+  // P3 Task 4 (ALA G): apply_for_loan named a mandate version that is no longer current.
+  MANDATE_CHANGED: 409,
   // P2 Task 3 (Ed25519 request signing).
   SIGNATURE_REQUIRED: 401,
   SIGNATURE_INVALID: 401,

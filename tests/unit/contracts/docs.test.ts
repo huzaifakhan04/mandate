@@ -4,6 +4,7 @@ import { GET as agentsMdGet } from "@/app/agents.md/route";
 import { GET as llmsTxtGet } from "@/app/llms.txt/route";
 import { exampleForSchema, renderAgentsMd, renderLlmsTxt } from "@/server/contracts/docs";
 import { knownStatusTable } from "@/server/contracts/envelope";
+import { REASON_PRIORITY, REASON_TEXT } from "@/server/domain/reasons";
 import { registry } from "@/server/contracts/registry";
 import "@/server/contracts/tools";
 
@@ -79,6 +80,46 @@ describe("renderAgentsMd", () => {
     expect(md).toContain("7–30 day");
     expect(md).toContain("not FDIC-insured");
     expect(md).toContain("80%");
+  });
+
+  it("documents the ALA application A–H with an example, adverse action and get_application (P3 Task 4)", () => {
+    expect(md).toContain("## Applying for a loan");
+    for (const field of ["identity", "declarations", "no_other_debt", "consent_bank_records", "mandate_version", "attest"]) {
+      expect(md).toContain(field);
+    }
+    expect(md).toContain('"attest": true');
+    expect(md).toContain("adverse_action");
+    expect(md).toContain("declaration_missing");
+    expect(md).toContain("MANDATE_CHANGED");
+    expect(md).toContain("### `get_application`");
+  });
+
+  it("documents scoring, grades and limits, the newcomer path, pricing v2 with the worked example (P3 Task 5)", () => {
+    expect(md).toContain("## Credit score and underwriting");
+    for (const component of ["Identity", "Repayment history", "Tenure", "Collateral", "Exposure"]) {
+      expect(md).toContain(`| ${component} |`);
+    }
+    expect(md).toContain("| A | 80–100 | 50000 |");
+    expect(md).toContain("| D | 35–49 | 10000 | auto-approved up to 5000 cents");
+    expect(md).toContain("| E | 0–34 | 0 |");
+    expect(md).toContain("### The newcomer path");
+    expect(md).toMatch(/unsecured\*\* first loan scores 20 \(grade E\)/);
+    expect(md).toContain("40, grade D");
+    // The 1000/7d newcomer against a 1500 invoice: 8 + 420 + 50 + 96 = 574 bps → fee 58, remainder 442.
+    expect(md).toContain("| **total** | **574** |");
+    expect(md).toContain("**58 cents** ($0.58)");
+    expect(md).toContain("remaining $4.42");
+  });
+
+  it("documents every reason code with its fixed text, adverse action and that AI explanations are advisory", () => {
+    for (const code of REASON_PRIORITY) {
+      expect(md).toContain(`| \`${code}\` | ${REASON_TEXT[code]} |`);
+    }
+    expect(md).toContain("### AI explanations are advisory");
+    expect(md).toContain("Decisions are deterministic");
+    expect(md).toContain("adverse_action.reasons[].text");
+    expect(md).toContain("right to a statement of specific reasons");
+    expect(md).toContain('"mandate_version": 1');
   });
 
   it("is deterministic for the same registry and base URL", () => {

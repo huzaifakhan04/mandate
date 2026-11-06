@@ -10,6 +10,13 @@ import { signedRequestFrom } from "@/server/auth/signatures";
 import "@/server/contracts/tools";
 import { getDb as defaultGetDb, type Db } from "@/server/db/client";
 
+/**
+ * P3 final review I3: a tool's after-commit `finalize` (e.g. the loan
+ * officer narrative, up to a 12 s budget) and a PayPal call can run in
+ * one request; give the function room beyond the platform default.
+ */
+export const maxDuration = 60;
+
 type RouteParams = { params: Promise<{ tool: string }> };
 
 export interface RestHandlerDeps {

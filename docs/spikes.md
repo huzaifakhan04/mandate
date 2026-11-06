@@ -172,6 +172,32 @@ by any of these calls today, but `payout.send`/`payout.get` and
   data is available. Set in `.env.local` and Vercel (all three
   environments).
 
+## g. ai-roles (`scripts/spikes/ai-roles.ts`, P3 Task 3, 2026-11-06)
+
+- Command: `npx tsx --env-file=.env.local scripts/spikes/ai-roles.ts` — one
+  real Responses API call per role through `runRole` (strict
+  `json_schema` structured output, `store: false`, no retries, 20 s
+  timeout), logged to `ai_runs` in an in-memory PGlite db (never Neon).
+- Results (one run each; all schema-valid and within policy, so
+  `fallback_used = false`):
+
+  | Role | Model | Latency | Tokens in / out |
+  |---|---|---|---|
+  | kya_desk | `gpt-5.4-nano` (`OPENAI_MODEL_CHECK`) | 4.3 s | 305 / 71 |
+  | loan_officer | `gpt-6-astra` (`OPENAI_MODEL_UNDERWRITER`) | 7.7 s | 571 / 156 |
+  | risk_officer | `gpt-6-astra` (`OPENAI_MODEL_UNDERWRITER`) | 4.9 s | 356 / 207 |
+
+- Cost: well under 1k tokens per call, ~1.7k tokens for a full
+  application (loan + risk officer). The API returns usage, not prices;
+  per-token prices for these ids aren't exposed by `/v1/models`, so cost
+  is tracked as tokens in `ai_runs.tokens_in/out`.
+- Latency 4–8 s is well inside the 20 s timeout but too slow for the
+  request path — confirms the design: AI runs after commit (`finalize` /
+  `after()`), with the deterministic template as fallback.
+- Output quality: the loan officer reused exactly the two input reasons in
+  order; the KYA desk flagged a kind/file-name mismatch as `needs_info`
+  (advisory only — the P2 auto-review stays authoritative).
+
 ## Webhook registration
 
 - `POST /v1/notifications/webhooks` with `url =

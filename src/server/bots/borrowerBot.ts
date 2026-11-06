@@ -5,7 +5,6 @@ import type { Db } from "../db/client";
 import { loans, repaymentLinks } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
-import { price } from "../domain/pricing";
 import { simApprove } from "../rail/simHandler";
 import { settleCheckoutByOrderId } from "../services/checkouts";
 import { botCall, dataOf, type BotAction } from "./act";
@@ -14,7 +13,7 @@ import { intBetween, pick, rngFor } from "./rng";
 
 /**
  * P2 Task 6: a borrower bot. With no open loan it applies for an
- * invoice-backed loan (2000–15000 cents, 7–21 days) and accepts the
+ * invoice-backed loan (2000–5000 cents against a ≥ 1.5× invoice, 7–21 days) and accepts the
  * offer — the same `apply_for_loan` / `accept_offer` tools, tier gate and
  * mandate checks any agent goes through. Its invoice client then pays the
  * repayment link (sim approve + `settleCheckoutByOrderId`, the same path
@@ -79,10 +78,12 @@ async function maybeClientPays(
 
 /** Applies for a seeded loan and accepts the offer. */
 async function applyAndAccept(db: Db, rng: () => number, bot: BotRef): Promise<BotAction[]> {
-  const amountCents = intBetween(rng, 20, 150) * 100;
+  // P3 (Ruling P3-A): a new borrower is grade D at best, which auto-approves
+  // up to 5000 cents, and only with an invoice covering ≥ 1.5× (collateral
+  // 20 points). So the bots borrow 2000–5000 against a 1.5×+ invoice.
+  const amountCents = intBetween(rng, 20, 50) * 100;
   const termDays = intBetween(rng, 7, 21);
-  const feeCents = Number(price(BigInt(amountCents), termDays).feeCents);
-  const invoiceCents = amountCents + feeCents + intBetween(rng, 0, 20) * 100;
+  const invoiceCents = (amountCents * 3) / 2 + intBetween(rng, 0, 20) * 100;
   const client = pick(rng, CLIENTS);
   const applied = await botCall(db, bot.id, "apply_for_loan", {
     amount_cents: amountCents,
@@ -94,6 +95,9 @@ async function applyAndAccept(db: Db, rng: () => number, bot: BotRef): Promise<B
       due_in_days: termDays,
       description: `Invoice to ${client}`,
     },
+    // ALA sections E and H (P3 Task 4): required, else declaration_missing.
+    declarations: { no_other_debt: true },
+    attest: true,
   });
   const actions: BotAction[] = [{ bot: bot.name, action: "apply_for_loan", amountCents, status: applied.status }];
   if (applied.status !== "OFFERED") {

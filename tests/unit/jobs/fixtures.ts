@@ -10,6 +10,7 @@ import { agents, apiKeys, journalEntries, loans, repaymentLinks } from "@/server
 import { simApprove } from "@/server/rail/simHandler";
 import { createWorld } from "@/server/services/worlds";
 import { claimAndMandate } from "../../helpers/kya";
+import { withAlaDefaults } from "../../helpers/world";
 
 /**
  * Shared Task 8 fixtures (sim rail): worlds, agents, a funded pool, and
@@ -51,7 +52,7 @@ export async function createTestAgent(
 }
 
 export async function call(db: Db, toolName: string, key: string, input: Record<string, unknown>) {
-  return runTool(findTool(toolName), toolName, input, { getDb: async () => db, authorization: `Bearer ${key}` });
+  return runTool(findTool(toolName), toolName, withAlaDefaults(toolName, input), { getDb: async () => db, authorization: `Bearer ${key}` });
 }
 
 /** A lender buys `amountCents` of notes and confirms it (the pool is funded). */
@@ -81,8 +82,8 @@ export const INVOICE = {
 };
 
 /**
- * Borrower takes 25000 for 14 days (fee 750), with or without the 40000
- * invoice. A receiver containing "pending" leaves the loan DISBURSING
+ * Borrower takes 25000 for 14 days (P3 pricing v2, grade A: fee 270 with the
+ * 40000 invoice, 333 without), with or without the 40000 invoice. A receiver containing "pending" leaves the loan DISBURSING
  * (live-shaped payout: no item in the send response).
  */
 export async function borrow(

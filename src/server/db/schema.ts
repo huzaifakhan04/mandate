@@ -94,11 +94,21 @@ export const aiRuns = pgTable("ai_runs", {
     .references(() => worlds.id),
   role: text("role").notNull(),
   model: text("model").notNull(),
+  /** sha256 of the role's system prompt + output schema (the prompt version). */
   promptHash: text("prompt_hash").notNull(),
+  /** Legacy P0 column; P3 uses `subject`. */
   inputRef: text("input_ref"),
+  /** sha256 of the redacted, allowlisted input actually sent (P3 Task 3). */
+  inputHash: text("input_hash"),
+  /** What the run is about: an application id or a KYA document id. */
+  subject: text("subject"),
   output: jsonb("output"),
   latencyMs: integer("latency_ms"),
+  tokensIn: integer("tokens_in"),
+  tokensOut: integer("tokens_out"),
   fallbackUsed: boolean("fallback_used").notNull().default(false),
+  /** Why the template was used: disabled, timeout, http_<status>, request_failed, invalid_json, schema_violation, policy_violation. */
+  errorCode: text("error_code"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -242,6 +252,12 @@ export const agents = pgTable("agents", {
   payoutReceiverType: text("payout_receiver_type"),
   /** P2 Task 6: a seeded private-world bot (operator "Mandate bots", model "simulated"); acts only via the bot runner. */
   isBot: boolean("is_bot").notNull().default(false),
+  /**
+   * P3 Task 1: the world's sim time at registration (score tenure). Null on
+   * rows inserted outside `registerAgent` / the bot seeder; the scorecard
+   * then falls back to `created_at`.
+   */
+  registeredSimAt: timestamp("registered_sim_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -287,6 +303,10 @@ export const kyaDocuments = pgTable("kya_documents", {
   fileName: text("file_name"),
   aiReview: jsonb("ai_review"),
   reviewStatus: text("review_status").notNull().default("pending"),
+  /** P3 Task 4: the KYA desk's advisory verdict (approve | needs_info | reject); `review_status` stays authoritative. */
+  aiVerdict: text("ai_verdict"),
+  /** P3 Task 4: the KYA desk's findings (plain text, URLs stripped, ≤ 200 chars each). */
+  aiFindings: jsonb("ai_findings"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -411,6 +431,11 @@ export const applications = pgTable("applications", {
   decision: text("decision"),
   reasonCodes: text("reason_codes").array(),
   scorecard: jsonb("scorecard"),
+  /** P3 Task 4: the adverse-action notice of a DECLINED application (reasons, score, notice, explanation). */
+  adverseAction: jsonb("adverse_action"),
+  /** P3 Task 4: the after-commit narrative — explanation (loan officer), memo (risk officer), ai_run ids. */
+  narrative: jsonb("narrative"),
+  /** The loan officer's `ai_runs` row for this application (P3 Task 4). */
   aiRunId: uuid("ai_run_id").references(() => aiRuns.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
@@ -827,11 +852,18 @@ export const creditScores = pgTable("credit_scores", {
   score: integer("score").notNull(),
   grade: text("grade"),
   limitCents: bigint("limit_cents", { mode: "bigint" }).notNull().default(sql`0`),
+  /** P3 Task 1: `{identity, history, tenure, collateral, exposure}` points. */
+  components: jsonb("components"),
+  /** P3 Task 1: the top-3 human-readable score factors. */
+  factors: jsonb("factors"),
   updatedSimAt: timestamp("updated_sim_at", { withTimezone: true }).notNull(),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  // P3 Task 1: one current score per subject (score_history keeps the trail).
+  uniqueIndex("credit_scores_subject_idx").on(table.worldId, table.subjectType, table.subjectId),
+]);
 
 export const scoreHistory = pgTable("score_history", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -843,6 +875,13 @@ export const scoreHistory = pgTable("score_history", {
   delta: integer("delta").notNull(),
   reasonCode: text("reason_code").notNull(),
   sourceEventId: uuid("source_event_id").references(() => events.id),
+  /** P3 Task 1: the score recorded, its grade and component breakdown. */
+  score: integer("score"),
+  grade: text("grade"),
+  components: jsonb("components"),
+  /** P3 Task 1: the application this score was recorded for (if any). */
+  applicationId: uuid("application_id").references(() => applications.id),
+  simAt: timestamp("sim_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),

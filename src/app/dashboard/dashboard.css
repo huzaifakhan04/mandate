@@ -192,6 +192,7 @@
 .dash .doclist li > div { flex: 1; min-width: 0; }
 .dash .doclist b { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
 .dash .doclist small { color: var(--faint); font-size: 11px; }
+.dash .doclist .ai-review { display: block; margin-top: 4px; }
 .dash .upload { display: grid; gap: 8px; }
 .dash .upload .row { display: flex; gap: 8px; flex-wrap: wrap; }
 .dash .upload select { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; font: inherit; font-size: 13px; background: #fff; color: var(--ink); }

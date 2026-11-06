@@ -3,8 +3,10 @@ import { z } from "zod";
 import { ok, type NextAction } from "../envelope";
 import { blockerInstruction, blockerNextActions } from "../kyaActions";
 import { defineTool } from "../registry";
-import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleArgs";
+import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS, SAMPLE_INVOICE_BACKED_CHECK_ARGS } from "../sampleArgs";
 import { getAgentStatus } from "../../services/agents";
+import { scoreAgent } from "../../services/credit";
+import { creditSchema, creditView } from "../credit";
 
 const outputSchema = z.object({
   agent: z.object({
@@ -40,6 +42,8 @@ const outputSchema = z.object({
     next_tier_requirements: z.array(z.string()),
     tier_max_per_loan_cents: z.number(),
   }),
+  /** Your Agent Credit Score (0–100), grade A–E, grade limit and the top 3 factors (no collateral without an application). */
+  credit: creditSchema,
   sim_now: z.string(),
 });
 
@@ -49,7 +53,8 @@ export const getStatusTool = defineTool({
   description:
     "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url " +
     "to give your human while you are unclaimed), note and payable balances, any open loan, " +
-    "lending limits, and the current simulated time. Call it any time to decide what to do " +
+    "lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), " +
+    "and the current simulated time. Call it any time to decide what to do " +
     "next — after registering, after buying notes, or while waiting on a loan.",
   auth: "agent",
   mutating: false,
@@ -62,6 +67,7 @@ export const getStatusTool = defineTool({
     }
 
     const status = await getAgentStatus(ctx.db, ctx.worldId, ctx.agentId);
+    const credit = await scoreAgent(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow);
 
     const data = {
       agent: {
@@ -98,10 +104,15 @@ export const getStatusTool = defineTool({
         next_tier_requirements: status.kya.tier.nextTierRequirements,
         tier_max_per_loan_cents: status.kya.tier.maxPerLoanCents,
       },
+      credit: creditView(credit),
       sim_now: ctx.simNow.toISOString(),
     };
     const blockers = status.kya.tier.borrowBlockers;
     const claimUrl = status.kya.claimLink?.url ?? null;
+
+    // I2: with no repayment history an unsecured loan is grade E; the sample is the invoice-backed newcomer loan.
+    const sampleCheck =
+      credit.components.history === 0 ? { ...SAMPLE_INVOICE_BACKED_CHECK_ARGS } : { ...SAMPLE_CHECK_ELIGIBILITY_ARGS };
 
     let nextActions: NextAction[];
     if (status.openLoan) {
@@ -115,11 +126,11 @@ export const getStatusTool = defineTool({
     } else if (status.balances.notesCents === 0n) {
       nextActions = [
         { tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } },
-        { tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } },
+        { tool: "check_eligibility", args: sampleCheck },
       ];
     } else {
       // Has notes but no open loan: nothing mandates buying more.
-      nextActions = [{ tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } }];
+      nextActions = [{ tool: "check_eligibility", args: sampleCheck }];
     }
 
     const tierText = blockers.length > 0
@@ -127,7 +138,9 @@ export const getStatusTool = defineTool({
       : `tier ${data.kya.tier} (can lend and borrow).`;
     return ok(data, {
       status: "OK",
-      summary: `Agent ${status.agent.name} is ${data.agent.status} at ${tierText}`,
+      summary:
+        `Agent ${status.agent.name} is ${data.agent.status} at ${tierText} ` +
+        `Agent Credit Score ${credit.score} (grade ${credit.grade}).`,
       next_actions: nextActions,
     });
   },

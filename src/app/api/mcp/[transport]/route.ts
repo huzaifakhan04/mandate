@@ -10,6 +10,13 @@ import "@/server/contracts/tools";
 import { getDb } from "@/server/db/client";
 
 /**
+ * P3 final review I3: a tool's after-commit `finalize` (e.g. the loan
+ * officer narrative, up to a 12 s budget) and a PayPal call can run in
+ * one request; give the function room beyond the platform default.
+ */
+export const maxDuration = 60;
+
+/**
  * One MCP tool per registry entry. Dispatch goes through the same
  * `runTool` the REST route uses, so unknown-tool/invalid-input/unexpected
  * errors are handled identically: the envelope is always returned (never a

@@ -73,14 +73,20 @@ describe("dashboard read model (P2 Task 5)", () => {
     expect(dash.agents.map((card) => card.id)).not.toContain(stranger.agentId);
     expect(dash.agents.map((card) => card.id)).not.toContain(lender.agentId);
     // Owed = a's one loan at its outstanding (10000 + fee); the stranger's loan doesn't count.
-    expect(dash.summary.owedCents).toBe(10150n);
+    expect(dash.summary.owedCents).toBe(10126n);
     expect(dash.summary.mandateCeilingCents).toBe(60000n);
     expect(dash.summary).toMatchObject({ activeAgents: 1, totalAgents: 2 });
 
     const cardA = dash.agents.find((card) => card.id === a.agentId)!;
     expect(cardA).toMatchObject({ display: "active", perLoanCapCents: 25000n, hasSigningKey: false });
     expect(cardA.tier.tier).toBe(1);
-    expect(cardA.openLoan).toMatchObject({ status: "active", principalCents: 10000n, termDays: 7, outstandingCents: 10150n });
+    // P3 Task 1: the card carries the Agent Credit Score (ring + grade). `a` has the
+    // helper's established (grade A) test credit file, so it could borrow 10000 unsecured.
+    expect(cardA.credit.components).toMatchObject({ identity: 25, history: 35, collateral: 0 });
+    expect(cardA.credit.grade).toBe("A");
+    expect(cardA.credit.score).toBe(Object.values(cardA.credit.components).reduce((sum, points) => sum + points, 0));
+    expect(cardA.credit.factors).toHaveLength(3);
+    expect(cardA.openLoan).toMatchObject({ status: "active", principalCents: 10000n, termDays: 7, outstandingCents: 10126n });
     const cardB = dash.agents.find((card) => card.id === b.agentId)!;
     expect(cardB).toMatchObject({ display: "pending", perLoanCapCents: 0n, mandate: null, openLoan: null });
 
@@ -100,6 +106,7 @@ describe("dashboard read model (P2 Task 5)", () => {
 
     const detail = (await agentDetail(db, a.principalId, a.agentId))!;
     expect(detail.tier.tier).toBe(2);
+    expect(detail.credit.components.identity).toBe(25);
     expect(detail.currentMandate).toMatchObject({ version: 1, status: "signed" });
     expect(detail.mandateHistory.map((m) => m.version)).toEqual([1]);
     expect(detail.documents).toHaveLength(1);
@@ -110,7 +117,7 @@ describe("dashboard read model (P2 Task 5)", () => {
     );
     expect(detail.apiKey!.prefix).toBe(a.key.split("_")[1]);
     expect(detail.loans).toHaveLength(1);
-    expect(detail.loans[0]).toMatchObject({ principalCents: 10000n, feeCents: 150n, totalDueCents: 10150n, collateral: "none" });
+    expect(detail.loans[0]).toMatchObject({ principalCents: 10000n, feeCents: 126n, totalDueCents: 10126n, collateral: "none" });
     expect(detail.loans[0]!.dayOfTerm).toBe(0);
     const types = detail.events.map((event) => event.type);
     expect(types).toEqual(expect.arrayContaining(["mandate.signed", "loan.offered", "loan.accepted"]));

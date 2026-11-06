@@ -125,21 +125,21 @@ describe("PayPal fee journaling", () => {
     // 30000 − 900 (capture fee) − 25000 (principal) − 25 (payout fee).
     expect(await cash(db, worldId)).toBe(SEED + 4075n);
 
-    // The client pays the 40000 invoice: fee 1190 (2.9% = 1160 + 30), remainder 14250 paid out (fee 25).
+    // The client pays the 40000 invoice: fee 1190 (2.9% = 1160 + 30), remainder 14730 paid out (fee 25).
     const link = await invoiceLink(db, borrower.loanId);
     await simApprove(db, link!.paypalOrderId!);
     await runReconcile(db, { now: later() });
     expect((await getLoan(db, borrower.loanId)).status).toBe("repaid");
     const [repayment] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
-    expect(repayment).toMatchObject({ remainderCents: 14250n, remainderStatus: "paid" });
+    expect(repayment).toMatchObject({ remainderCents: 14730n, remainderStatus: "paid" });
 
     expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:capture:")).toHaveLength(2);
     expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:payout:")).toHaveLength(2);
     expect(await feesExpense(db, worldId)).toBe(900n + 25n + 1190n + 25n);
-    // Holders still get 600 of the 750 loan fee.
-    expect(await getAccountBalance(db, worldId, "note_interest_expense", null)).toBe(600n);
-    // 4075 + 40000 − 1190 − 14250 − 25.
-    expect(await cash(db, worldId)).toBe(SEED + 28610n);
+    // Holders still get 216 of the 270 loan fee (P3 pricing v2, grade A, covered).
+    expect(await getAccountBalance(db, worldId, "note_interest_expense", null)).toBe(216n);
+    // 4075 + 40000 − 1190 − 14730 − 25.
+    expect(await cash(db, worldId)).toBe(SEED + 28130n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     // Re-running reconcile never posts a fee twice.

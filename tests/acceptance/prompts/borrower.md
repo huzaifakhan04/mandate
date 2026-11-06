@@ -6,6 +6,8 @@ The invoice: your client ({{CLIENT_EMAIL}}) owes you $15.00 for invoice INV-{{RU
 
 Your PayPal account id is {{PAYOUT_ID}}.
 
+You have no other outstanding debts, and everything you tell the bank about yourself and this invoice is accurate — you may declare and attest both when you apply.
+
 Start by reading {{BASE}}/agents.md. You can talk to the bank through your `mandate` MCP tools.
 
 Your MCP connection has no API key yet. As soon as you have one, print it on its own line, exactly like this, and then stop:

@@ -145,7 +145,7 @@ describe("mandates (P2 Task 4)", () => {
       const status = await call(db, "get_status", agent.key, {});
       expect(status.envelope.data).toMatchObject({ kya: { tier: 0, can_borrow: false, borrow_blockers: ["mandate_missing"] } });
       const [loan] = await db.select().from(loans).where(eq(loans.agentId, agent.agentId));
-      expect(loan).toMatchObject({ status: "active", outstandingCents: 10150n });
+      expect(loan).toMatchObject({ status: "active", outstandingCents: 10126n });
     });
   });
 
@@ -173,9 +173,9 @@ describe("mandates (P2 Task 4)", () => {
     });
 
     it("mandate_fee (fee as bps of the principal)", async () => {
-      // 10000 for 7 days → fee 150 = 150 bps.
-      await expectDeclined({ maxFeeBps: 149 }, {}, ["mandate_fee"]);
-      const ok = await createTestAgent(db, worldId, "ok@example.com", { limits: { maxFeeBps: 150 } });
+      // 10000 for 7 days at grade A, unsecured (P3 pricing v2): 8 + 60 + 50 + 8 = 126 bps → fee 126.
+      await expectDeclined({ maxFeeBps: 125 }, {}, ["mandate_fee"]);
+      const ok = await createTestAgent(db, worldId, "ok@example.com", { limits: { maxFeeBps: 126 } });
       expect((await call(db, "apply_for_loan", ok.key, APPLY)).envelope.status).toBe("OFFERED");
     });
 
@@ -249,7 +249,7 @@ describe("mandates (P2 Task 4)", () => {
       });
       const offer = (await call(db, "apply_for_loan", a.key, APPLY)).envelope.data as Data;
       await call(db, "accept_offer", a.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash });
-      expect(await principalExposure(db, worldId, a.principalId)).toBe(10150n);
+      expect(await principalExposure(db, worldId, a.principalId)).toBe(10126n);
 
       const check = await call(db, "check_eligibility", b.key, { amount_cents: 20000, term_days: 7 });
       expect(check.envelope.data).toMatchObject({
@@ -264,8 +264,8 @@ describe("mandates (P2 Task 4)", () => {
           max_term_days: 365,
           eligible_collateral: ["invoice_link", "none"],
           expires_at: null,
-          principal_total_owed_cents: 10150,
-          total_owed_headroom_cents: 19850,
+          principal_total_owed_cents: 10126,
+          total_owed_headroom_cents: 19874,
           per_loan_cap_cents: 20000,
         },
       });
@@ -320,7 +320,7 @@ describe("mandates (P2 Task 4)", () => {
         principalId: a.principalId,
         limits: { maxTotalOwedCents: 15000n },
       });
-      // Both offers fit on their own (10150 ≤ 15000); together they don't.
+      // Both offers fit on their own (10126 ≤ 15000); together they don't.
       const offerA = (await call(db, "apply_for_loan", a.key, APPLY)).envelope.data as Data;
       const offerB = (await call(db, "apply_for_loan", b.key, APPLY)).envelope.data as Data;
       expect(offerB.offer_id).toBeDefined();
@@ -330,7 +330,7 @@ describe("mandates (P2 Task 4)", () => {
       const acceptB = await call(db, "accept_offer", b.key, { offer_id: offerB.offer_id, disclosure_hash: offerB.disclosure_hash });
       expect(acceptB.httpStatus).toBe(400);
       expect(acceptB.envelope).toMatchObject({ status: "MANDATE_LIMIT", reason_codes: ["mandate_total_owed"] });
-      expect(acceptB.envelope.data).toMatchObject({ principal_total_owed_cents: 10150, max_total_owed_cents: 15000 });
+      expect(acceptB.envelope.data).toMatchObject({ principal_total_owed_cents: 10126, max_total_owed_cents: 15000 });
       expect(await db.select().from(loans).where(eq(loans.agentId, b.agentId))).toEqual([]);
     });
 
@@ -362,7 +362,7 @@ describe("mandates (P2 Task 4)", () => {
       expect(accepted.envelope.status).toBe("DISBURSING");
       const [loan] = await db.select().from(loans).where(eq(loans.agentId, a.agentId));
       expect(loan).toMatchObject({ status: "disbursing", outstandingCents: 0n });
-      expect(await principalExposure(db, worldId, a.principalId)).toBe(10150n);
+      expect(await principalExposure(db, worldId, a.principalId)).toBe(10126n);
 
       // …and it counts against the principal's other agents.
       const b = await createTestAgent(db, worldId, "b@example.com", {

@@ -4,6 +4,7 @@ import { and, eq, inArray } from "drizzle-orm";
 
 import type { GeneratedApiKey } from "../auth/apiKeys";
 import { generateApiKey } from "../auth/apiKeys";
+import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { agents, apiKeys, loans } from "../db/schema";
 import { scoped } from "../db/scoped";
@@ -86,6 +87,8 @@ export async function registerAgent(
     payoutReceiver: input.payoutEmail ?? input.payoutPaypalId,
     payoutReceiverType: input.payoutEmail ? "email" : "paypal_id",
     ...claim.columns,
+    // P3 Task 1: score tenure counts sim days from here.
+    registeredSimAt: await getSimNow(tx, worldId, now),
   });
   if (!agent) {
     throw new Error("Expected an agent row to be inserted");

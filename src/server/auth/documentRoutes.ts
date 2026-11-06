@@ -7,6 +7,7 @@ import {
   uploadKyaDocument,
   type KyaDocumentSummary,
 } from "../services/kyaDocs";
+import { reviewKyaDocument } from "../services/kyaDesk";
 import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
 import { isSameOriginPost } from "./routes";
@@ -95,7 +96,17 @@ const UPLOAD_FAILURES = {
   unsupported_type: [415, "Only PDF, PNG and JPEG files are accepted."],
 } as const;
 
-export function createDocumentHandlers({ getDb }: { getDb: () => Promise<Db> }) {
+export interface DocumentHandlerDeps {
+  getDb: () => Promise<Db>;
+  /**
+   * P3 Task 4: schedules work to run after the response is sent — the app
+   * route passes next/server `after()`; tests collect and run the tasks.
+   * Omitted: nothing is scheduled.
+   */
+  afterResponse?: (task: () => Promise<unknown>) => void;
+}
+
+export function createDocumentHandlers({ getDb, afterResponse }: DocumentHandlerDeps) {
   async function list(request: Request, agentId: string): Promise<Response> {
     const session = principalFromRequest(request);
     if (!session) {
@@ -152,6 +163,9 @@ export function createDocumentHandlers({ getDb }: { getDb: () => Promise<Db> }) 
         const [status, message] = UPLOAD_FAILURES[result.outcome];
         return failure(request, agentId, status, result.outcome, message);
       }
+      // The KYA desk (advisory LLM review) runs after the response; it never throws.
+      const { worldId, id: documentId } = result.document;
+      afterResponse?.(() => reviewKyaDocument(getDb, worldId, documentId));
       return success(request, agentId, 201, "uploaded", { document: toJson(result.document) });
     } catch (err) {
       console.error(`[kya-documents] upload failed: ${err instanceof Error ? err.name : "unknown error"}`);

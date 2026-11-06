@@ -105,7 +105,7 @@ describe("Fix round 1 (I1): a capture stored PENDING is re-observed", () => {
     await runReconcile(db, { now: later(2 * 60_000) });
     const [link] = await db.select().from(repaymentLinks).where(eq(repaymentLinks.paypalOrderId, orderId));
     expect(link?.status).toBe("failed");
-    expect((await getLoan(db, borrower.loanId)).outstandingCents).toBe(25750n);
+    expect((await getLoan(db, borrower.loanId)).outstandingCents).toBe(25333n);
     expect(await journalsWithKeyPrefix(db, worldId, "repayment_capture:")).toHaveLength(0);
   });
 });

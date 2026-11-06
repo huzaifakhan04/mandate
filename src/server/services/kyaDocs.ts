@@ -51,6 +51,7 @@ function sanitizeFileName(name: string | null | undefined): string {
 /** A document's metadata (never its bytes). */
 export interface KyaDocumentSummary {
   id: string;
+  worldId: string;
   agentId: string;
   kind: string;
   fileName: string | null;
@@ -66,6 +67,7 @@ type KyaDocumentRow = typeof kyaDocuments.$inferSelect;
 function summarize(row: KyaDocumentRow): KyaDocumentSummary {
   return {
     id: row.id,
+    worldId: row.worldId,
     agentId: row.agentId,
     kind: row.kind,
     fileName: row.fileName,
@@ -148,6 +150,7 @@ export async function listKyaDocuments(db: Db, principalId: string, agentId: str
     kyaDocuments,
     {
       id: kyaDocuments.id,
+      worldId: kyaDocuments.worldId,
       agentId: kyaDocuments.agentId,
       kind: kyaDocuments.kind,
       fileName: kyaDocuments.fileName,

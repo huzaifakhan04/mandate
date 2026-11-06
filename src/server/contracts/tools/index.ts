@@ -17,6 +17,7 @@ import "./checkEligibility";
 import "./applyForLoan";
 import "./acceptOffer";
 import "./declineOffer";
+import "./getApplication";
 import "./getLoan";
 import "./repayLoan";
 import "./getStatement";

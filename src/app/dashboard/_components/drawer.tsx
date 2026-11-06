@@ -160,7 +160,21 @@ function KyaSection({ agent }: { agent: AgentDetailView }) {
         <dd className="mono">{agent.payoutMasked ?? "—"}</dd>
         <dt>Per-loan cap</dt>
         <dd className="num">{formatCents(agent.perLoanCapCents)}</dd>
+        <dt>Credit score</dt>
+        <dd className="num" data-testid="drawer-score">
+          {agent.credit.score} / 100 · grade {agent.credit.grade} · limit {formatCents(agent.credit.limitCents)}
+        </dd>
       </dl>
+      <ul className="checks" aria-label="Top score factors" data-testid="drawer-score-factors">
+        {agent.credit.factors.map((factor) => (
+          <li key={factor}>
+            <span className="d todo" aria-hidden="true">
+              ·
+            </span>
+            <span>{factor}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -222,7 +236,7 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
                 name="max_fee_pct"
                 inputMode="decimal"
                 required
-                defaultValue={current ? String(current.maxFeeBps / 100) : "5"}
+                defaultValue={current ? String(current.maxFeeBps / 100) : "10"}
                 aria-describedby={describedBy("max_fee_bps") ?? "hint-fee"}
               />
               <span className="after" aria-hidden="true">
@@ -230,7 +244,8 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
               </span>
             </div>
             <span className="hint" id="hint-fee">
-              Of the amount borrowed
+              Of the amount borrowed. New agents start at grade D: invoice-backed loans cost ~5.8% for 7 days; set ≥ 6% or
+              the bank will decline with mandate_fee
             </span>
             {err("max_fee_bps")}
           </div>
@@ -520,6 +535,38 @@ function Tabs({ agent, tab }: { agent: AgentDetailView; tab: DrawerTab }) {
   );
 }
 
+/** P3 Task 4: the adverse-action notices of the latest declined applications (plain text). */
+function DeclinesSection({ agent }: { agent: AgentDetailView }) {
+  if (agent.declines.length === 0) {
+    return null;
+  }
+  return (
+    <section className="ds" id="declines" aria-labelledby="declines-h">
+      <h3 id="declines-h">Recent declines</h3>
+      <ul className="tl" data-testid="declines">
+        {agent.declines.map((decline) => (
+          <li key={decline.id} className="risk">
+            {formatCents(decline.amountCents)} for {decline.termDays} days
+            {decline.grade ? ` · score ${decline.score ?? "?"}, grade ${decline.grade}` : ""}
+            <ul>
+              {decline.reasons.map((reason) => (
+                <li key={reason.code}>{reason.text}</li>
+              ))}
+            </ul>
+            {decline.explanation ? <small>{decline.explanation}</small> : null}
+            <small>{formatDateTime(decline.createdAt)}</small>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** The KYA desk's findings as plain text (React escapes it; URLs were stripped before storing). */
+function aiFindingsText(findings: unknown): string {
+  return Array.isArray(findings) ? findings.filter((f): f is string => typeof f === "string").join(" · ") : "";
+}
+
 function DocumentsSection({ agent }: { agent: AgentDetailView }) {
   return (
     <section className="ds" id="documents" aria-labelledby="docs-h">
@@ -534,6 +581,14 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
                   {DOC_KIND_LABEL[doc.kind] ?? doc.kind} · {doc.sizeBytes ? `${Math.max(1, Math.round(doc.sizeBytes / 1024))} KB` : ""} ·{" "}
                   {formatDate(doc.createdAt)}
                 </small>
+                {doc.aiVerdict ? (
+                  <small className="ai-review" data-testid="ai-review" title={aiFindingsText(doc.aiFindings)}>
+                    <Pill tone={doc.aiVerdict === "approve" ? "ok" : doc.aiVerdict === "reject" ? "risk" : "warn"}>
+                      AI review: {doc.aiVerdict}
+                    </Pill>{" "}
+                    advisory
+                  </small>
+                ) : null}
               </div>
               <Pill tone={doc.reviewStatus === "approved" ? "ok" : doc.reviewStatus === "rejected" ? "risk" : "warn"}>
                 {doc.reviewStatus}
@@ -680,6 +735,7 @@ export function AgentDrawer({
       <KyaSection agent={agent} />
       <MandateSection agent={agent} params={params} />
       <Tabs agent={agent} tab={tab} />
+      <DeclinesSection agent={agent} />
       <DocumentsSection agent={agent} />
       <KeysSection agent={agent} />
       <div className="legal">{LEGAL}</div>

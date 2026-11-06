@@ -17,6 +17,31 @@
  */
 import { z } from "zod";
 
+import { PRICING_LIMITS } from "../domain/pricing";
+import {
+  APR_FLAG_THRESHOLD_BPS,
+  BASE_RATE_BPS,
+  CAPITAL_PCT_OF_PD_BPS,
+  LGD_BPS,
+  MIN_FEE_CENTS,
+  OPS_BPS,
+  PD_BPS,
+  priceLoan,
+  totalBps,
+} from "../domain/pricingV2";
+import { MAX_SHOWN_REASONS, REASON_PRIORITY, REASON_TEXT } from "../domain/reasons";
+import { GRADE_D_AUTO_APPROVE_MAX_CENTS } from "../domain/rules";
+import {
+  COMPONENT_MAX,
+  computeScore,
+  GRADE_LIMIT_CENTS,
+  gradeFor,
+  IDENTITY_POINTS,
+  ON_TIME_LOAN_POINTS,
+  TENURE_DAYS_PER_POINT,
+} from "../domain/scorecard";
+import { TIER_MAX_PER_LOAN_CENTS } from "../domain/kya";
+import { ADVERSE_ACTION_NOTICE } from "../services/adverseAction";
 import type { ToolDef } from "./registry";
 
 /** Strips a trailing slash so URL concatenation never produces `//`. */
@@ -199,7 +224,7 @@ function renderQuickstartSection(): string {
 1. **\`register_agent\`** — create the agent and get an \`api_key\` and a \`claim_url\`. You start at tier 0: you can lend now; to borrow, give your human the \`claim_url\` (see [Claiming and KYA tiers](#claiming-and-kya-tiers)).
 2. **\`buy_notes\`** — buy lender notes, funded by a PayPal checkout your human approves (you get back a \`human_approval\` next action with the \`approve_url\`), then \`confirm_checkout\` once they have approved.
 3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything (needs tier ≥ 1: claimed by your human, who has signed a mandate).
-4. **\`apply_for_loan\`** — apply for the amount and term you checked; if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`.
+4. **\`apply_for_loan\`** — apply for the amount and term you checked, with \`declarations: {"no_other_debt": true}\` and \`attest: true\` (required — see [Applying for a loan](#applying-for-a-loan)); if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`; if \`DECLINED\`, read \`data.adverse_action\`.
 5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your payout receiver (\`payout_email\`, or \`payout_paypal_id\` if that account's email is unconfirmed).
 6. **Forward the repayment link, or call \`repay_loan\`** — \`get_loan\` returns an invoice \`repayment_link\` your client can pay directly, or call \`repay_loan\` yourself for a human-approved PayPal checkout, then \`confirm_checkout\`.
 `;
@@ -244,12 +269,12 @@ A **mandate** is the standing permission your human signs for you: the limits wi
 |---|---|
 | \`max_per_loan_cents\` | the principal of any one loan |
 | \`max_total_owed_cents\` | what your human may owe in total **across all their agents**: what they owe on every open loan + this loan's principal + fee |
-| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal) |
+| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal; a new agent's grade D invoice-backed loans need about 600 — see [The newcomer path](#the-newcomer-path)) |
 | \`max_term_days\` | the loan's term |
 | \`eligible_collateral\` | \`invoice_link\` (you pass an \`invoice\` the bank collects) and/or \`none\` (unsecured) |
 | \`expires_at\` | optional; after it the mandate is no longer in force |
 
-Your per-loan ceiling is the smaller of your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\`.
+Your per-loan ceiling is the smaller of your credit grade's limit (A 50000, B 30000, C 20000, D 10000 cents), your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\` (\`check_eligibility\` returns it as \`effective_cap_cents\`).
 
 **What you see:** \`check_eligibility\` returns \`data.mandate\` — \`mandate_id\`, \`version\`, every limit, \`principal_total_owed_cents\` (what your human owes now), \`total_owed_headroom_cents\` (how much more principal + fee they may take on) and \`per_loan_cap_cents\`. Pass \`collateral\` to also check the collateral rule. An offer's \`disclosure\` names the \`mandate_id\` and \`mandate_version\` it was made under (both covered by \`disclosure_hash\`).
 
@@ -428,13 +453,223 @@ ${rows}
 `;
 }
 
+/** Lowest score of each grade, from the live `gradeFor` (so the table can't drift from the scorecard). */
+function gradeFloors(): Array<{ grade: string; floor: number }> {
+  const floors: Array<{ grade: string; floor: number }> = [];
+  for (let score = 100; score >= 0; score -= 1) {
+    const grade = gradeFor(score);
+    const last = floors[floors.length - 1];
+    if (last && last.grade === grade) {
+      last.floor = score;
+    } else {
+      floors.push({ grade, floor: score });
+    }
+  }
+  return floors;
+}
+
+function pct(bps: number): string {
+  return `${bps / 100}%`;
+}
+
+function usd(cents: bigint | number): string {
+  const value = BigInt(cents);
+  return `$${(value / 100n).toString()}.${(value % 100n).toString().padStart(2, "0")}`;
+}
+
+/** The newcomer worked example: a fresh T1 agent borrowing 1000 for 7 days against a 1500 invoice. */
+function newcomerExample() {
+  const principal = 1000n;
+  const invoice = 1500n;
+  const term = 7;
+  const facts = {
+    claimed: true,
+    hasSigningKey: false,
+    hasApprovedDocument: false,
+    onTimeRepaidLoans: 0,
+    lateRepayments: 0,
+    everChargedOff: false,
+    tenureDays: 0,
+    exposureCents: 0n,
+    maxTotalOwedCents: 5000n,
+  };
+  const secured = computeScore({ ...facts, invoiceCoverageBps: Number((invoice * 10000n) / principal) });
+  const unsecured = computeScore({ ...facts, invoiceCoverageBps: null });
+  const grade = secured.grade === "E" ? "D" : secured.grade;
+  const coverageBps = Number((invoice * 10000n) / principal);
+  const price = priceLoan({ principalCents: principal, termDays: term, grade, coverageBps });
+  // The grade C route: a T2 agent (signing key + approved KYA document) with the same 1.5× invoice.
+  const verified = computeScore({ ...facts, hasSigningKey: true, hasApprovedDocument: true, invoiceCoverageBps: coverageBps });
+  const verifiedPrice = priceLoan({
+    principalCents: principal,
+    termDays: term,
+    grade: verified.grade === "E" ? "D" : verified.grade,
+    coverageBps,
+  });
+  // The highest fee (bps of principal) a grade D invoice-backed newcomer loan can cost, over every amount up to the auto-approval limit and every term.
+  let maxNewcomerFeeBps = 0;
+  for (const p of [PRICING_LIMITS.minPrincipalCents, GRADE_D_AUTO_APPROVE_MAX_CENTS]) {
+    for (let t = PRICING_LIMITS.minTermDays; t <= PRICING_LIMITS.maxTermDays; t++) {
+      const fee = priceLoan({ principalCents: p, termDays: t, grade: "D", coverageBps: 15000 }).feeCents;
+      maxNewcomerFeeBps = Math.max(maxNewcomerFeeBps, Number((fee * 10000n + p - 1n) / p));
+    }
+  }
+  const neededMaxFeeBps = Math.ceil(maxNewcomerFeeBps / 100) * 100;
+  return { principal, invoice, term, secured, unsecured, price, verified, verifiedPrice, maxNewcomerFeeBps, neededMaxFeeBps };
+}
+
+function renderUnderwritingSection(): string {
+  const floors = gradeFloors();
+  const ex = newcomerExample();
+  const c = ex.price.components;
+  const sum = totalBps(c);
+  const exactFee = (Number(ex.principal) * sum) / 10000;
+  const pdRows = (["A", "B", "C", "D"] as const)
+    .map((g) => `| ${g} | ${pct(PD_BPS[g])} | ${(PD_BPS[g] * LGD_BPS.unsecured) / 10000} | ${(PD_BPS[g] * LGD_BPS.invoiceCovered) / 10000} | ${(CAPITAL_PCT_OF_PD_BPS * PD_BPS[g]) / 10000} |`)
+    .join("\n");
+  const gradeRows = floors
+    .map(({ grade, floor }, i) => {
+      const range = i === 0 ? `${floor}–100` : `${floor}–${floors[i - 1]!.floor - 1}`;
+      const limit = GRADE_LIMIT_CENTS[grade as keyof typeof GRADE_LIMIT_CENTS];
+      const approval =
+        grade === "E"
+          ? "always declined (`insufficient_credit_history` with no repayment history, else `score_too_low`)"
+          : grade === "D"
+            ? `auto-approved up to ${GRADE_D_AUTO_APPROVE_MAX_CENTS.toString()} cents; above that \`manual_review_declined\``
+            : "auto-approved up to the limit";
+      return `| ${grade} | ${range} | ${limit} | ${approval} |`;
+    })
+    .join("\n");
+  const reasonRows = REASON_PRIORITY.map((code) => `| \`${code}\` | ${REASON_TEXT[code]} |`).join("\n");
+
+  return `## Credit score and underwriting
+
+Every \`check_eligibility\` and \`apply_for_loan\` computes your **Agent Credit Score** (0–100) from the bank's own records — never from anything an AI writes — and records it with its component breakdown. \`check_eligibility\` shows your \`score\`, \`grade\`, the components and the price before you apply.
+
+### Score components
+
+| Component | Points | How you earn them |
+|---|---|---|
+| Identity | 0–${COMPONENT_MAX.identity} | claimed by a verified human ${IDENTITY_POINTS.claimed}, a registered signing key ${IDENTITY_POINTS.signingKey}, an approved KYA document ${IDENTITY_POINTS.approvedDocument} |
+| Repayment history | 0–${COMPONENT_MAX.history} | ${ON_TIME_LOAN_POINTS} per loan of ≥ ${PRICING_LIMITS.minPrincipalCents.toString()} cents repaid on time (capped at ${COMPONENT_MAX.history}); late repayments and charge-offs subtract |
+| Tenure | 0–${COMPONENT_MAX.tenure} | 1 per ${TENURE_DAYS_PER_POINT} simulated days since you registered |
+| Collateral | 0–${COMPONENT_MAX.collateral} | for an invoice-backed request: invoice ≥ 1.5× the amount ${COMPONENT_MAX.collateral}, ≥ 1.1× 12, none 0 |
+| Exposure | 0–${COMPONENT_MAX.exposure} | ${COMPONENT_MAX.exposure} − ${COMPONENT_MAX.exposure} × (what your human already owes ÷ their mandate's \`max_total_owed_cents\`), at least 0 |
+
+### Grades and limits
+
+| Grade | Score | Per-loan limit (cents) | Approval |
+|---|---|---|---|
+${gradeRows}
+
+Your effective per-loan cap is the smallest of your grade's limit, your tier's cap (T1 ${TIER_MAX_PER_LOAN_CENTS[1]}, T2 ${TIER_MAX_PER_LOAN_CENTS[2]}) and your mandate's \`max_per_loan_cents\`.
+
+### The newcomer path
+
+A brand-new, claimed agent has no repayment history, so an **unsecured** first loan scores ${ex.unsecured.score} (grade ${ex.unsecured.grade}) and is declined with \`insufficient_credit_history\`. Start with a **small invoice-backed loan**: an invoice of at least **1.5×** the amount adds ${COMPONENT_MAX.collateral} points — ${ex.secured.score}, grade ${ex.secured.grade} — and grade D is auto-approved up to ${usd(GRADE_D_AUTO_APPROVE_MAX_CENTS)} (${GRADE_D_AUTO_APPROVE_MAX_CENTS.toString()} cents). (An invoice of only 1.1× adds 12 — still grade E. The invoice must also cover principal + fee.) Every such loan of ≥ ${usd(PRICING_LIMITS.minPrincipalCents)} repaid on time adds ${ON_TIME_LOAN_POINTS} points of history, which is how you climb to C and above.
+
+**Your human's mandate must allow the grade D fee.** A grade D invoice-backed loan costs ${pct(Number((ex.price.feeCents * 10000n) / ex.principal))} of the principal for ${ex.term} days (${ex.price.feeCents.toString()} cents on ${ex.principal.toString()}) and up to ${pct(ex.maxNewcomerFeeBps)} for ${PRICING_LIMITS.maxTermDays} days, so the mandate's \`max_fee_bps\` must be at least **~${pct(ex.neededMaxFeeBps)} (${ex.neededMaxFeeBps} bps)** — below that every newcomer loan is declined with \`mandate_fee\` (the next step then names the mandate's current max fee and the fee you were quoted). The dashboard's mandate form defaults to 10%. A signed mandate never changes by itself: if your human signed one at a lower max fee (e.g. 5%), they must sign a new version with a higher one.
+
+**The grade C route.** With a registered signing key (\`register_public_key\`) and an approved KYA document (tier 2: +${IDENTITY_POINTS.signingKey + IDENTITY_POINTS.approvedDocument} identity points), the same 1.5× invoice-backed loan scores ${ex.verified.score} — grade ${ex.verified.grade} — and costs ${pct(Number((ex.verifiedPrice.feeCents * 10000n) / ex.principal))} for ${ex.term} days (${ex.verifiedPrice.feeCents.toString()} cents), which fits under a 5% max fee.
+
+**Which score?** \`get_status\` shows your *base* score (no collateral — there is no application). \`check_eligibility\` with \`invoice_amount_cents\`, and every stored application (\`credit_scores\`, \`score_history\`, \`adverse_action.score\`), include the collateral points of that request, so an invoice-backed application can show a score up to ${COMPONENT_MAX.collateral} points higher than \`get_status\`.
+
+### Pricing
+
+The fee is the sum of four components, each in basis points (bps) of the principal for the whole term:
+
+- **cost of funds** = round(${BASE_RATE_BPS} bps a year × term_days ÷ 365);
+- **expected loss** = PD × LGD — probability of default by grade, times loss given default: ${pct(LGD_BPS.unsecured)} unsecured, ${pct(LGD_BPS.invoiceCovered)} when an invoice covers ≥ 1.1× the amount;
+- **operations** = ${OPS_BPS} bps;
+- **capital** = 8% × PD.
+
+| Grade | PD | Expected loss, unsecured (bps) | Expected loss, invoice ≥ 1.1× (bps) | Capital (bps) |
+|---|---|---|---|---|
+${pdRows}
+
+\`fee_cents = max(${MIN_FEE_CENTS.toString()}, ceil(principal_cents × Σ bps ÷ 10000))\`, and \`apr_bps = round(fee ÷ principal × 365 ÷ term_days × 10000)\`. If the fee is above your mandate's \`max_fee_bps\`, the application is declined with \`mandate_fee\`. The disclosure flags an APR above ${pct(APR_FLAG_THRESHOLD_BPS)} (some US states cap consumer APRs there); short, small loans have high APRs even when the fee is a few cents.
+
+**Worked example — the newcomer loan:** ${ex.principal.toString()} cents for ${ex.term} days against a ${ex.invoice.toString()}-cent invoice (1.5×), grade ${ex.secured.grade}:
+
+| Component | bps |
+|---|---|
+| cost of funds: round(${BASE_RATE_BPS} × ${ex.term} ÷ 365) | ${c.costOfFundsBps} |
+| expected loss: ${pct(PD_BPS.D)} × ${pct(LGD_BPS.invoiceCovered)} | ${c.expectedLossBps} |
+| operations | ${c.opsBps} |
+| capital: 8% × ${pct(PD_BPS.D)} | ${c.capitalBps} |
+| **total** | **${sum}** |
+
+Fee = ceil(${ex.principal.toString()} × ${sum} ÷ 10000) = ceil(${exactFee}) = **${ex.price.feeCents.toString()} cents** (${usd(ex.price.feeCents)}); APR = ${ex.price.aprBps} bps (${(ex.price.aprBps / 100).toFixed(2)}%, flagged). Your client pays the ${usd(ex.invoice)} invoice; the bank keeps principal + fee (${usd(ex.principal + ex.price.feeCents)}) and pays you the remaining ${usd(ex.invoice - ex.principal - ex.price.feeCents)}.
+
+### Reason codes
+
+The rules run in this order and every failure is collected; a decline lists the first ${MAX_SHOWN_REASONS} as its principal reasons. The text is fixed — it is exactly what \`adverse_action.reasons[].text\` says:
+
+| Code | Text |
+|---|---|
+${reasonRows}
+
+### AI explanations are advisory
+
+Decisions are deterministic: the score, the rules above and the price decide every application. The bank's AI loan officer only *explains* the decision in \`data.explanation\` (\`source: "ai"\`), using the same reasons; if it is unavailable, slow, or says anything outside policy (a reason that isn't on your notice, an approval that didn't happen, money that hasn't moved), a fixed template is used instead (\`source: "template"\`). Nothing it writes changes your status, reasons, limit or price — rely on \`status\`, \`reason_codes\` and \`adverse_action.reasons\`.
+`;
+}
+
+function renderApplyingSection(): string {
+  return `## Applying for a loan
+
+\`apply_for_loan\` takes an application with sections A–H. Only E and H are required beyond the amount, term and purpose:
+
+| Section | Field | |
+|---|---|---|
+| A identity | \`identity: {operator, model, code_manifest_hash}\` | optional; what you declare about yourself |
+| B purpose | \`purpose\` | required, 5–200 chars |
+| C amount & term | \`amount_cents\`, \`term_days\` | required |
+| D collateral | \`invoice: {client_email, amount_cents, due_in_days, description}\` | optional; ≥ 1.1× the amount (≥ 1.5× scores best) |
+| E declarations | \`declarations: {no_other_debt: true}\` | **required** — you attest you have no other outstanding debts |
+| F consent | \`consent_bank_records\` | optional; consent to a check of bank records |
+| G mandate | \`mandate_version\` | optional; the bank fills in your current mandate. Name the version you read to get \`MANDATE_CHANGED\` (409) if it changed |
+| H attestation | \`attest: true\` | **required** — the application is accurate |
+
+Example — every section filled in (a newcomer's first, invoice-backed loan):
+
+\`\`\`json
+{
+  "amount_cents": 1000,
+  "term_days": 7,
+  "purpose": "Buy materials for invoice INV-1042",
+  "identity": { "operator": "Acme Ops", "model": "claude-sonnet", "code_manifest_hash": "sha256:9f2c…" },
+  "invoice": { "client_email": "client@example.com", "amount_cents": 1500, "due_in_days": 7, "description": "INV-1042: website build" },
+  "declarations": { "no_other_debt": true },
+  "consent_bank_records": true,
+  "mandate_version": 1,
+  "attest": true
+}
+\`\`\`
+
+**Adverse action.** A \`DECLINED\` response is still HTTP 200 and carries \`data.adverse_action\`:
+
+- \`reasons\` — at most four \`{code, text}\` principal reasons with the fixed text from [Reason codes](#reason-codes);
+- \`score\`, \`grade\` and \`score_factors\` — the parts of your score that cost you the most points;
+- \`notice\` — fixed text: "${ADVERSE_ACTION_NOTICE.replace(/`/g, "")}";
+- \`explanation\` — the loan officer's plain-language explanation (advisory; see [AI explanations are advisory](#ai-explanations-are-advisory)).
+
+**Tell your human why.** When you are declined, tell your human the bank's principal reasons **word for word, in quotation marks** — the fixed text in \`adverse_action.reasons[].text\` (also repeated in the response's \`summary\`), e.g. \`The bank declined: "Insufficient credit history."\` — and only then explain them in your own words. This is the statement of specific reasons your human is entitled to, so don't paraphrase it away. Then give the next step — the \`next_actions\` and \`explanation.next_steps\` say what would change the outcome (often: a smaller loan backed by an invoice of ≥ 1.5× the amount). Don't retry the same application unchanged; it will be declined for the same reasons.
+
+Every response — offered or declined — also carries \`data.explanation\` \`{source, summary, reasons_explained, next_steps}\`.
+
+**Re-read it later** with \`get_application\` (\`application_id\`): \`status\` (\`OFFERED\` or \`DECLINED\`), the decision, reasons, adverse action, the latest explanation, the offer id and an echo of your application (\`ala\`). This is your statement of specific reasons, available at any time.
+`;
+}
+
 function renderMoneyRulesSection(): string {
   return `## Money rules
 
 - All money is **integer cents**, USD.
 - **Notes are not deposits and are not FDIC-insured.** Returns to note holders come only from borrower repayments — Mandate is a sandbox model, not a real bank.
 - **Loans:** 1000–50000 cents ($10–$500), 7–30 day terms, one open loan per agent at a time.
-- **Pricing (fixed P1 schedule):** \`fee_cents = min(2500, ceil(principal_cents × 150 × ceil(term_days / 7) / 10000))\` — 1.5% per started week, capped at $25 (2500 cents). APR is derived from that fee, annualized.
+- **Pricing (risk-based):** \`fee_cents = max(25, ceil(principal_cents × Σ / 10000))\` over cost of funds, expected loss, operations and capital — see [Pricing](#pricing) for the components and a worked example. Grade E is never offered. \`check_eligibility\` quotes it with your grade, score and the components.
+- **Application (ALA A–H):** see [Applying for a loan](#applying-for-a-loan); without \`declarations.no_other_debt: true\` and \`attest: true\` an application is \`DECLINED\` with \`declaration_missing\`.
 - **Disclosure:** \`apply_for_loan\` returns a \`disclosure\` and a \`disclosure_hash\`; \`accept_offer\` must echo the same \`disclosure_hash\` back, or the offer is rejected with \`DISCLOSURE_MISMATCH\`.
 - **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
 - **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%.
@@ -465,6 +700,8 @@ ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
 ${renderClaimingSection(base)}
 ${renderMandatesSection()}
+${renderUnderwritingSection()}
+${renderApplyingSection()}
 ${renderSigningSection(base)}
 ${renderPrivateWorldsSection(base)}
 ${renderHumanApprovalSection()}

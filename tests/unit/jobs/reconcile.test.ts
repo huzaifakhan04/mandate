@@ -89,7 +89,7 @@ describe("reconcile cron", () => {
     expect(loan.status).toBe("repaid");
     expect(loan.outstandingCents).toBe(0n);
     const [repayment] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
-    expect(repayment?.remainderCents).toBe(14250n);
+    expect(repayment?.remainderCents).toBe(14730n);
     expect(repayment?.remainderStatus).toBe("paid");
     expect((await invoiceLink(db, borrower.loanId))?.status).toBe("paid");
     expect(await journalsWithKeyPrefix(db, worldId, "repayment_capture:")).toHaveLength(2); // capture + holders

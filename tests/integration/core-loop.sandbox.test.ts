@@ -51,9 +51,12 @@ const NOTES_CENTS = 3000;
 const PRINCIPAL_CENTS = 1000;
 const TERM_DAYS = 7;
 const INVOICE_CENTS = 1500;
-const FEE_CENTS = 15;
-const REMAINDER_CENTS = INVOICE_CENTS - PRINCIPAL_CENTS - FEE_CENTS; // 485
-const LENDER_EARNED_CENTS = 12; // floor(15 × 80 / 100)
+// P3 pricing v2: a newcomer (claimed, no history) with a 1.5× invoice is grade D →
+// cost of funds round(400×7/365) 8 + expected loss 1200×3500/10000 420 + ops 50 + capital 96
+// = 574 bps → fee ceil(1000 × 574 / 10000) = 58 (APR 30243 bps). Any D score gives the same fee.
+const FEE_CENTS = 58;
+const REMAINDER_CENTS = INVOICE_CENTS - PRINCIPAL_CENTS - FEE_CENTS; // 442
+const LENDER_EARNED_CENTS = 46; // floor(58 × 80 / 100)
 
 const POLL_MS = 5_000;
 const ACTIVE_WITHIN_MS = 120_000;
@@ -162,7 +165,7 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
   });
 
   it(
-    "lender buys notes, borrower borrows against an invoice, the client pays the link with no agent online → REPAID, remainder paid, lender earns 12",
+    "lender buys notes, borrower borrows against an invoice, the client pays the link with no agent online → REPAID, remainder paid, lender earns 46",
     async () => {
       // 1. Agents.
       const borrowerPayerId = await ownerPayerId();
@@ -196,7 +199,7 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
         base: BASE,
         agentId: borrower.data.agent_id as string,
         account: "OWNER",
-        mandate: { maxPerLoanUsd: "20", maxTotalOwedUsd: "50", maxFeePct: "5", maxTermDays: "30", collateral: ["invoice_link"] },
+        mandate: { maxPerLoanUsd: "20", maxTotalOwedUsd: "50", maxFeePct: "10", maxTermDays: "30", collateral: ["invoice_link"] },
         signerName: "Sandbox Owner",
         screenshotDir: ARTIFACTS,
         label: "borrower-owner",
@@ -249,6 +252,9 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
             due_in_days: TERM_DAYS,
             description: "E2E-001",
           },
+          // P3 Task 4: ALA sections E and H are required.
+          declarations: { no_other_debt: true },
+          attest: true,
         },
         borrowerKey,
       );
@@ -304,7 +310,7 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
       });
       mark("loan_repaid");
 
-      // 6a. The remainder payout (1500 − 1000 − 15 = 485) succeeds.
+      // 6a. The remainder payout (1500 − 1000 − 58 = 442) succeeds.
       const repaid = await settleUntil("remainder payout paid", REMAINDER_PAID_WITHIN_MS, async () => {
         const loan = await ok("get_loan", { loan_id: loanId }, borrowerKey);
         const history = loan.data.history as { type: string; payload: Json | null }[];
@@ -325,11 +331,11 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
       expect(borrowerStatus.data.open_loan).toBeNull();
       const borrowerStatement = await ok("get_statement", {}, borrowerKey);
       const borrowerLines = borrowerStatement.data.ledger_lines as { memo: string; account: string; amount_cents: number }[];
-      // payable_to_borrower: +485 credited at capture, −485 when the payout settled.
+      // payable_to_borrower: +442 credited at capture, −442 when the payout settled.
       expect(borrowerLines.filter((l) => l.amount_cents === REMAINDER_CENTS)).toHaveLength(1);
       expect(borrowerLines.filter((l) => l.amount_cents === -REMAINDER_CENTS)).toHaveLength(1);
 
-      // 6b. The lender earned 12 (80% of the 15 fee).
+      // 6b. The lender earned 46 (80% of the 58 fee).
       const lenderStatement = await ok("get_statement", {}, lenderKey);
       expect((lenderStatement.data.notes as Json).earned_cents).toBe(LENDER_EARNED_CENTS);
       expect((lenderStatement.data.notes as Json).balance_cents).toBe(NOTES_CENTS + LENDER_EARNED_CENTS);

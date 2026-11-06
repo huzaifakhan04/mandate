@@ -13,6 +13,7 @@ import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
 import { agents } from "@/server/db/schema";
 import { uploadKyaDocument } from "@/server/services/kyaDocs";
+import { withAlaDefaults } from "./world";
 
 export interface TestSigningKey {
   privateKey: KeyObject;
@@ -60,7 +61,8 @@ export async function signedCall(
   options: SignedCallOptions = {},
 ) {
   const path = `/api/v1/${toolName}`;
-  const rawBody = JSON.stringify(input);
+  // P3 Task 4: apply_for_loan needs ALA sections E and H (see helpers/world.ts).
+  const rawBody = JSON.stringify(withAlaDefaults(toolName, input));
   const timestamp = options.timestamp ?? nowSeconds();
   const signedBody = options.signedBody ?? rawBody;
   const signature = options.signature ?? signRequest(privateKey, timestamp, "POST", path, signedBody);
