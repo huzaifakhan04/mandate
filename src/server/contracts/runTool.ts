@@ -6,6 +6,7 @@ import type { AgentPrincipal } from "../auth/apiKeys";
 import { verifyApiKey } from "../auth/apiKeys";
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
+import { describeError, isRetryableTransactionError } from "../db/errors";
 import { scoped } from "../db/scoped";
 import { idempotencyKeys } from "../db/schema";
 import { ensureMainWorldOnce } from "../services/worlds";
@@ -34,6 +35,29 @@ export interface RunToolResult {
  * propagates past `runTool`.
  */
 class IdempotencyClaimLost extends Error {}
+
+/**
+ * M8 (final review): runs `attempt` (one whole transaction) and, if it
+ * failed with a Postgres deadlock (`40P01`) or serialization failure
+ * (`40001`), runs it ONCE more in a fresh transaction — Postgres rolled the
+ * first one back entirely, so nothing it did is visible. Any other error,
+ * or a second retryable failure, propagates (→ INTERNAL_ERROR).
+ */
+async function withTransactionRetry<T>(
+  toolName: string,
+  requestId: string,
+  attempt: () => Promise<T>,
+): Promise<T> {
+  try {
+    return await attempt();
+  } catch (err) {
+    if (!isRetryableTransactionError(err)) {
+      throw err;
+    }
+    console.warn(`[runTool] ${toolName} retrying after ${describeError(err)} (requestId=${requestId})`);
+    return attempt();
+  }
+}
 
 /**
  * Builds a `RunToolResult` whose HTTP status is derived from the envelope.
@@ -148,9 +172,13 @@ function extractIdempotencyKeyArg(rawInput: unknown): { input: unknown; key: str
  *    during the call runs in order; a callback that throws is logged and
  *    does not change the envelope. Callbacks do not run on an idempotent
  *    replay, nor when the transaction rolled back.
- * 7. Any other thrown error (from `getDb`, world/clock setup, auth, or the
+ * 7. A mutating call's transaction that fails with a Postgres deadlock
+ *    (`40P01`) or serialization failure (`40001`) is retried once, whole,
+ *    in a fresh transaction (same idempotency-key path) before giving up.
+ * 8. Any other thrown error (from `getDb`, world/clock setup, auth, or the
  *    handler itself) → 500 `INTERNAL_ERROR`, logged server-side with
- *    `requestId` and never leaking its message/stack to the caller.
+ *    `requestId` as name/SQLSTATE/message only (never query text or
+ *    params) and never leaking its message/stack to the caller.
  *
  * Every returned/stored/replayed HTTP status is derived from its
  * envelope's `status` via `httpStatusForEnvelope` — never hard-coded.
@@ -233,6 +261,14 @@ export async function runTool(
       finalizeState = state;
     }
 
+    // M8: a retried transaction starts from scratch — callbacks and
+    // finalize state registered by a rolled-back attempt must not run.
+    function resetAttemptState(): void {
+      afterCommitCallbacks.length = 0;
+      finalizeState = undefined;
+      claimedIdempotencyRowId = null;
+    }
+
     // Ruling L: a tool can opt out of the claim-first idempotency
     // protocol entirely (mutating tools opt in by default).
     const usesIdempotencyProtocol = tool.idempotent !== false;
@@ -250,63 +286,66 @@ export async function runTool(
         const requestHash = hashRequest(toolName, parsed.data);
 
         try {
-          envelope = await db.transaction(async (tx) => {
-            // Claim-first idempotency, race-safe under concurrent calls
-            // sharing the same key: this INSERT is the only write that
-            // decides who "wins" a fresh key. Postgres (and PGlite) blocks
-            // a conflicting `INSERT ... ON CONFLICT DO NOTHING` against an
-            // uncommitted row with the same unique key until the other
-            // transaction commits or rolls back — so by the time this
-            // resolves, the outcome is final, not a transient snapshot.
-            const claimed = await tx
-              .insert(idempotencyKeys)
-              .values({
-                worldId,
-                agentId,
-                key: effectiveIdempotencyKey,
-                requestHash,
-                response: null,
-                httpStatus: null,
-              })
-              .onConflictDoNothing({
-                target: [idempotencyKeys.worldId, idempotencyKeys.agentId, idempotencyKeys.key],
-              })
-              .returning();
+          envelope = await withTransactionRetry(toolName, requestId, () =>
+            db.transaction(async (tx) => {
+              resetAttemptState();
+              // Claim-first idempotency, race-safe under concurrent calls
+              // sharing the same key: this INSERT is the only write that
+              // decides who "wins" a fresh key. Postgres (and PGlite) blocks
+              // a conflicting `INSERT ... ON CONFLICT DO NOTHING` against an
+              // uncommitted row with the same unique key until the other
+              // transaction commits or rolls back — so by the time this
+              // resolves, the outcome is final, not a transient snapshot.
+              const claimed = await tx
+                .insert(idempotencyKeys)
+                .values({
+                  worldId,
+                  agentId,
+                  key: effectiveIdempotencyKey,
+                  requestHash,
+                  response: null,
+                  httpStatus: null,
+                })
+                .onConflictDoNothing({
+                  target: [idempotencyKeys.worldId, idempotencyKeys.agentId, idempotencyKeys.key],
+                })
+                .returning();
 
-            if (claimed.length === 0) {
-              // Lost the race (or the key already existed from an earlier
-              // call). Abort this transaction without running the
-              // handler — resolved in the catch block below, against
-              // whatever is now committed.
-              throw new IdempotencyClaimLost();
-            }
+              if (claimed.length === 0) {
+                // Lost the race (or the key already existed from an earlier
+                // call). Abort this transaction without running the
+                // handler — resolved in the catch block below, against
+                // whatever is now committed.
+                throw new IdempotencyClaimLost();
+              }
 
-            const claimedId = claimed[0]!.id;
+              const claimedId = claimed[0]!.id;
 
-            const result = withDocsAnchor(
-              await tool.handler(parsed.data, {
-                worldId,
-                simNow,
-                agentId,
-                agent,
-                requestId,
-                db,
-                tx,
-                scoped: scoped(tx, worldId),
-                afterCommit,
-                setFinalizeState,
-              }),
-              toolName,
-            );
+              const result = withDocsAnchor(
+                await tool.handler(parsed.data, {
+                  worldId,
+                  simNow,
+                  agentId,
+                  agent,
+                  requestId,
+                  db,
+                  tx,
+                  scoped: scoped(tx, worldId),
+                  afterCommit,
+                  setFinalizeState,
+                }),
+                toolName,
+              );
 
-            await tx
-              .update(idempotencyKeys)
-              .set({ response: result, httpStatus: httpStatusForEnvelope(result) })
-              .where(eq(idempotencyKeys.id, claimedId));
+              await tx
+                .update(idempotencyKeys)
+                .set({ response: result, httpStatus: httpStatusForEnvelope(result) })
+                .where(eq(idempotencyKeys.id, claimedId));
 
-            claimedIdempotencyRowId = claimedId;
-            return result;
-          });
+              claimedIdempotencyRowId = claimedId;
+              return result;
+            }),
+          );
         } catch (err) {
           if (!(err instanceof IdempotencyClaimLost)) {
             throw err;
@@ -362,18 +401,21 @@ export async function runTool(
         // still runs inside a transaction, but nothing is stored, even if
         // a key was supplied).
         envelope = withDocsAnchor(
-          await db.transaction((tx) =>
-            tool.handler(parsed.data, {
-              worldId,
-              simNow,
-              agentId: agent?.agentId ?? null,
-              agent,
-              requestId,
-              db,
-              tx,
-              scoped: scoped(tx, worldId),
-              afterCommit,
-              setFinalizeState,
+          await withTransactionRetry(toolName, requestId, () =>
+            db.transaction((tx) => {
+              resetAttemptState();
+              return tool.handler(parsed.data, {
+                worldId,
+                simNow,
+                agentId: agent?.agentId ?? null,
+                agent,
+                requestId,
+                db,
+                tx,
+                scoped: scoped(tx, worldId),
+                afterCommit,
+                setFinalizeState,
+              });
             }),
           ),
           toolName,
@@ -401,7 +443,7 @@ export async function runTool(
       try {
         await callback();
       } catch (err) {
-        console.error(`[runTool] ${toolName} afterCommit callback failed (requestId=${requestId}):`, err);
+        console.error(`[runTool] ${toolName} afterCommit callback failed (requestId=${requestId}): ${describeError(err)}`);
       }
     }
 
@@ -422,7 +464,7 @@ export async function runTool(
           toolName,
         );
       } catch (err) {
-        console.error(`[runTool] ${toolName} finalize failed (requestId=${requestId}):`, err);
+        console.error(`[runTool] ${toolName} finalize failed (requestId=${requestId}): ${describeError(err)}`);
         envelope = preFinalizeEnvelope;
         return respond(envelope);
       }
@@ -441,8 +483,7 @@ export async function runTool(
             .where(eq(idempotencyKeys.id, claimedIdempotencyRowId));
         } catch (err) {
           console.error(
-            `[runTool] ${toolName} failed to persist the finalized envelope (requestId=${requestId}):`,
-            err,
+            `[runTool] ${toolName} failed to persist the finalized envelope (requestId=${requestId}): ${describeError(err)}`,
           );
         }
       }
@@ -450,10 +491,10 @@ export async function runTool(
 
     return respond(envelope);
   } catch (err) {
-    // The real error (which may include infra details, e.g. connection
-    // strings or query text) is logged server-side only, keyed by
-    // requestId. Callers/clients only ever see the generic message below.
-    console.error(`[runTool] ${toolName} failed (requestId=${requestId}):`, err);
+    // M12: logged server-side as name/SQLSTATE/message only (never a
+    // Drizzle error's query text or bound params), keyed by requestId.
+    // Callers/clients only ever see the generic message below.
+    console.error(`[runTool] ${toolName} failed (requestId=${requestId}): ${describeError(err)}`);
 
     return respond(
       fail(

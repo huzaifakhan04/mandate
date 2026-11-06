@@ -1,6 +1,7 @@
 import { and, eq, isNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
+import { safeErrorMessage } from "../db/errors";
 import { jobRuns } from "../db/schema";
 import { scoped } from "../db/scoped";
 
@@ -20,7 +21,8 @@ export async function recordJobRun(db: Db, worldId: string, job: string, output:
 }
 
 export function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  // M12: never the query text/params a Drizzle query error carries.
+  return safeErrorMessage(err);
 }
 
 /** Anomaly count recorded by the world's newest every-minute row of `job`, or 0 when there is none. */

@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { fail, ok } from "../envelope";
 import { defineTool } from "../registry";
+import { describeError } from "../../db/errors";
 import { applyRedemptionPayoutOutcome, beginNoteRedemption } from "../../services/notes";
 
 const inputSchema = z.object({
@@ -61,7 +62,7 @@ export const redeemNotesTool = defineTool({
       try {
         await applyRedemptionPayoutOutcome(ctx.db, payoutOperationId);
       } catch (err) {
-        console.error(`[redeem_notes] applyRedemptionPayoutOutcome failed for ${payoutOperationId}:`, err);
+        console.error(`[redeem_notes] applyRedemptionPayoutOutcome failed for ${payoutOperationId}: ${describeError(err)}`);
       }
     });
 
