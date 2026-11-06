@@ -1,6 +1,6 @@
 import { and, eq } from "drizzle-orm";
 
-import { getSimDay } from "../clock/clock";
+import { getSimDay, getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { agents, events, worlds } from "../db/schema";
 import { scoped } from "../db/scoped";
@@ -56,6 +56,7 @@ export async function insertBots(tx: Db, worldId: string, botPrincipalId: string
     status: "active",
     isBot: true,
     payoutReceiverType: "email",
+    registeredSimAt: await getSimNow(tx, worldId, now),
   } as const;
   for (const name of LENDER_BOT_NAMES) {
     await scoped(tx, worldId).insert(agents, { ...base, name, payoutReceiver: botReceiver(name) });

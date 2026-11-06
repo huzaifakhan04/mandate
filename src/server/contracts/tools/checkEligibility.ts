@@ -3,7 +3,9 @@ import { z } from "zod";
 import { ok } from "../envelope";
 import { blockerInstruction, blockerNextActions } from "../kyaActions";
 import { defineTool } from "../registry";
+import { invoiceCoverageBps, scoreAgent } from "../../services/credit";
 import { borrowGate } from "../../services/kya";
+import { creditSchema, creditView } from "../credit";
 import { checkEligibility } from "../../services/loans";
 
 /** `apply_for_loan` requires a purpose only the agent can supply; the next action carries this placeholder. */
@@ -14,6 +16,8 @@ const inputSchema = z.object({
   term_days: z.number().int().min(1),
   /** Also check the mandate's eligible collateral for this kind (invoice_link = you'll pass an invoice). */
   collateral: z.enum(["invoice_link", "none"]).optional(),
+  /** The face amount of the invoice you'd back the loan with; scores collateral (coverage = invoice ÷ amount). */
+  invoice_amount_cents: z.number().int().min(1).optional(),
 });
 
 const mandateSchema = z.object({
@@ -39,6 +43,8 @@ const outputSchema = z.object({
   tier: z.number(),
   /** Your owner's current mandate: its limits and the headroom left across all their agents (null without one). */
   mandate: mandateSchema.nullable(),
+  /** Your Agent Credit Score for this request (collateral scored only when invoice_amount_cents is given). */
+  credit: creditSchema,
   /** Only while the calling agent is unclaimed — the link its human opens to claim it. */
   claim_url: z.string().optional(),
 });
@@ -54,7 +60,9 @@ export const checkEligibilityTool = defineTool({
     "(max per loan, max total owed across all their agents, max fee in bps of the principal, max " +
     "term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and " +
     "a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral " +
-    "to also check the collateral rule. Call it before apply_for_loan; if eligible, call " +
+    "to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, " +
+    "grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral " +
+    "(coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12). Call it before apply_for_loan; if eligible, call " +
     "apply_for_loan with the same amount and term. While unclaimed, reasons include " +
     "claim_required and data.claim_url is the link to give your human.",
   auth: "agent",
@@ -80,6 +88,13 @@ export const checkEligibilityTool = defineTool({
       input.collateral ?? null,
     );
 
+    // Read-only: computed for this request, never persisted (apply_for_loan records it).
+    const credit = await scoreAgent(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow, {
+      ...(input.invoice_amount_cents !== undefined
+        ? { invoiceCoverageBps: invoiceCoverageBps(BigInt(input.invoice_amount_cents), BigInt(input.amount_cents)) }
+        : {}),
+    });
+
     const reasons = [...blockers, ...result.reasons];
     const eligible = reasons.length === 0;
 
@@ -96,6 +111,7 @@ export const checkEligibilityTool = defineTool({
         },
         tier: gate.tier.tier,
         mandate: result.mandate,
+        credit: creditView(credit),
         ...(claimUrl ? { claim_url: claimUrl } : {}),
       },
       {

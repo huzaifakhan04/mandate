@@ -80,6 +80,10 @@ describe("dashboard read model (P2 Task 5)", () => {
     const cardA = dash.agents.find((card) => card.id === a.agentId)!;
     expect(cardA).toMatchObject({ display: "active", perLoanCapCents: 25000n, hasSigningKey: false });
     expect(cardA.tier.tier).toBe(1);
+    // P3 Task 1: the card carries the Agent Credit Score (ring + grade).
+    expect(cardA.credit.components).toMatchObject({ identity: 10, history: 0, collateral: 0 });
+    expect(cardA.credit.score).toBe(Object.values(cardA.credit.components).reduce((sum, points) => sum + points, 0));
+    expect(cardA.credit.factors).toHaveLength(3);
     expect(cardA.openLoan).toMatchObject({ status: "active", principalCents: 10000n, termDays: 7, outstandingCents: 10150n });
     const cardB = dash.agents.find((card) => card.id === b.agentId)!;
     expect(cardB).toMatchObject({ display: "pending", perLoanCapCents: 0n, mandate: null, openLoan: null });
@@ -100,6 +104,7 @@ describe("dashboard read model (P2 Task 5)", () => {
 
     const detail = (await agentDetail(db, a.principalId, a.agentId))!;
     expect(detail.tier.tier).toBe(2);
+    expect(detail.credit.components.identity).toBe(25);
     expect(detail.currentMandate).toMatchObject({ version: 1, status: "signed" });
     expect(detail.mandateHistory.map((m) => m.version)).toEqual([1]);
     expect(detail.documents).toHaveLength(1);

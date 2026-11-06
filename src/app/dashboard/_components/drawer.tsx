@@ -160,7 +160,21 @@ function KyaSection({ agent }: { agent: AgentDetailView }) {
         <dd className="mono">{agent.payoutMasked ?? "—"}</dd>
         <dt>Per-loan cap</dt>
         <dd className="num">{formatCents(agent.perLoanCapCents)}</dd>
+        <dt>Credit score</dt>
+        <dd className="num" data-testid="drawer-score">
+          {agent.credit.score} / 100 · grade {agent.credit.grade} · limit {formatCents(agent.credit.limitCents)}
+        </dd>
       </dl>
+      <ul className="checks" aria-label="Top score factors" data-testid="drawer-score-factors">
+        {agent.credit.factors.map((factor) => (
+          <li key={factor}>
+            <span className="d todo" aria-hidden="true">
+              ·
+            </span>
+            <span>{factor}</span>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

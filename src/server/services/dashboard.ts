@@ -24,6 +24,8 @@ import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type TierResult } from "../d
 import { effectivePerLoanCap } from "../domain/mandate";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { maskPayoutReceiver } from "./agents";
+import type { ScoreResult } from "../domain/scorecard";
+import { scoreAgent } from "./credit";
 import { tierForAgent } from "./kya";
 import { currentMandateRow, mandateLimits, principalExposure, type MandateRow } from "./mandates";
 
@@ -80,6 +82,8 @@ export interface AgentCardView {
   status: string;
   display: AgentDisplayStatus;
   tier: TierResult;
+  /** P3 Task 1: the Agent Credit Score now (no application → no collateral points). */
+  credit: ScoreResult;
   mandate: { version: number; maxPerLoanCents: bigint; maxTotalOwedCents: bigint } | null;
   /** min(tier cap, mandate max per loan); 0 when the agent can't borrow. */
   perLoanCapCents: bigint;
@@ -186,6 +190,7 @@ async function cardFor(db: Db, agent: OwnedAgent, now: Date): Promise<{ card: Ag
   );
   const key = await activeAgentKey(db, agent.worldId, agent.id);
   const simNow = await getSimNow(db, agent.worldId, now);
+  const credit = await scoreAgent(db, agent.worldId, agent.id, simNow, { now });
   const open = (await loanSummaries(db, agent.worldId, agent.id, simNow)).find((loan) =>
     (OPEN_LOAN_DB_STATUSES as readonly string[]).includes(loan.status),
   );
@@ -200,6 +205,7 @@ async function cardFor(db: Db, agent: OwnedAgent, now: Date): Promise<{ card: Ag
       status: agent.status,
       display: displayStatus(agent.status, tier),
       tier,
+      credit,
       mandate: mandate
         ? { version: mandate.version, maxPerLoanCents: mandate.maxPerLoanCents, maxTotalOwedCents: mandate.maxTotalOwedCents }
         : null,
