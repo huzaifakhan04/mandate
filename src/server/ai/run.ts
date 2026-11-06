@@ -46,13 +46,23 @@ export type AiErrorCode =
   | "incomplete"
   | "invalid_json"
   | "schema_violation"
-  | "policy_violation";
+  | "policy_violation"
+  | "rate_capped";
+
+/** P3 final review I4: the most output tokens any role may produce (its JSON is a few hundred tokens). */
+export const MAX_OUTPUT_TOKENS = 600;
 
 export interface RunRoleOptions {
   /** Aborts the call early (e.g. the request's own deadline); falls back like a timeout. */
   signal?: AbortSignal;
   /** What the run is about (application id / document id), stored as `ai_runs.subject`. */
   subject?: string;
+  /**
+   * Skip the model and use the template, recording this as the run's
+   * `error_code` (e.g. `rate_capped` once an agent's daily LLM budget is
+   * spent). The `ai_runs` row is still written.
+   */
+  skipModel?: "rate_capped";
 }
 
 export interface RunRoleResult<R extends AiRole> {
@@ -94,6 +104,7 @@ async function callModel(
         instructions: PROMPTS[role],
         input: JSON.stringify(redactedInput),
         store: false,
+        max_output_tokens: MAX_OUTPUT_TOKENS,
         text: { format: { type: "json_schema", name: role, schema: OUTPUT_JSON_SCHEMAS[role], strict: true } },
       },
       { signal, maxRetries: 0 },
@@ -142,6 +153,8 @@ export async function runRole<R extends AiRole>(
   let attempt: LlmAttempt;
   if (aiDisabled() || !model) {
     attempt = { output: null, errorCode: "disabled", tokensIn: null, tokensOut: null };
+  } else if (options.skipModel) {
+    attempt = { output: null, errorCode: options.skipModel, tokensIn: null, tokensOut: null };
   } else {
     attempt = await callModel(role, model, redactedInput, options.signal);
   }

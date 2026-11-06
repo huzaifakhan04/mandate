@@ -113,6 +113,8 @@ const outputSchema = z.union([
 
 interface ApplyFinalizeState {
   applicationId: string;
+  /** The applicant (the daily per-agent LLM narrative cap). */
+  agentId: string;
   narrative: NarrativeInputs;
   /** Private-world bots get the template narrative (no LLM calls for simulated volume). */
   isBot: boolean;
@@ -227,6 +229,7 @@ export const applyForLoanTool = defineTool({
     const [caller] = await ctx.scoped.selectFields(agents, { isBot: agents.isBot }, eq(agents.id, ctx.agentId));
     ctx.setFinalizeState({
       applicationId: result.applicationId,
+      agentId: ctx.agentId,
       narrative: result.narrative,
       isBot: caller?.isBot === true,
     } satisfies ApplyFinalizeState);
@@ -286,6 +289,7 @@ export const applyForLoanTool = defineTool({
     }
     const narrative = await narrateApplication(ctx.db, ctx.worldId, state.applicationId, state.narrative, {
       templateOnly: state.isBot,
+      agentId: state.agentId,
     });
     return withExplanation(envelope, narrative.explanation);
   },
