@@ -1,12 +1,15 @@
+import { after } from "next/server";
+
 import { createDocumentHandlers } from "@/server/auth/documentRoutes";
 import { getDb } from "@/server/db/client";
 
 /**
  * `GET`  — the signed-in owner's KYA documents for agent `id` (metadata only).
- * `POST` — upload one (multipart: `kind`, `file`; pdf/png/jpg ≤ 2 MB).
+ * `POST` — upload one (multipart: `kind`, `file`; pdf/png/jpg ≤ 2 MB); the
+ *          advisory KYA desk review runs after the response (`after()`).
  * See `src/server/auth/documentRoutes.ts`.
  */
-const handlers = createDocumentHandlers({ getDb });
+const handlers = createDocumentHandlers({ getDb, afterResponse: (task) => after(task) });
 
 type Params = { params: Promise<{ id: string }> };
 

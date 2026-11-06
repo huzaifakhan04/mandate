@@ -303,6 +303,10 @@ export const kyaDocuments = pgTable("kya_documents", {
   fileName: text("file_name"),
   aiReview: jsonb("ai_review"),
   reviewStatus: text("review_status").notNull().default("pending"),
+  /** P3 Task 4: the KYA desk's advisory verdict (approve | needs_info | reject); `review_status` stays authoritative. */
+  aiVerdict: text("ai_verdict"),
+  /** P3 Task 4: the KYA desk's findings (plain text, URLs stripped, ≤ 200 chars each). */
+  aiFindings: jsonb("ai_findings"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -427,6 +431,11 @@ export const applications = pgTable("applications", {
   decision: text("decision"),
   reasonCodes: text("reason_codes").array(),
   scorecard: jsonb("scorecard"),
+  /** P3 Task 4: the adverse-action notice of a DECLINED application (reasons, score, notice, explanation). */
+  adverseAction: jsonb("adverse_action"),
+  /** P3 Task 4: the after-commit narrative — explanation (loan officer), memo (risk officer), ai_run ids. */
+  narrative: jsonb("narrative"),
+  /** The loan officer's `ai_runs` row for this application (P3 Task 4). */
   aiRunId: uuid("ai_run_id").references(() => aiRuns.id),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

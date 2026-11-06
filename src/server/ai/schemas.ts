@@ -51,7 +51,8 @@ export const loanOfficerInputSchema = z.object({
 
 export const riskOfficerInputSchema = z.object({
   decision: z.enum(["approve", "decline"]),
-  approval: z.enum(["auto", "manual_review_declined"]),
+  /** The rules pipeline's approval authority (`n/a`: declined for another reason). */
+  approval: z.enum(["auto", "manual_review_declined", "n/a"]),
   reasons: z.array(reason).max(4),
   score: z.number().int().min(0).max(100),
   grade: z.enum(["A", "B", "C", "D", "E"]),

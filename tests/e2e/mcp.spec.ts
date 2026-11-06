@@ -182,7 +182,13 @@ test("M1: MCP tools/call honours the Idempotency-Key header (replay + header/arg
   expect(registered.status).toBe("OK");
   const apiKey = (registered.data as { api_key: string }).api_key;
   const auth = { authorization: `Bearer ${apiKey}` };
-  const apply = { amount_cents: 1000, term_days: 7, purpose: "E2E idempotency check" };
+  const apply = {
+    amount_cents: 1000,
+    term_days: 7,
+    purpose: "E2E idempotency check",
+    declarations: { no_other_debt: true },
+    attest: true,
+  };
 
   const first = await mcpCall(request, 31, "apply_for_loan", apply, { ...auth, "Idempotency-Key": "e2e-idem-1" });
   const replay = await mcpCall(request, 32, "apply_for_loan", apply, { ...auth, "Idempotency-Key": "e2e-idem-1" });

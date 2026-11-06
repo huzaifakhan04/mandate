@@ -34,6 +34,10 @@ export default defineConfig({
       // POST /api/test/session (the main world is on the real PayPal rail,
       // so a browser can't approve a sandbox order here). 404 in production.
       MANDATE_TEST_ENDPOINTS: "1",
+      // P3 Task 4: the AI roles (KYA desk after an upload, loan officer
+      // after an apply) use their templates — e2e never calls OpenAI, even
+      // when `.env.local` carries a key. `E2E_OPENAI=1` opts in.
+      OPENAI_DISABLED: process.env.E2E_OPENAI === "1" ? "" : "1",
     },
   },
 });

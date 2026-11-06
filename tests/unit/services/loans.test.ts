@@ -60,7 +60,7 @@ async function call(
   input: Record<string, unknown>,
   idempotencyKey: string | null = null,
 ) {
-  return runTool(findTool(toolName), toolName, input, {
+  return runTool(findTool(toolName), toolName, withAlaDefaults(toolName, input), {
     getDb: async () => db,
     authorization: `Bearer ${key}`,
     idempotencyKey,
@@ -69,6 +69,7 @@ async function call(
 
 import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
 import { claimAndMandate } from "../../helpers/kya";
+import { withAlaDefaults } from "../../helpers/world";
 
 /** Funds the world's pool by `amountCents` via a lender's sim note purchase. */
 async function fundPool(db: Db, worldId: string, amountCents: number) {
@@ -160,7 +161,13 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect((ok.envelope.data as Data).max_principal_cents).toBe(Number(pooled(30000)));
     expect(ok.envelope.next_actions[0]).toEqual({
       tool: "apply_for_loan",
-      args: { amount_cents: 25000, term_days: 14, purpose: "<describe what the money is for>" },
+      args: {
+        amount_cents: 25000,
+        term_days: 14,
+        purpose: "<describe what the money is for>",
+        declarations: { no_other_debt: true },
+        attest: true,
+      },
     });
 
     const bad = await call(db, "check_eligibility", key, { amount_cents: 500, term_days: 45 });

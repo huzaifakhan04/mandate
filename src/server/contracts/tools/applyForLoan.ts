@@ -1,8 +1,13 @@
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-import { fail, ok } from "../envelope";
+import { agents } from "../../db/schema";
+import { REASON_PRIORITY } from "../../domain/reasons";
+import type { Explanation } from "../../services/adverseAction";
+import { createLoanOffer, type NarrativeInputs } from "../../services/loans";
+import { narrateApplication } from "../../services/underwritingNarrative";
+import { fail, ok, type Envelope } from "../envelope";
 import { defineTool } from "../registry";
-import { createLoanOffer } from "../../services/loans";
 
 const invoiceSchema = z.object({
   client_email: z.email(),
@@ -14,11 +19,35 @@ const invoiceSchema = z.object({
 // M7: the invoice-size rule (≥ principal + fee) is checked by
 // `createLoanOffer` (the fee depends on the agent's grade), not here, so
 // the error can carry the computed minimum.
+/**
+ * The ALA application (P3 Task 4), sections A–H. Backwards compatible:
+ * every new field is optional, but E (`declarations.no_other_debt`) and H
+ * (`attest`) default to false, which declines with `declaration_missing`.
+ */
 const inputSchema = z.object({
+  // A. Identity (what the agent declares; stored as given).
+  identity: z
+    .object({
+      operator: z.string().max(200).optional(),
+      model: z.string().max(200).optional(),
+      code_manifest_hash: z.string().max(200).optional(),
+    })
+    .optional(),
+  // C. Amount and term.
   amount_cents: z.number().int().min(1),
   term_days: z.number().int().min(1),
+  // B. Purpose.
   purpose: z.string().min(5).max(200),
+  // D. Collateral.
   invoice: invoiceSchema.optional(),
+  // E. Declarations.
+  declarations: z.object({ no_other_debt: z.boolean() }).optional(),
+  // F. Consent to a credit check of bank records.
+  consent_bank_records: z.boolean().optional(),
+  // G. Mandate reference: filled by the server; name the version you expect to be refused if it changed.
+  mandate_version: z.number().int().min(1).optional(),
+  // H. Attestation that the application is accurate.
+  attest: z.boolean().optional(),
 });
 
 const disclosureSchema = z.object({
@@ -48,7 +77,23 @@ const disclosureSchema = z.object({
   right_to_statement: z.string(),
 });
 
-/** OFFERED (offer + disclosure) or DECLINED (reason codes). */
+export const explanationSchema = z.object({
+  source: z.enum(["ai", "template"]),
+  summary: z.string(),
+  reasons_explained: z.array(z.object({ code: z.enum(REASON_PRIORITY), explanation: z.string() })),
+  next_steps: z.array(z.string()),
+});
+
+export const adverseActionSchema = z.object({
+  reasons: z.array(z.object({ code: z.enum(REASON_PRIORITY), text: z.string() })).max(4),
+  score: z.number(),
+  grade: z.enum(["A", "B", "C", "D", "E"]),
+  score_factors: z.array(z.string()),
+  notice: z.string(),
+  explanation: explanationSchema,
+});
+
+/** OFFERED (offer + disclosure) or DECLINED (reason codes + adverse action); both carry the explanation. */
 const outputSchema = z.union([
   z.object({
     application_id: z.string(),
@@ -56,12 +101,36 @@ const outputSchema = z.union([
     disclosure: disclosureSchema,
     disclosure_hash: z.string(),
     expires_sim_at: z.string(),
+    explanation: explanationSchema,
   }),
   z.object({
     application_id: z.string(),
     reasons: z.array(z.string()),
+    adverse_action: adverseActionSchema,
+    explanation: explanationSchema,
   }),
 ]);
+
+interface ApplyFinalizeState {
+  applicationId: string;
+  narrative: NarrativeInputs;
+  /** Private-world bots get the template narrative (no LLM calls for simulated volume). */
+  isBot: boolean;
+}
+
+function isApplyFinalizeState(state: unknown): state is ApplyFinalizeState {
+  return typeof state === "object" && state !== null && "applicationId" in state && "narrative" in state;
+}
+
+/** The envelope with `data.explanation` (and the notice's copy) replaced; nothing else changes. */
+function withExplanation(envelope: Envelope<unknown>, explanation: Explanation): Envelope<unknown> {
+  const data = envelope.data as Record<string, unknown>;
+  const adverse = data.adverse_action as Record<string, unknown> | undefined;
+  return {
+    ...envelope,
+    data: { ...data, explanation, ...(adverse ? { adverse_action: { ...adverse, explanation } } : {}) },
+  };
+}
 
 export const applyForLoanTool = defineTool({
   name: "apply_for_loan",
@@ -81,7 +150,14 @@ export const applyForLoanTool = defineTool({
     "gives manual_review_declined, an invoice covering < 1.1× the amount gives insufficient_collateral " +
     "(new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is " +
     "risk-based; the disclosure shows your score, grade and the rate components, and names the " +
-    "mandate_id and mandate_version it was made under.",
+    "mandate_id and mandate_version it was made under. The application has sections A–H: identity " +
+    "{operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice " +
+    "(optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), " +
+    "mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no " +
+    "longer current) and attest (REQUIRED true: the application is accurate). Without " +
+    "declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED " +
+    "response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, " +
+    "explanation}; every response carries an explanation. Re-read either later with get_application.",
   auth: "agent",
   mutating: true,
   // KYA tier gate (runTool): unclaimed → 403 CLAIM_REQUIRED with the
@@ -100,6 +176,17 @@ export const applyForLoanTool = defineTool({
       amountCents: BigInt(input.amount_cents),
       termDays: input.term_days,
       purpose: input.purpose,
+      identity: input.identity
+        ? {
+            operator: input.identity.operator,
+            model: input.identity.model,
+            codeManifestHash: input.identity.code_manifest_hash,
+          }
+        : null,
+      noOtherDebt: input.declarations?.no_other_debt === true,
+      consentBankRecords: input.consent_bank_records === true,
+      expectedMandateVersion: input.mandate_version ?? null,
+      attest: input.attest === true,
       invoice: input.invoice
         ? {
             clientEmail: input.invoice.client_email,
@@ -126,9 +213,32 @@ export const applyForLoanTool = defineTool({
       );
     }
 
+    if (result.outcome === "mandate_changed") {
+      return fail(
+        "MANDATE_CHANGED",
+        `Your mandate is now version ${result.currentMandateVersion ?? "none"}, not ${input.mandate_version}. ` +
+          "Re-read it (get_status), check eligibility, and apply again.",
+        ["mandate_changed"],
+        { current_mandate_version: result.currentMandateVersion },
+      );
+    }
+
+    // Ruling K: the narrative (loan officer, risk officer for grade D) is written after commit.
+    const [caller] = await ctx.scoped.selectFields(agents, { isBot: agents.isBot }, eq(agents.id, ctx.agentId));
+    ctx.setFinalizeState({
+      applicationId: result.applicationId,
+      narrative: result.narrative,
+      isBot: caller?.isBot === true,
+    } satisfies ApplyFinalizeState);
+
     if (result.outcome === "declined") {
       return ok(
-        { application_id: result.applicationId, reasons: result.reasons },
+        {
+          application_id: result.applicationId,
+          reasons: result.reasons,
+          adverse_action: result.adverseAction,
+          explanation: result.adverseAction.explanation,
+        },
         {
           status: "DECLINED",
           summary: `Application declined: ${result.reasons.join(", ")}.`,
@@ -147,6 +257,7 @@ export const applyForLoanTool = defineTool({
         disclosure: result.disclosure,
         disclosure_hash: result.disclosureHash,
         expires_sim_at: result.expiresSimAt.toISOString(),
+        explanation: result.narrative.templateExplanation,
       },
       {
         status: "OFFERED",
@@ -159,5 +270,19 @@ export const applyForLoanTool = defineTool({
         ],
       },
     );
+  },
+  /**
+   * After commit: the loan officer's explanation (and the grade D risk
+   * memo) are written to the application, time-bounded; the envelope gets
+   * the new `explanation`. Decision fields are never touched here.
+   */
+  finalize: async (envelope, ctx, state) => {
+    if (!isApplyFinalizeState(state)) {
+      return envelope;
+    }
+    const narrative = await narrateApplication(ctx.db, ctx.worldId, state.applicationId, state.narrative, {
+      templateOnly: state.isBot,
+    });
+    return withExplanation(envelope, narrative.explanation);
   },
 });

@@ -16,6 +16,8 @@ import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
 import {
+  aiRuns,
+  applications,
   agents,
   events,
   journalEntries,
@@ -203,6 +205,10 @@ describe("private worlds (P2 Task 6)", () => {
     const worldLoans = await db.select().from(loans).where(eq(loans.worldId, worldId));
     expect(worldLoans.length).toBeGreaterThanOrEqual(2);
     expect(worldLoans.some((loan) => loan.status === "repaid")).toBe(true);
+    // P3 Task 4: bots get the template narrative, never an LLM call (no ai_runs rows).
+    const botApplications = await db.select().from(applications).where(eq(applications.worldId, worldId));
+    expect(botApplications.every((application) => application.narrative !== null)).toBe(true);
+    expect(await db.select().from(aiRuns).where(eq(aiRuns.worldId, worldId))).toEqual([]);
 
     expect(await paypalRailOps(worldId)).toEqual([]);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);

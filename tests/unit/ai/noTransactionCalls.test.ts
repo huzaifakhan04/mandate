@@ -27,7 +27,12 @@ import { describe, expect, it } from "vitest";
 const ROOT = path.resolve(__dirname, "../../..");
 
 /** After-commit modules allowed to import `ai/run` / `ai/client` (besides `src/server/ai/**`). */
-const AI_CALLERS: string[] = [];
+const AI_CALLERS: string[] = [
+  // P3 Task 4: apply_for_loan's `finalize` (loan officer, risk officer).
+  "src/server/services/underwritingNarrative.ts",
+  // P3 Task 4: the dashboard upload route's `after()` (KYA desk).
+  "src/server/services/kyaDesk.ts",
+];
 
 const AI_NETWORK_IMPORT_RE = /import\s+(?!type\b)[^;]*?from\s+["'][^"']*\/ai\/(run|client)["']/g;
 const TRANSACTION_RE = /\.transaction\(|\bctx\.tx\b/;
@@ -51,6 +56,10 @@ describe("OpenAI is never called inside a DB transaction", () => {
     });
     const outsiders = importers.filter((file) => !file.startsWith("src/server/ai/") && !AI_CALLERS.includes(file));
     expect(outsiders).toEqual([]);
+    // Every listed caller really is one (the list doesn't go stale).
+    for (const file of AI_CALLERS) {
+      expect(importers, file).toContain(file);
+    }
   });
 
   it("the AI layer and the AI callers open no transaction and never touch ctx.tx", () => {

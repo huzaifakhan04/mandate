@@ -95,6 +95,9 @@ async function applyAndAccept(db: Db, rng: () => number, bot: BotRef): Promise<B
       due_in_days: termDays,
       description: `Invoice to ${client}`,
     },
+    // ALA sections E and H (P3 Task 4): required, else declaration_missing.
+    declarations: { no_other_debt: true },
+    attest: true,
   });
   const actions: BotAction[] = [{ bot: bot.name, action: "apply_for_loan", amountCents, status: applied.status }];
   if (applied.status !== "OFFERED") {

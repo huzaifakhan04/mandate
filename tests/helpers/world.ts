@@ -48,7 +48,30 @@ export async function createTestAgent(
   return { agentId: agent!.id, key: generated.key, principalId, mandateId };
 }
 
+/**
+ * P3 Task 4: `apply_for_loan` declines with `declaration_missing` unless the
+ * application carries ALA section E (`declarations.no_other_debt: true`)
+ * and section H (`attest: true`). `call` sends them by default (a test's
+ * own values win); `callRaw` sends the input exactly as given.
+ */
+export const ALA_DEFAULTS = { declarations: { no_other_debt: true }, attest: true } as const;
+
+/** `input` with `ALA_DEFAULTS` under it for `apply_for_loan` (for suites with their own `call`). */
+export function withAlaDefaults(toolName: string, input: Record<string, unknown>): Record<string, unknown> {
+  return toolName === "apply_for_loan" ? { ...ALA_DEFAULTS, ...input } : input;
+}
+
 export async function call(
+  db: Db,
+  toolName: string,
+  key: string,
+  input: Record<string, unknown>,
+  idempotencyKey: string | null = null,
+) {
+  return callRaw(db, toolName, key, withAlaDefaults(toolName, input), idempotencyKey);
+}
+
+export async function callRaw(
   db: Db,
   toolName: string,
   key: string,

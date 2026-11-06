@@ -28,6 +28,7 @@ import { createWorld } from "@/server/services/worlds";
 
 import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
 import { claimAndMandate } from "../../helpers/kya";
+import { withAlaDefaults } from "../../helpers/world";
 
 type Data = Record<string, unknown>;
 
@@ -58,7 +59,7 @@ async function createTestAgent(db: Db, worldId: string, payoutReceiver: string, 
 }
 
 async function call(db: Db, toolName: string, key: string, input: Record<string, unknown>) {
-  return runTool(findTool(toolName), toolName, input, { getDb: async () => db, authorization: `Bearer ${key}` });
+  return runTool(findTool(toolName), toolName, withAlaDefaults(toolName, input), { getDb: async () => db, authorization: `Bearer ${key}` });
 }
 
 async function fundPool(db: Db, worldId: string, amountCents: number, receiver = "lender@example.com") {

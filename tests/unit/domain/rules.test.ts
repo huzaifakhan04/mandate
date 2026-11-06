@@ -39,7 +39,7 @@ function facts(overrides: Partial<ApplicationFacts> = {}): ApplicationFacts {
     collateral: "none",
     invoiceCoverageBps: null,
     sanctions: { name: "Acme Agent", operator: "acme-ops", list: sanctionsStubList(DEFAULT_SANCTIONS_STUB) },
-    declarations: { noOtherDebt: true },
+    declarations: { noOtherDebt: true, attested: true },
     openLoanExists: false,
     availableLiquidityCents: 1_000_000n,
     ...overrides,
@@ -168,7 +168,16 @@ describe("evaluateApplication (rules pipeline)", () => {
 
   it("declarations: an empty purpose or no 'no other debt' attestation → declaration_missing", () => {
     expect(evaluateApplication(facts({ purpose: "   " })).reasons).toEqual(["declaration_missing"]);
-    expect(evaluateApplication(facts({ declarations: { noOtherDebt: false } })).reasons).toEqual([
+    expect(evaluateApplication(facts({ declarations: { noOtherDebt: false, attested: true } })).reasons).toEqual([
+      "declaration_missing",
+    ]);
+  });
+
+  it("ALA H: no attestation → declaration_missing (one reason even when both declarations are missing)", () => {
+    expect(evaluateApplication(facts({ declarations: { noOtherDebt: true, attested: false } })).reasons).toEqual([
+      "declaration_missing",
+    ]);
+    expect(evaluateApplication(facts({ declarations: { noOtherDebt: false, attested: false } })).reasons).toEqual([
       "declaration_missing",
     ]);
   });

@@ -10,6 +10,7 @@ import { agents, apiKeys, journalEntries, loans, repaymentLinks } from "@/server
 import { simApprove } from "@/server/rail/simHandler";
 import { createWorld } from "@/server/services/worlds";
 import { claimAndMandate } from "../../helpers/kya";
+import { withAlaDefaults } from "../../helpers/world";
 
 /**
  * Shared Task 8 fixtures (sim rail): worlds, agents, a funded pool, and
@@ -51,7 +52,7 @@ export async function createTestAgent(
 }
 
 export async function call(db: Db, toolName: string, key: string, input: Record<string, unknown>) {
-  return runTool(findTool(toolName), toolName, input, { getDb: async () => db, authorization: `Bearer ${key}` });
+  return runTool(findTool(toolName), toolName, withAlaDefaults(toolName, input), { getDb: async () => db, authorization: `Bearer ${key}` });
 }
 
 /** A lender buys `amountCents` of notes and confirms it (the pool is funded). */

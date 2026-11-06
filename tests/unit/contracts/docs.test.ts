@@ -81,6 +81,18 @@ describe("renderAgentsMd", () => {
     expect(md).toContain("80%");
   });
 
+  it("documents the ALA application A–H with an example, adverse action and get_application (P3 Task 4)", () => {
+    expect(md).toContain("## Applying for a loan");
+    for (const field of ["identity", "declarations", "no_other_debt", "consent_bank_records", "mandate_version", "attest"]) {
+      expect(md).toContain(field);
+    }
+    expect(md).toContain('"attest": true');
+    expect(md).toContain("adverse_action");
+    expect(md).toContain("declaration_missing");
+    expect(md).toContain("MANDATE_CHANGED");
+    expect(md).toContain("### `get_application`");
+  });
+
   it("is deterministic for the same registry and base URL", () => {
     const again = renderAgentsMd(registry, BASE_URL, statusTable);
     expect(again).toBe(md);

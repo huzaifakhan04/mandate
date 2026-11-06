@@ -316,8 +316,13 @@ export interface AgentDetailView extends AgentCardView {
     contentType: string | null;
     sizeBytes: number | null;
     reviewStatus: string;
+    /** P3 Task 4: the KYA desk's advisory verdict and findings (`null` until it has run). */
+    aiVerdict: string | null;
+    aiFindings: unknown;
     createdAt: Date;
   }>;
+  /** P3 Task 4: the latest declined applications with their adverse-action notice (newest first). */
+  declines: DeclineView[];
   signingKey: SigningKeyView | null;
   apiKey: { prefix: string; createdAt: Date; lastUsedAt: Date | null } | null;
   loans: LoanSummary[];
@@ -327,6 +332,44 @@ export interface AgentDetailView extends AgentCardView {
 }
 
 export const DRAWER_EVENT_LIMIT = 40;
+export const DRAWER_DECLINE_LIMIT = 3;
+
+export interface DeclineView {
+  id: string;
+  amountCents: bigint;
+  termDays: number;
+  createdAt: Date;
+  reasons: Array<{ code: string; text: string }>;
+  score: number | null;
+  grade: string | null;
+  /** The explanation's summary (loan officer or template); `null` if none was stored. */
+  explanation: string | null;
+}
+
+function declineView(row: {
+  id: string;
+  amountCents: bigint;
+  termDays: number;
+  createdAt: Date;
+  adverseAction: unknown;
+}): DeclineView {
+  const adverse = (row.adverseAction ?? {}) as {
+    reasons?: Array<{ code: string; text: string }>;
+    score?: number;
+    grade?: string;
+    explanation?: { summary?: string };
+  };
+  return {
+    id: row.id,
+    amountCents: row.amountCents,
+    termDays: row.termDays,
+    createdAt: row.createdAt,
+    reasons: Array.isArray(adverse.reasons) ? adverse.reasons : [],
+    score: typeof adverse.score === "number" ? adverse.score : null,
+    grade: typeof adverse.grade === "string" ? adverse.grade : null,
+    explanation: typeof adverse.explanation?.summary === "string" ? adverse.explanation.summary : null,
+  };
+}
 
 /** The fingerprint of a raw base64 Ed25519 public key, as `register_public_key` reports it. */
 export function keyFingerprint(publicKeyB64: string): string {
@@ -359,10 +402,25 @@ export async function agentDetail(
       contentType: kyaDocuments.contentType,
       sizeBytes: kyaDocuments.sizeBytes,
       reviewStatus: kyaDocuments.reviewStatus,
+      aiVerdict: kyaDocuments.aiVerdict,
+      aiFindings: kyaDocuments.aiFindings,
       createdAt: kyaDocuments.createdAt,
     },
     and(eq(kyaDocuments.agentId, agent.id), eq(kyaDocuments.principalId, principalId)),
     desc(kyaDocuments.createdAt),
+  );
+
+  const declineRows = await world.selectFields(
+    applications,
+    {
+      id: applications.id,
+      amountCents: applications.amountCents,
+      termDays: applications.termDays,
+      createdAt: applications.createdAt,
+      adverseAction: applications.adverseAction,
+    },
+    and(eq(applications.agentId, agent.id), eq(applications.decision, "declined"))!,
+    desc(applications.createdAt),
   );
 
   const key = await activeAgentKey(db, agent.worldId, agent.id);
@@ -425,6 +483,7 @@ export async function agentDetail(
     currentMandate: mandate,
     mandateHistory: history,
     documents,
+    declines: declineRows.slice(0, DRAWER_DECLINE_LIMIT).map(declineView),
     signingKey: key ? { fingerprint: keyFingerprint(key.publicKey), createdAt: key.createdAt } : null,
     apiKey: apiKey ? { prefix: apiKey.prefix, createdAt: apiKey.createdAt, lastUsedAt: apiKey.lastUsedAt } : null,
     loans: loanRows,

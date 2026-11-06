@@ -252,6 +252,9 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
             due_in_days: TERM_DAYS,
             description: "E2E-001",
           },
+          // P3 Task 4: ALA sections E and H are required.
+          declarations: { no_other_debt: true },
+          attest: true,
         },
         borrowerKey,
       );

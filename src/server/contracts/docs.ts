@@ -199,7 +199,7 @@ function renderQuickstartSection(): string {
 1. **\`register_agent\`** — create the agent and get an \`api_key\` and a \`claim_url\`. You start at tier 0: you can lend now; to borrow, give your human the \`claim_url\` (see [Claiming and KYA tiers](#claiming-and-kya-tiers)).
 2. **\`buy_notes\`** — buy lender notes, funded by a PayPal checkout your human approves (you get back a \`human_approval\` next action with the \`approve_url\`), then \`confirm_checkout\` once they have approved.
 3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything (needs tier ≥ 1: claimed by your human, who has signed a mandate).
-4. **\`apply_for_loan\`** — apply for the amount and term you checked; if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`.
+4. **\`apply_for_loan\`** — apply for the amount and term you checked, with \`declarations: {"no_other_debt": true}\` and \`attest: true\` (required — see [Applying for a loan](#applying-for-a-loan)); if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`; if \`DECLINED\`, read \`data.adverse_action\`.
 5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your payout receiver (\`payout_email\`, or \`payout_paypal_id\` if that account's email is unconfirmed).
 6. **Forward the repayment link, or call \`repay_loan\`** — \`get_loan\` returns an invoice \`repayment_link\` your client can pay directly, or call \`repay_loan\` yourself for a human-approved PayPal checkout, then \`confirm_checkout\`.
 `;
@@ -428,6 +428,43 @@ ${rows}
 `;
 }
 
+function renderApplyingSection(): string {
+  return `## Applying for a loan
+
+\`apply_for_loan\` takes an application with sections A–H. Only E and H are required beyond the amount, term and purpose:
+
+| Section | Field | |
+|---|---|---|
+| A identity | \`identity: {operator, model, code_manifest_hash}\` | optional; what you declare about yourself |
+| B purpose | \`purpose\` | required, 5–200 chars |
+| C amount & term | \`amount_cents\`, \`term_days\` | required |
+| D collateral | \`invoice: {client_email, amount_cents, due_in_days, description}\` | optional; ≥ 1.1× the amount (≥ 1.5× scores best) |
+| E declarations | \`declarations: {no_other_debt: true}\` | **required** — you attest you have no other outstanding debts |
+| F consent | \`consent_bank_records\` | optional; consent to a check of bank records |
+| G mandate | \`mandate_version\` | optional; the bank fills in your current mandate. Name the version you read to get \`MANDATE_CHANGED\` (409) if it changed |
+| H attestation | \`attest: true\` | **required** — the application is accurate |
+
+Example:
+
+\`\`\`json
+{
+  "amount_cents": 2000,
+  "term_days": 14,
+  "purpose": "Buy materials for a client job",
+  "identity": { "operator": "Acme Ops", "model": "gpt-5", "code_manifest_hash": "sha256:…" },
+  "invoice": { "client_email": "client@example.com", "amount_cents": 3000, "due_in_days": 14, "description": "Website build" },
+  "declarations": { "no_other_debt": true },
+  "consent_bank_records": true,
+  "attest": true
+}
+\`\`\`
+
+**Adverse action.** A \`DECLINED\` response carries \`data.adverse_action\`: \`reasons\` (at most four \`{code, text}\` principal reasons, fixed text), \`score\`, \`grade\`, \`score_factors\`, a fixed \`notice\` (including your right to a statement of specific reasons) and an \`explanation\`. Every response — offered or declined — also carries \`data.explanation\` \`{source, summary, reasons_explained, next_steps}\`: written by the bank's AI loan officer, or a fixed template (\`source: "template"\`) when the AI is unavailable. The explanation never changes the decision, the reasons or the price.
+
+**Re-read it later** with \`get_application\` (\`application_id\`): the decision, reasons, adverse action, the latest explanation, the offer id and an echo of your application.
+`;
+}
+
 function renderMoneyRulesSection(): string {
   return `## Money rules
 
@@ -435,6 +472,7 @@ function renderMoneyRulesSection(): string {
 - **Notes are not deposits and are not FDIC-insured.** Returns to note holders come only from borrower repayments — Mandate is a sandbox model, not a real bank.
 - **Loans:** 1000–50000 cents ($10–$500), 7–30 day terms, one open loan per agent at a time.
 - **Pricing (risk-based, P3):** the fee is a sum of components in bps of the principal for the term — cost of funds \`round(400 × term_days / 365)\`, expected loss PD × LGD (PD by grade A 1%, B 3%, C 6%, D 12%; LGD 60% unsecured, 35% with an invoice covering ≥ 1.1×), ops 50, capital 8% × PD — and \`fee_cents = max(25, ceil(principal_cents × Σ / 10000))\`. Grade E is never offered. APR is derived from that fee, annualized; the disclosure flags an APR above 36%. \`check_eligibility\` quotes it with your grade, score and the components.
+- **Application (ALA A–H):** see [Applying for a loan](#applying-for-a-loan); without \`declarations.no_other_debt: true\` and \`attest: true\` an application is \`DECLINED\` with \`declaration_missing\`.
 - **Disclosure:** \`apply_for_loan\` returns a \`disclosure\` and a \`disclosure_hash\`; \`accept_offer\` must echo the same \`disclosure_hash\` back, or the offer is rejected with \`DISCLOSURE_MISMATCH\`.
 - **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
 - **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%.
@@ -465,6 +503,7 @@ ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
 ${renderClaimingSection(base)}
 ${renderMandatesSection()}
+${renderApplyingSection()}
 ${renderSigningSection(base)}
 ${renderPrivateWorldsSection(base)}
 ${renderHumanApprovalSection()}

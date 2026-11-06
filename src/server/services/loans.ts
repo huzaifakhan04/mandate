@@ -21,6 +21,15 @@ import { computeScore, type Grade, type ScoreResult } from "../domain/scorecard"
 import { TIER_MAX_PER_LOAN_CENTS, type KyaTier } from "../domain/kya";
 import type { MandateCollateral } from "../domain/mandate";
 import { invoiceCoverageBps, recordScore, scoreFacts } from "./credit";
+import type { LoanOfficerInput, RiskOfficerInput } from "../ai/schemas";
+import {
+  buildAdverseAction,
+  loanOfficerInputFor,
+  riskOfficerInputFor,
+  templateExplanation,
+  type AdverseAction,
+  type Explanation,
+} from "./adverseAction";
 import { postJournal } from "../ledger/postJournal";
 import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } from "../paypal/operations";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
@@ -176,6 +185,8 @@ interface UnderwriteRequest {
   collateral: MandateCollateral | null;
   /** The invoice face backing the request; `null` without one. */
   invoiceAmountCents: bigint | null;
+  /** ALA sections E and H; `check_eligibility` (advisory) takes them as given. */
+  declarations: { noOtherDebt: boolean; attested: boolean };
 }
 
 interface Underwriting {
@@ -185,6 +196,8 @@ interface Underwriting {
   exposureCents: bigint;
   tier: KyaTier;
   availableLiquidityCents: bigint;
+  /** Invoice face ÷ principal in bps; `null` without an invoice. */
+  coverageBps: number | null;
 }
 
 /**
@@ -226,12 +239,11 @@ async function underwrite(
     collateral: request.collateral,
     invoiceCoverageBps: coverageBps,
     sanctions: { name: agent.name, operator: agent.operator, list: sanctionsStubList() },
-    // ALA declarations arrive in P3 Task 4; until then they are taken as given.
-    declarations: { noOtherDebt: true },
+    declarations: request.declarations,
     openLoanExists: await hasOpenLoan(db, worldId, agentId),
     availableLiquidityCents,
   });
-  return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents };
+  return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents, coverageBps };
 }
 
 /** The disclosure's rate components (bps of the principal for the term). */
@@ -325,6 +337,7 @@ export async function checkEligibility(
       purpose: "eligibility check",
       collateral: options.collateral ?? null,
       invoiceAmountCents: options.invoiceAmountCents ?? null,
+      declarations: { noOtherDebt: true, attested: true },
     },
   );
   // A missing mandate is the tier gate's `mandate_missing` blocker (reported by the tool).
@@ -372,11 +385,42 @@ export interface InvoiceInput {
   description: string;
 }
 
+/**
+ * The ALA application (P3 Task 4): A identity (declared), B purpose, C
+ * amount & term, D collateral (invoice), E declarations, F consent to a
+ * check of bank records, G mandate reference (filled by the server; the
+ * agent may name the version it expects), H attestation.
+ */
 export interface LoanApplicationInput {
   amountCents: bigint;
   termDays: number;
   purpose: string;
   invoice: InvoiceInput | null;
+  /** A: what the agent declares about itself (stored as given). */
+  identity?: { operator?: string; model?: string; codeManifestHash?: string } | null;
+  /** E: "no other outstanding debts" — must be true. */
+  noOtherDebt?: boolean;
+  /** F: consent to a credit check of bank records. */
+  consentBankRecords?: boolean;
+  /** G: the mandate version the agent expects; a different current version → `mandate_changed`. */
+  expectedMandateVersion?: number | null;
+  /** H: the agent attests the application is accurate — must be true. */
+  attest?: boolean;
+}
+
+/** The ALA as stored on `applications.sections` and echoed by `get_application`. */
+export interface AlaSections {
+  ala_version: 1;
+  identity: { operator: string | null; model: string | null; code_manifest_hash: string | null } | null;
+  purpose: string;
+  amount_term: { amount_cents: number; term_days: number };
+  collateral: {
+    invoice: { client_email: string; amount_cents: number; due_in_days: number; description: string } | null;
+  };
+  declarations: { no_other_debt: boolean };
+  consent_bank_records: boolean;
+  mandate: { mandate_id: string | null; mandate_version: number | null; expected_version: number | null };
+  attest: boolean;
 }
 
 /** The disclosure shown to the agent; its canonical JSON's sha256 is what `accept_offer` must echo back. */
@@ -407,6 +451,15 @@ export interface Disclosure {
   right_to_statement: typeof RIGHT_TO_STATEMENT_TEXT;
 }
 
+/** What `finalize` needs to write the narrative after commit (P3 Task 4). */
+export interface NarrativeInputs {
+  loanOfficer: LoanOfficerInput;
+  /** Grade D only (the risk officer's memo). */
+  riskOfficer: RiskOfficerInput | null;
+  /** The template explanation the handler returned. */
+  templateExplanation: Explanation;
+}
+
 export const RIGHT_TO_STATEMENT_TEXT =
   "Right to a statement of specific reasons: if your application is declined, you are told the principal reasons.";
 
@@ -418,6 +471,9 @@ export type CreateLoanOfferOutcome =
       primary: ReasonCode;
       decision: ApplicationDecision;
       credit: ScoreResult;
+      /** P3 Task 4: the notice (with the template explanation), also stored on the application. */
+      adverseAction: AdverseAction;
+      narrative: NarrativeInputs;
     }
   | {
       outcome: "offered";
@@ -428,7 +484,10 @@ export type CreateLoanOfferOutcome =
       expiresSimAt: Date;
       decision: ApplicationDecision;
       credit: ScoreResult;
+      narrative: NarrativeInputs;
     }
+  /** P3 Task 4 (ALA G): the agent expected another mandate version. Nothing is written. */
+  | { outcome: "mandate_changed"; currentMandateVersion: number | null }
   /**
    * M7: the invoice doesn't cover principal + the quoted fee. Nothing is
    * written (no application row) — the tool answers INVALID_REQUEST.
@@ -503,13 +562,20 @@ export async function createLoanOffer(
   // superseded underneath a concurrent acceptance of it.
   await lockNoteSeries(tx, worldId);
 
-  const { decision, credit, mandate } = await underwrite(tx, worldId, agentId, simNow, {
+  const { decision, credit, mandate, coverageBps } = await underwrite(tx, worldId, agentId, simNow, {
     amountCents: input.amountCents,
     termDays: input.termDays,
     purpose: input.purpose,
     collateral: input.invoice ? "invoice_link" : "none",
     invoiceAmountCents: input.invoice ? input.invoice.amountCents : null,
+    declarations: { noOtherDebt: input.noOtherDebt === true, attested: input.attest === true },
   });
+
+  // ALA G: the agent may name the mandate version it read; refuse if it moved.
+  const expectedVersion = input.expectedMandateVersion ?? null;
+  if (expectedVersion !== null && mandate?.version !== expectedVersion) {
+    return { outcome: "mandate_changed", currentMandateVersion: mandate?.version ?? null };
+  }
 
   if (input.invoice) {
     // M7: the bank repays itself from the invoice, so it must cover the
@@ -534,6 +600,7 @@ export async function createLoanOffer(
         }
       : null,
     mandateId: mandate?.id ?? null,
+    sections: alaSections(input, mandate),
     status: toDbStatus("SUBMITTED"),
   });
   if (!application) {
@@ -541,14 +608,29 @@ export async function createLoanOffer(
   }
   await recordScore(tx, worldId, agentId, credit, { simNow, applicationId: application.id });
 
+  const narrativeFor = (finalDecision: Pick<ApplicationDecision, "decision" | "reasons">): NarrativeInputs => {
+    const decided = { ...decision, ...finalDecision };
+    const loanOfficer = loanOfficerInputFor(decided, credit, input.amountCents, input.termDays);
+    return {
+      loanOfficer,
+      riskOfficer: decision.isGradeD
+        ? riskOfficerInputFor(decided, credit, input.amountCents, input.termDays, coverageBps)
+        : null,
+      templateExplanation: templateExplanation(loanOfficer),
+    };
+  };
+
   if (decision.decision === "decline" || !mandate || !decision.price) {
     const reasons = decision.reasons.length > 0 ? decision.reasons : (["mandate_missing"] as ReasonCode[]);
+    const narrative = narrativeFor({ decision: "decline", reasons });
+    const adverseAction = buildAdverseAction(reasons, credit, narrative.templateExplanation);
     await scoped(tx, worldId).update(
       applications,
       {
         status: toDbStatus(transition("SUBMITTED", "DECLINE")),
         decision: "declined",
         reasonCodes: reasons,
+        adverseAction,
       },
       eq(applications.id, application.id),
     );
@@ -566,6 +648,8 @@ export async function createLoanOffer(
       primary: reasons[0]!,
       decision,
       credit,
+      adverseAction,
+      narrative,
     };
   }
   const price = decision.price;
@@ -637,6 +721,41 @@ export async function createLoanOffer(
     expiresSimAt,
     decision,
     credit,
+    narrative: narrativeFor({ decision: "approve", reasons: [] }),
+  };
+}
+
+function alaSections(input: LoanApplicationInput, mandate: MandateRow | null): AlaSections {
+  const identity = input.identity ?? null;
+  return {
+    ala_version: 1,
+    identity: identity
+      ? {
+          operator: identity.operator ?? null,
+          model: identity.model ?? null,
+          code_manifest_hash: identity.codeManifestHash ?? null,
+        }
+      : null,
+    purpose: input.purpose,
+    amount_term: { amount_cents: Number(input.amountCents), term_days: input.termDays },
+    collateral: {
+      invoice: input.invoice
+        ? {
+            client_email: input.invoice.clientEmail,
+            amount_cents: Number(input.invoice.amountCents),
+            due_in_days: input.invoice.dueInDays,
+            description: input.invoice.description,
+          }
+        : null,
+    },
+    declarations: { no_other_debt: input.noOtherDebt === true },
+    consent_bank_records: input.consentBankRecords === true,
+    mandate: {
+      mandate_id: mandate?.id ?? null,
+      mandate_version: mandate?.version ?? null,
+      expected_version: input.expectedMandateVersion ?? null,
+    },
+    attest: input.attest === true,
   };
 }
 
@@ -1079,4 +1198,32 @@ export function disbursementFailureReasonCodes(reason: string | null): string[] 
   const specific = reason.startsWith("payout_error:") ? reason.toLowerCase() : `payout_${reason.toLowerCase()}`;
   // De-duplicated: an item status of FAILED would otherwise repeat `payout_failed`.
   return [...new Set(["payout_failed", specific])];
+}
+
+// ---------------------------------------------------------------------
+// get_application (P3 Task 4)
+// ---------------------------------------------------------------------
+
+export interface ApplicationView {
+  application: typeof applications.$inferSelect;
+  offerId: string | null;
+}
+
+/** One of the agent's own applications with its offer id; `null` if it isn't theirs (or doesn't exist). */
+export async function getApplicationView(
+  db: Db,
+  worldId: string,
+  agentId: string,
+  applicationId: string,
+): Promise<ApplicationView | null> {
+  const world = scoped(db, worldId);
+  const [application] = await world.select(
+    applications,
+    and(eq(applications.id, applicationId), eq(applications.agentId, agentId))!,
+  );
+  if (!application) {
+    return null;
+  }
+  const [offer] = await world.selectFields(offers, { id: offers.id }, eq(offers.applicationId, application.id));
+  return { application, offerId: offer?.id ?? null };
 }

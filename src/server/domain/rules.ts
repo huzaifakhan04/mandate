@@ -20,7 +20,7 @@ import { GRADE_LIMIT_CENTS, type Grade, type ScoreResult } from "./scorecard";
  *   4. grade E             insufficient_credit_history (history component 0), else score_too_low
  *   5. amount vs cap       amount_exceeds_limit; grade D above 5000 → manual_review_declined
  *   6. collateral          insufficient_collateral (invoice given, coverage < 1.1×)
- *   7. declarations        declaration_missing (empty purpose, or no "no other debt" attestation)
+ *   7. declarations        declaration_missing (empty purpose, no "no other debt" declaration, or no attestation)
  *   8. capacity            open_loan_exists, insufficient_liquidity
  *
  * Effective per-loan cap = min(grade limit, tier cap, mandate max_per_loan).
@@ -62,10 +62,11 @@ export interface ApplicationFacts {
   invoiceCoverageBps: number | null;
   sanctions: { name: string; operator: string; list: readonly string[] };
   /**
-   * ALA section E. P3 Task 2 passes `noOtherDebt: true` (declarations are
-   * not collected yet); Task 4 makes them required input.
+   * ALA section E (`no_other_debt`) and section H (`attest`): both must be
+   * true, else `declaration_missing`. `check_eligibility` (advisory) takes
+   * them as given; `apply_for_loan` passes the agent's answers.
    */
-  declarations: { noOtherDebt: boolean };
+  declarations: { noOtherDebt: boolean; attested: boolean };
   openLoanExists: boolean;
   availableLiquidityCents: bigint;
   /** Pricing base rate (default 400 bps). */
@@ -185,7 +186,7 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
   }
 
   // 7. Declarations.
-  if (facts.purpose.trim().length === 0 || !facts.declarations.noOtherDebt) {
+  if (facts.purpose.trim().length === 0 || !facts.declarations.noOtherDebt || !facts.declarations.attested) {
     reasons.push("declaration_missing");
   }
 

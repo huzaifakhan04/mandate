@@ -149,6 +149,9 @@ export const checkEligibilityTool = defineTool({
                   term_days: input.term_days,
                   // Placeholder the agent must replace (5–200 chars).
                   purpose: PURPOSE_PLACEHOLDER,
+                  // ALA E and H (P3 Task 4): required; the agent declares and attests by sending them.
+                  declarations: { no_other_debt: true },
+                  attest: true,
                 },
               },
             ]
