@@ -42,10 +42,10 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 6. **Settlement.** Locally, the harness calls `POST /api/cron/reconcile` between agent turns and while it waits. Remotely, it only polls `get_loan`. It waits until the loan is `REPAID` and `loan.remainder_paid` appears in the loan's history.
 7. **Checks.** These use the public tools, called by the harness with the agents' keys:
    - notes are 3000;
-   - the loan has principal 1000 and fee 15, with a 1500 link;
+   - the loan has principal 1000 and fee 58 (P3 pricing v2, grade D with a 1.5× invoice), with a 1500 link;
    - the loan ends `REPAID` with 0 outstanding;
-   - the borrower's ±485 remainder lines are present;
-   - the lender earned 12. This exact value is checked locally only. Remotely, other note holders share the fee, so the check is 1–12.
+   - the borrower's ±442 remainder lines are present;
+   - the lender earned 46. This exact value is checked locally only. Remotely, other note holders share the fee, so the check is 1–46.
 
    Locally, `/api/test/ledger` also checks that the trial balance is 0, that no PayPal operation failed, and that exactly two payouts (disbursement and remainder) succeeded. Remotely, these checks are skipped and the results file says so.
 8. **Debrief.** The borrower is told the client paid and asked where things stand. Its answer is recorded but not asserted.

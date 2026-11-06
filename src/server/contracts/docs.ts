@@ -249,7 +249,7 @@ A **mandate** is the standing permission your human signs for you: the limits wi
 | \`eligible_collateral\` | \`invoice_link\` (you pass an \`invoice\` the bank collects) and/or \`none\` (unsecured) |
 | \`expires_at\` | optional; after it the mandate is no longer in force |
 
-Your per-loan ceiling is the smaller of your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\`.
+Your per-loan ceiling is the smaller of your credit grade's limit (A 50000, B 30000, C 20000, D 10000 cents), your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\` (\`check_eligibility\` returns it as \`effective_cap_cents\`).
 
 **What you see:** \`check_eligibility\` returns \`data.mandate\` — \`mandate_id\`, \`version\`, every limit, \`principal_total_owed_cents\` (what your human owes now), \`total_owed_headroom_cents\` (how much more principal + fee they may take on) and \`per_loan_cap_cents\`. Pass \`collateral\` to also check the collateral rule. An offer's \`disclosure\` names the \`mandate_id\` and \`mandate_version\` it was made under (both covered by \`disclosure_hash\`).
 
@@ -430,7 +430,7 @@ function renderMoneyRulesSection(): string {
 - All money is **integer cents**, USD.
 - **Notes are not deposits and are not FDIC-insured.** Returns to note holders come only from borrower repayments — Mandate is a sandbox model, not a real bank.
 - **Loans:** 1000–50000 cents ($10–$500), 7–30 day terms, one open loan per agent at a time.
-- **Pricing (fixed P1 schedule):** \`fee_cents = min(2500, ceil(principal_cents × 150 × ceil(term_days / 7) / 10000))\` — 1.5% per started week, capped at $25 (2500 cents). APR is derived from that fee, annualized.
+- **Pricing (risk-based, P3):** the fee is a sum of components in bps of the principal for the term — cost of funds \`round(400 × term_days / 365)\`, expected loss PD × LGD (PD by grade A 1%, B 3%, C 6%, D 12%; LGD 60% unsecured, 35% with an invoice covering ≥ 1.1×), ops 50, capital 8% × PD — and \`fee_cents = max(25, ceil(principal_cents × Σ / 10000))\`. Grade E is never offered. APR is derived from that fee, annualized; the disclosure flags an APR above 36%. \`check_eligibility\` quotes it with your grade, score and the components.
 - **Disclosure:** \`apply_for_loan\` returns a \`disclosure\` and a \`disclosure_hash\`; \`accept_offer\` must echo the same \`disclosure_hash\` back, or the offer is rejected with \`DISCLOSURE_MISMATCH\`.
 - **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
 - **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%.

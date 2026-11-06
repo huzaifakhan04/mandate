@@ -60,15 +60,18 @@ const RESULTS_DIR = join(HERE, "results");
 const NOTES_CENTS = 3000;
 const PRINCIPAL_CENTS = 1000;
 const INVOICE_CENTS = 1500;
-const FEE_CENTS = 15;
-const REMAINDER_CENTS = INVOICE_CENTS - PRINCIPAL_CENTS - FEE_CENTS; // 485
-const LENDER_EARNED_CENTS = 12; // floor(15 × 80 / 100) when this lender is the only note holder
+// P3 pricing v2: a newcomer (claimed, no history) with a 1.5× invoice is grade D →
+// cost of funds round(400×7/365) 8 + expected loss 1200×3500/10000 420 + ops 50 + capital 96
+// = 574 bps → fee ceil(1000 × 574 / 10000) = 58 (APR 30243 bps). Any D score gives the same fee.
+const FEE_CENTS = 58;
+const REMAINDER_CENTS = INVOICE_CENTS - PRINCIPAL_CENTS - FEE_CENTS; // 442
+const LENDER_EARNED_CENTS = 46; // floor(58 × 80 / 100) when this lender is the only note holder
 
-/** What the borrower's human signs in the dashboard drawer (room for the $10 / 7-day / 1.5% loan). */
+/** What the borrower's human signs in the dashboard drawer (room for the $10 / 7-day loan at the newcomer's 5.8% fee). */
 const BORROWER_MANDATE: MandateFormValues = {
   maxPerLoanUsd: "20",
   maxTotalOwedUsd: "50",
-  maxFeePct: "5",
+  maxFeePct: "10",
   maxTermDays: "30",
   collateral: ["invoice_link"],
 };
@@ -621,7 +624,7 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     mark("payment_link_handed_over");
     const active = await tool(base, "get_loan", { loan_id: loanId }, borrower.apiKey);
     check("loan principal 1000", active.data.principal_cents === PRINCIPAL_CENTS, `principal_cents=${String(active.data.principal_cents)}`);
-    check("loan fee 15", active.data.fee_cents === FEE_CENTS, `fee_cents=${String(active.data.fee_cents)}`);
+    check("loan fee 58", active.data.fee_cents === FEE_CENTS, `fee_cents=${String(active.data.fee_cents)}`);
     check(
       "invoice link amount 1500",
       (active.data.repayment_link as Json).amount_cents === INVOICE_CENTS,
@@ -665,19 +668,19 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     const statement = await tool(base, "get_statement", {}, borrower.apiKey);
     const lines = statement.data.ledger_lines as { amount_cents: number }[];
     check(
-      "remainder 485 credited and paid out",
+      "remainder 442 credited and paid out",
       lines.filter((l) => l.amount_cents === REMAINDER_CENTS).length === 1 &&
         lines.filter((l) => l.amount_cents === -REMAINDER_CENTS).length === 1,
-      `lines with ±485: ${lines.filter((l) => Math.abs(l.amount_cents) === REMAINDER_CENTS).length}`,
+      `lines with ±442: ${lines.filter((l) => Math.abs(l.amount_cents) === REMAINDER_CENTS).length}`,
     );
 
     const lenderStatement = await tool(base, "get_statement", {}, lender.apiKey);
     const earned = Number((lenderStatement.data.notes as Json).earned_cents);
     if (ctx.server) {
       // A fresh local server per run: this lender is the only note holder.
-      check("lender earned 12", earned === LENDER_EARNED_CENTS, `earned_cents=${earned}`);
+      check("lender earned 46", earned === LENDER_EARNED_CENTS, `earned_cents=${earned}`);
     } else {
-      check("lender earned 1..12 (pro rata with other holders)", earned >= 1 && earned <= LENDER_EARNED_CENTS, `earned_cents=${earned}`);
+      check("lender earned 1..46 (pro rata with other holders)", earned >= 1 && earned <= LENDER_EARNED_CENTS, `earned_cents=${earned}`);
     }
 
     if (ctx.server) {

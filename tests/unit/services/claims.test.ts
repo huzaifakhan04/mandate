@@ -245,8 +245,15 @@ describe("claim flow (path A) and KYA tiers", () => {
       const status = await call(db, "get_status", key, {});
       expect(status.envelope.data).toMatchObject({ kya: { tier: 1, can_borrow: true, borrow_blockers: [] } });
 
-      const applied = await call(db, "apply_for_loan", key, { amount_cents: 1000, term_days: 7, purpose: "Buy tools" });
+      // A real newcomer (P3 Ruling P3-A): grade D only with a ≥ 1.5× invoice, auto-approved up to 5000.
+      const applied = await call(db, "apply_for_loan", key, {
+        amount_cents: 1000,
+        term_days: 7,
+        purpose: "Buy tools",
+        invoice: { client_email: "client@example.com", amount_cents: 1500, due_in_days: 7, description: "Tools" },
+      });
       expect(applied.envelope.status).toBe("OFFERED");
+      expect((applied.envelope.data as Data).disclosure).toMatchObject({ credit_grade: "D", fee_cents: 58 });
       const offer = applied.envelope.data as Data;
 
       // The mandate is revoked between offer and acceptance (Task 4: 409 MANDATE_REVOKED).

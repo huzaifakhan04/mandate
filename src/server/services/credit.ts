@@ -136,10 +136,35 @@ export async function scoreFacts(
     hasApprovedDocument: approved.length > 0,
     ...(await historyFacts(db, worldId, agent.id)),
     tenureDays,
-    invoiceCoverageBps: opts.invoiceCoverageBps ?? null,
     exposureCents,
     maxTotalOwedCents: mandate ? mandate.maxTotalOwedCents : null,
+    ...testFactsOverrides.get(agent.id),
+    invoiceCoverageBps: opts.invoiceCoverageBps ?? null,
   };
+}
+
+/**
+ * TEST-ONLY: per-agent fact overrides (P3 Task 2). Lending suites that
+ * test something other than underwriting (repayment, ledger, mandates…)
+ * give their borrower an established credit file this way, so the grade
+ * gate doesn't decline every application of a fresh test agent
+ * (`tests/helpers/kya.ts`). In-memory, per process; refused in production.
+ * The application's invoice coverage is never overridden.
+ */
+const testFactsOverrides = new Map<string, Partial<Omit<ScoreFacts, "invoiceCoverageBps">>>();
+
+export function __setScoreFactsOverrideForTests(
+  agentId: string,
+  facts: Partial<Omit<ScoreFacts, "invoiceCoverageBps">> | null,
+): void {
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("__setScoreFactsOverrideForTests is test-only");
+  }
+  if (facts) {
+    testFactsOverrides.set(agentId, facts);
+  } else {
+    testFactsOverrides.delete(agentId);
+  }
 }
 
 /**

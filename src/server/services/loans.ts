@@ -13,7 +13,14 @@ import {
   transition,
   type LoanState,
 } from "../domain/loanMachine";
-import { price, PRICING_LIMITS, rangeReasons } from "../domain/pricing";
+import { PRICING_LIMITS } from "../domain/pricing";
+import { totalBps, type LoanPrice } from "../domain/pricingV2";
+import type { ReasonCode } from "../domain/reasons";
+import { evaluateApplication, sanctionsStubList, type ApplicationDecision } from "../domain/rules";
+import type { Grade, ScoreResult } from "../domain/scorecard";
+import { isCurrentMandate, TIER_MAX_PER_LOAN_CENTS, type KyaTier } from "../domain/kya";
+import type { MandateCollateral } from "../domain/mandate";
+import { invoiceCoverageBps, recordScore, scoreAgent } from "./credit";
 import { postJournal } from "../ledger/postJournal";
 import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } from "../paypal/operations";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
@@ -21,7 +28,16 @@ import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 import { borrowGate, loadAgentKya } from "./kya";
 import type { BorrowBlocker } from "../domain/kya";
-import { checkAgentMandate, mandateSummary, type MandateSummary, type TierReason } from "./mandates";
+import {
+  checkAgentMandate,
+  currentMandateRow,
+  mandateLimits,
+  mandateSummary,
+  principalExposure,
+  type MandateRow,
+  type MandateSummary,
+  type TierReason,
+} from "./mandates";
 import type { MandateReason } from "../domain/mandate";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
@@ -30,8 +46,6 @@ const MANDATE_POOL_A_NAME = "Mandate Pool A";
 const DAY_MS = 86_400_000;
 /** An offer is valid for one simulated day (plan, Fixed P1 pricing). */
 const OFFER_TTL_MS = DAY_MS;
-/** APR above which the disclosure carries the state-cap note (36%). */
-const STATE_CAP_NOTE_APR_BPS = 3600;
 
 type LoanRow = typeof loans.$inferSelect;
 type OfferRow = typeof offers.$inferSelect;
@@ -152,6 +166,96 @@ function addDays(at: Date, days: number): Date {
 }
 
 // ---------------------------------------------------------------------
+// Underwriting (P3 Task 2): facts → rules pipeline
+// ---------------------------------------------------------------------
+
+interface UnderwriteRequest {
+  amountCents: bigint;
+  termDays: number;
+  purpose: string;
+  /** Mandate collateral rule kind; `null` skips it (check_eligibility without a kind). */
+  collateral: MandateCollateral | null;
+  /** The invoice face backing the request; `null` without one. */
+  invoiceAmountCents: bigint | null;
+}
+
+interface Underwriting {
+  decision: ApplicationDecision;
+  credit: ScoreResult;
+  mandate: MandateRow | null;
+  exposureCents: bigint;
+  tier: KyaTier;
+  availableLiquidityCents: bigint;
+}
+
+/**
+ * Gathers the application's facts — the agent's score (with the invoice's
+ * coverage), tier cap, current mandate and the principal's exposure, the
+ * open-loan rule and pool liquidity — and runs the pure rules pipeline
+ * (`domain/rules.ts`), which also prices the loan (`domain/pricingV2.ts`).
+ * `apply_for_loan` calls it under the note series lock.
+ */
+async function underwrite(
+  db: Db,
+  worldId: string,
+  agentId: string,
+  simNow: Date,
+  request: UnderwriteRequest,
+  now: Date = new Date(),
+): Promise<Underwriting> {
+  const { agent, tier } = await loadAgentKya(db, worldId, agentId, now);
+  const row = await currentMandateRow(db, worldId, agent.id, agent.principalId);
+  const mandate = row && isCurrentMandate(row, agent.principalId, now) ? row : null;
+  const exposureCents = mandate ? await principalExposure(db, worldId, mandate.principalId) : 0n;
+  const coverageBps =
+    request.invoiceAmountCents === null ? null : invoiceCoverageBps(request.invoiceAmountCents, request.amountCents);
+  const credit = await scoreAgent(db, worldId, agentId, simNow, {
+    now,
+    ...(coverageBps === null ? {} : { invoiceCoverageBps: coverageBps }),
+  });
+  const availableLiquidityCents = await availableLiquidity(db, worldId);
+
+  const decision = evaluateApplication({
+    amountCents: request.amountCents,
+    termDays: request.termDays,
+    purpose: request.purpose,
+    credit,
+    tierCapCents: BigInt(TIER_MAX_PER_LOAN_CENTS[tier.tier]),
+    mandate: mandate ? mandateLimits(mandate) : null,
+    exposureCents,
+    collateral: request.collateral,
+    invoiceCoverageBps: coverageBps,
+    sanctions: { name: agent.name, operator: agent.operator, list: sanctionsStubList() },
+    // ALA declarations arrive in P3 Task 4; until then they are taken as given.
+    declarations: { noOtherDebt: true },
+    openLoanExists: await hasOpenLoan(db, worldId, agentId),
+    availableLiquidityCents,
+  });
+  return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents };
+}
+
+/** The disclosure's rate components (bps of the principal for the term). */
+export interface RateComponents {
+  cost_of_funds_bps: number;
+  expected_loss_bps: number;
+  ops_bps: number;
+  capital_bps: number;
+  total_bps: number;
+}
+
+function rateComponents(price: LoanPrice): RateComponents {
+  return {
+    cost_of_funds_bps: price.components.costOfFundsBps,
+    expected_loss_bps: price.components.expectedLossBps,
+    ops_bps: price.components.opsBps,
+    capital_bps: price.components.capitalBps,
+    total_bps: totalBps(price.components),
+  };
+}
+
+export const APR_FLAG_TEXT = "APR above 36% may exceed some state caps (CA/NY-style; unverified)";
+
+// ---------------------------------------------------------------------
 // check_eligibility
 // ---------------------------------------------------------------------
 
@@ -159,30 +263,46 @@ export interface Quote {
   feeCents: bigint;
   aprBps: number;
   totalCents: bigint;
+  grade: Grade;
+  score: number;
+  rateComponents: RateComponents;
+  /** `APR_FLAG_TEXT` when the APR is above 36%, else `null`. */
+  aprFlag: string | null;
 }
 
 export interface Eligibility {
   eligible: boolean;
   /**
-   * Subset of `amount_out_of_range`, `term_out_of_range`, `open_loan_exists`,
-   * `insufficient_liquidity`, then the mandate codes (`mandate_*`, except
-   * `mandate_collateral` unless a collateral kind is given) and
-   * `tier_per_loan`, in that order.
+   * The rules pipeline's reason codes in its fixed order (`domain/rules.ts`),
+   * except `mandate_missing` (the tool's tier gate reports it) and
+   * `mandate_collateral` unless a collateral kind is given.
    */
-  reasons: string[];
+  reasons: ReasonCode[];
   maxPrincipalCents: bigint;
   availableLiquidityCents: bigint;
-  quote: Quote;
+  /** min(grade limit, tier cap, mandate max_per_loan); 0 without a mandate. */
+  effectiveCapCents: bigint;
+  /** The v2 price; `null` for grade E (never offered). */
+  quote: Quote | null;
   /** The agent's current mandate, its limits and the principal's headroom; `null` without one. */
   mandate: MandateSummary | null;
+  /** The score this check used (with the invoice's collateral when one is given). */
+  credit: ScoreResult;
+}
+
+export interface EligibilityOptions {
+  /** Mandate collateral kind to check (`null`: skip that rule). */
+  collateral?: MandateCollateral | null;
+  /** Invoice face amount backing the request (scores collateral and checks coverage). */
+  invoiceAmountCents?: bigint | null;
 }
 
 /**
- * Read-only eligibility for `(amount, term)`: the P1 range checks, the
- * one-open-loan rule, available liquidity, and (P2 Task 4) the mandate
- * limits, the principal's exposure and the tier per-loan cap. Advisory only —
- * `apply_for_loan` re-evaluates the same rules, and `accept_offer`
- * re-checks liquidity and the open loan under the series lock.
+ * Read-only eligibility for `(amount, term)`: the same rules pipeline
+ * `apply_for_loan` runs (product range, tier, mandate, sanctions, grade,
+ * effective cap, collateral, capacity) and the v2 quote. Advisory only —
+ * `apply_for_loan` re-evaluates under the series lock, and `accept_offer`
+ * re-checks the mandate, tier, open loan and liquidity.
  */
 export async function checkEligibility(
   db: Db,
@@ -190,16 +310,25 @@ export async function checkEligibility(
   agentId: string,
   amountCents: bigint,
   termDays: number,
-  collateral: "invoice_link" | "none" | null = null,
+  options: EligibilityOptions = {},
 ): Promise<Eligibility> {
-  const reasons = rangeReasons(amountCents, termDays);
-  if (await hasOpenLoan(db, worldId, agentId)) {
-    reasons.push("open_loan_exists");
-  }
-  const availableLiquidityCents = await availableLiquidity(db, worldId);
-  if (amountCents > availableLiquidityCents) {
-    reasons.push("insufficient_liquidity");
-  }
+  const simNow = await getSimNow(db, worldId);
+  const { decision, credit, mandate, exposureCents, tier, availableLiquidityCents } = await underwrite(
+    db,
+    worldId,
+    agentId,
+    simNow,
+    {
+      amountCents,
+      termDays,
+      // Advisory: the purpose and declarations are only known at apply time.
+      purpose: "eligibility check",
+      collateral: options.collateral ?? null,
+      invoiceAmountCents: options.invoiceAmountCents ?? null,
+    },
+  );
+  // A missing mandate is the tier gate's `mandate_missing` blocker (reported by the tool).
+  const reasons = decision.reasons.filter((reason) => reason !== "mandate_missing");
 
   // Below the P1 minimum principal nothing can be lent at all (M2).
   const maxPrincipalCents =
@@ -209,31 +338,26 @@ export async function checkEligibility(
         ? availableLiquidityCents
         : PRICING_LIMITS.maxPrincipalCents;
 
-  const { feeCents, aprBps } = price(amountCents, termDays);
-
-  // P2 Task 4: the mandate limits, the principal's exposure across all
-  // their agents, and the tier's per-loan cap. A missing mandate is the
-  // tier gate's `mandate_missing` blocker (reported by the tool), so it
-  // isn't repeated here.
-  const { agent, tier } = await loadAgentKya(db, worldId, agentId);
-  const mandateCheck = await checkAgentMandate(db, worldId, agent, tier.tier, {
-    principalCents: amountCents,
-    feeCents,
-    termDays,
-    collateral,
-  });
-  reasons.push(...mandateCheck.reasons.filter((reason) => reason !== "mandate_missing"));
-  const mandate = mandateCheck.mandate
-    ? mandateSummary(mandateCheck.mandate, mandateCheck.exposureCents, tier.tier)
-    : null;
-
+  const price = decision.price;
   return {
     eligible: reasons.length === 0,
     reasons,
     maxPrincipalCents,
     availableLiquidityCents,
-    quote: { feeCents, aprBps, totalCents: amountCents + feeCents },
-    mandate,
+    effectiveCapCents: decision.effectiveCapCents,
+    quote: price
+      ? {
+          feeCents: price.feeCents,
+          aprBps: price.aprBps,
+          totalCents: amountCents + price.feeCents,
+          grade: credit.grade,
+          score: credit.score,
+          rateComponents: rateComponents(price),
+          aprFlag: price.aprFlag ? APR_FLAG_TEXT : null,
+        }
+      : null,
+    mandate: mandate ? mandateSummary(mandate, exposureCents, tier) : null,
+    credit,
   };
 }
 
@@ -261,21 +385,40 @@ export interface Disclosure {
   fee_cents: number;
   estimated_apr_bps: number;
   total_repayment_cents: number;
+  /** The total cost of credit (= the fee; no other charges). */
+  total_cost_cents: number;
   term_days: number;
   /** Offer time + term; the real due date is `due_rule` applied to when the funds are sent (Ruling P). */
   estimated_due_date: string;
   due_rule: string;
   prepayment: "No penalty";
   collateral: "Invoice payment link" | "None";
-  avoidable_fees: "None in P1";
+  avoidable_fees: "None";
   /** P2 Task 4: the mandate this offer was made under (accept refuses if it changed). */
   mandate_id: string;
   mandate_version: number;
-  note?: "APR above 36% may exceed some state caps (unverified)";
+  /** P3 Task 2: the Agent Credit Score and grade the offer was priced at. */
+  credit_score: number;
+  credit_grade: Grade;
+  /** P3 Task 2: the fee's risk-based components (bps of the principal for the term). */
+  rate_components: RateComponents;
+  /** Present when the APR is above 36%. */
+  apr_flag?: typeof APR_FLAG_TEXT;
+  right_to_statement: typeof RIGHT_TO_STATEMENT_TEXT;
 }
 
+export const RIGHT_TO_STATEMENT_TEXT =
+  "Right to a statement of specific reasons: if your application is declined, you are told the principal reasons.";
+
 export type CreateLoanOfferOutcome =
-  | { outcome: "declined"; applicationId: string; reasons: string[] }
+  | {
+      outcome: "declined";
+      applicationId: string;
+      reasons: ReasonCode[];
+      primary: ReasonCode;
+      decision: ApplicationDecision;
+      credit: ScoreResult;
+    }
   | {
       outcome: "offered";
       applicationId: string;
@@ -283,12 +426,19 @@ export type CreateLoanOfferOutcome =
       disclosure: Disclosure;
       disclosureHash: string;
       expiresSimAt: Date;
-    };
+      decision: ApplicationDecision;
+      credit: ScoreResult;
+    }
+  /**
+   * M7: the invoice doesn't cover principal + the quoted fee. Nothing is
+   * written (no application row) — the tool answers INVALID_REQUEST.
+   */
+  | { outcome: "invoice_too_small"; minimumInvoiceCents: bigint };
 
 function buildDisclosure(
   amountCents: bigint,
-  feeCents: bigint,
-  aprBps: number,
+  price: LoanPrice,
+  credit: ScoreResult,
   termDays: number,
   dueSimAt: Date,
   hasInvoice: boolean,
@@ -296,33 +446,44 @@ function buildDisclosure(
 ): Disclosure {
   const disclosure: Disclosure = {
     funding_provided_cents: Number(amountCents),
-    fee_cents: Number(feeCents),
-    estimated_apr_bps: aprBps,
-    total_repayment_cents: Number(amountCents + feeCents),
+    fee_cents: Number(price.feeCents),
+    estimated_apr_bps: price.aprBps,
+    total_repayment_cents: Number(amountCents + price.feeCents),
+    total_cost_cents: Number(price.feeCents),
     term_days: termDays,
     estimated_due_date: dueSimAt.toISOString(),
     due_rule: `${termDays} days after funds are sent`,
     prepayment: "No penalty",
     collateral: hasInvoice ? "Invoice payment link" : "None",
-    avoidable_fees: "None in P1",
+    avoidable_fees: "None",
     mandate_id: mandate.id,
     mandate_version: mandate.version,
+    credit_score: credit.score,
+    credit_grade: credit.grade,
+    rate_components: rateComponents(price),
+    right_to_statement: RIGHT_TO_STATEMENT_TEXT,
   };
-  if (aprBps > STATE_CAP_NOTE_APR_BPS) {
-    disclosure.note = "APR above 36% may exceed some state caps (unverified)";
+  if (price.aprFlag) {
+    disclosure.apr_flag = APR_FLAG_TEXT;
   }
   return disclosure;
 }
 
 /**
- * `apply_for_loan`'s transactional half. Always records the application.
- * When the P1 rules or the P2 mandate/tier limits decline it (range, open
- * loan, liquidity, `mandate_*`, `tier_per_loan` — evaluated under the
- * note series row lock for a consistent snapshot) it is
- * `declined` with the reason codes; otherwise it is `offered` and an
- * offer is created with the priced disclosure and its hash, valid for one
- * simulated day. Any of the agent's earlier still-open offers are
- * superseded (expired) first, so an agent has at most one live offer.
+ * `apply_for_loan`'s transactional half. Under the note series row lock
+ * (Ruling N: a consistent snapshot of exposure and liquidity) it scores the
+ * agent and runs the rules pipeline (`underwrite`). An invoice smaller than
+ * principal + the quoted fee is refused before anything is written (M7).
+ * Otherwise the application is always recorded together with its score
+ * (`recordScore`, with the component breakdown). It is `declined` with the
+ * pipeline's reason codes, or `offered`: an offer is created with the v2
+ * price and the disclosure (grade, score, rate components, APR flag) and
+ * its hash, valid for one simulated day. Any of the agent's earlier
+ * still-open offers are superseded (expired) first, so an agent has at
+ * most one live offer.
+ *
+ * The offer's terms are fixed here: `accept_offer` re-checks the mandate,
+ * tier, open loan and liquidity, not the grade.
  *
  * Ruling P: the loan is due `term_days` after the funds are sent (the
  * borrower always gets the full term). The disclosure says so in
@@ -342,6 +503,23 @@ export async function createLoanOffer(
   // superseded underneath a concurrent acceptance of it.
   await lockNoteSeries(tx, worldId);
 
+  const { decision, credit, mandate } = await underwrite(tx, worldId, agentId, simNow, {
+    amountCents: input.amountCents,
+    termDays: input.termDays,
+    purpose: input.purpose,
+    collateral: input.invoice ? "invoice_link" : "none",
+    invoiceAmountCents: input.invoice ? input.invoice.amountCents : null,
+  });
+
+  if (input.invoice) {
+    // M7: the bank repays itself from the invoice, so it must cover the
+    // whole debt (principal + fee), not just the principal.
+    const minimumInvoiceCents = input.amountCents + (decision.price?.feeCents ?? 0n);
+    if (input.invoice.amountCents < minimumInvoiceCents) {
+      return { outcome: "invoice_too_small", minimumInvoiceCents };
+    }
+  }
+
   const [application] = await scoped(tx, worldId).insert(applications, {
     agentId,
     amountCents: input.amountCents,
@@ -355,37 +533,16 @@ export async function createLoanOffer(
           description: input.invoice.description,
         }
       : null,
+    mandateId: mandate?.id ?? null,
     status: toDbStatus("SUBMITTED"),
   });
   if (!application) {
     throw new Error("Expected an applications row to be inserted");
   }
+  await recordScore(tx, worldId, agentId, credit, { simNow, applicationId: application.id });
 
-  const reasons = rangeReasons(input.amountCents, input.termDays);
-  if (await hasOpenLoan(tx, worldId, agentId)) {
-    reasons.push("open_loan_exists");
-  }
-  if (input.amountCents > (await availableLiquidity(tx, worldId))) {
-    reasons.push("insufficient_liquidity");
-  }
-
-  // P2 Task 4: the mandate (limits + the principal's exposure across all
-  // their agents, under the series lock) and the tier's per-loan cap.
-  const { feeCents, aprBps } = price(input.amountCents, input.termDays);
-  const { agent, tier } = await loadAgentKya(tx, worldId, agentId);
-  const mandateCheck = await checkAgentMandate(tx, worldId, agent, tier.tier, {
-    principalCents: input.amountCents,
-    feeCents,
-    termDays: input.termDays,
-    collateral: input.invoice ? "invoice_link" : "none",
-  });
-  reasons.push(...mandateCheck.reasons);
-  const mandate = mandateCheck.mandate;
-  if (mandate) {
-    await scoped(tx, worldId).update(applications, { mandateId: mandate.id }, eq(applications.id, application.id));
-  }
-
-  if (reasons.length > 0 || !mandate) {
+  if (decision.decision === "decline" || !mandate || !decision.price) {
+    const reasons = decision.reasons.length > 0 ? decision.reasons : (["mandate_missing"] as ReasonCode[]);
     await scoped(tx, worldId).update(
       applications,
       {
@@ -400,10 +557,18 @@ export async function createLoanOffer(
       aggregateType: "application",
       aggregateId: application.id,
       simAt: simNow,
-      payload: { reasons },
+      payload: { reasons, primary: reasons[0], approval: decision.approval, score: credit.score, grade: credit.grade },
     });
-    return { outcome: "declined", applicationId: application.id, reasons };
+    return {
+      outcome: "declined",
+      applicationId: application.id,
+      reasons,
+      primary: reasons[0]!,
+      decision,
+      credit,
+    };
   }
+  const price = decision.price;
 
   // Supersede the agent's earlier open offers.
   const agentApplications = await scoped(tx, worldId).select(applications, eq(applications.agentId, agentId));
@@ -420,7 +585,7 @@ export async function createLoanOffer(
 
   const dueSimAt = addDays(simNow, input.termDays);
   const expiresSimAt = new Date(simNow.getTime() + OFFER_TTL_MS);
-  const disclosure = buildDisclosure(input.amountCents, feeCents, aprBps, input.termDays, dueSimAt, !!input.invoice, {
+  const disclosure = buildDisclosure(input.amountCents, price, credit, input.termDays, dueSimAt, !!input.invoice, {
     id: mandate.id,
     version: mandate.version,
   });
@@ -431,8 +596,8 @@ export async function createLoanOffer(
   const [offer] = await scoped(tx, worldId).insert(offers, {
     applicationId: application.id,
     principalCents: input.amountCents,
-    feeCents,
-    aprBps,
+    feeCents: price.feeCents,
+    aprBps: price.aprBps,
     termDays: input.termDays,
     dueSimAt,
     disclosure: storedDisclosure,
@@ -454,7 +619,13 @@ export async function createLoanOffer(
     aggregateType: "offer",
     aggregateId: offer.id,
     simAt: simNow,
-    payload: { application_id: application.id, principal_cents: Number(input.amountCents), fee_cents: Number(feeCents) },
+    payload: {
+      application_id: application.id,
+      principal_cents: Number(input.amountCents),
+      fee_cents: Number(price.feeCents),
+      score: credit.score,
+      grade: credit.grade,
+    },
   });
 
   return {
@@ -464,6 +635,8 @@ export async function createLoanOffer(
     disclosure: storedDisclosure,
     disclosureHash: hash,
     expiresSimAt,
+    decision,
+    credit,
   };
 }
 

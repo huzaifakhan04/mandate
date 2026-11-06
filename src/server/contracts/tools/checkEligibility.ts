@@ -3,7 +3,6 @@ import { z } from "zod";
 import { ok } from "../envelope";
 import { blockerInstruction, blockerNextActions } from "../kyaActions";
 import { defineTool } from "../registry";
-import { invoiceCoverageBps, scoreAgent } from "../../services/credit";
 import { borrowGate } from "../../services/kya";
 import { creditSchema, creditView } from "../credit";
 import { checkEligibility } from "../../services/loans";
@@ -39,7 +38,26 @@ const outputSchema = z.object({
   reasons: z.array(z.string()),
   max_principal_cents: z.number(),
   available_liquidity_cents: z.number(),
-  quote: z.object({ fee_cents: z.number(), apr_bps: z.number(), total_cents: z.number() }),
+  /** min(grade limit, tier cap, mandate max_per_loan) in cents. */
+  effective_cap_cents: z.number(),
+  /** The risk-based (v2) quote; null for grade E, which is never offered. */
+  quote: z
+    .object({
+      fee_cents: z.number(),
+      apr_bps: z.number(),
+      total_cents: z.number(),
+      grade: z.enum(["A", "B", "C", "D", "E"]),
+      score: z.number(),
+      rate_components: z.object({
+        cost_of_funds_bps: z.number(),
+        expected_loss_bps: z.number(),
+        ops_bps: z.number(),
+        capital_bps: z.number(),
+        total_bps: z.number(),
+      }),
+      apr_flag: z.string().nullable(),
+    })
+    .nullable(),
   tier: z.number(),
   /** Your owner's current mandate: its limits and the headroom left across all their agents (null without one). */
   mandate: mandateSchema.nullable(),
@@ -62,7 +80,11 @@ export const checkEligibilityTool = defineTool({
     "a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral " +
     "to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, " +
     "grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral " +
-    "(coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12). Call it before apply_for_loan; if eligible, call " +
+    "(coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). " +
+    "The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / " +
+    "score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above " +
+    "5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, " +
+    "apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call " +
     "apply_for_loan with the same amount and term. While unclaimed, reasons include " +
     "claim_required and data.claim_url is the link to give your human.",
   auth: "agent",
@@ -79,21 +101,11 @@ export const checkEligibilityTool = defineTool({
     const blockers = gate.tier.borrowBlockers;
     const claimUrl = gate.claimLink?.url ?? null;
 
-    const result = await checkEligibility(
-      ctx.db,
-      ctx.worldId,
-      ctx.agentId,
-      BigInt(input.amount_cents),
-      input.term_days,
-      input.collateral ?? null,
-    );
-
-    // Read-only: computed for this request, never persisted (apply_for_loan records it).
-    const credit = await scoreAgent(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow, {
-      ...(input.invoice_amount_cents !== undefined
-        ? { invoiceCoverageBps: invoiceCoverageBps(BigInt(input.invoice_amount_cents), BigInt(input.amount_cents)) }
-        : {}),
+    const result = await checkEligibility(ctx.db, ctx.worldId, ctx.agentId, BigInt(input.amount_cents), input.term_days, {
+      collateral: input.collateral ?? (input.invoice_amount_cents !== undefined ? "invoice_link" : null),
+      invoiceAmountCents: input.invoice_amount_cents !== undefined ? BigInt(input.invoice_amount_cents) : null,
     });
+    const quote = result.quote;
 
     const reasons = [...blockers, ...result.reasons];
     const eligible = reasons.length === 0;
@@ -104,24 +116,31 @@ export const checkEligibilityTool = defineTool({
         reasons,
         max_principal_cents: Number(result.maxPrincipalCents),
         available_liquidity_cents: Number(result.availableLiquidityCents),
-        quote: {
-          fee_cents: Number(result.quote.feeCents),
-          apr_bps: result.quote.aprBps,
-          total_cents: Number(result.quote.totalCents),
-        },
+        effective_cap_cents: Number(result.effectiveCapCents),
+        quote: quote
+          ? {
+              fee_cents: Number(quote.feeCents),
+              apr_bps: quote.aprBps,
+              total_cents: Number(quote.totalCents),
+              grade: quote.grade,
+              score: quote.score,
+              rate_components: quote.rateComponents,
+              apr_flag: quote.aprFlag,
+            }
+          : null,
         tier: gate.tier.tier,
         mandate: result.mandate,
-        credit: creditView(credit),
+        credit: creditView(result.credit),
         ...(claimUrl ? { claim_url: claimUrl } : {}),
       },
       {
         status: "OK",
-        summary: eligible
-          ? `Eligible: fee ${result.quote.feeCents.toString()} cents, total ${result.quote.totalCents.toString()} cents.`
+        summary: eligible && quote
+          ? `Eligible (score ${quote.score}, grade ${quote.grade}): fee ${quote.feeCents.toString()} cents, total ${quote.totalCents.toString()} cents.`
           : `Not eligible right now: ${reasons.join(", ")}.` +
             (blockers.length > 0 ? ` ${blockerInstruction(blockers, claimUrl)}` : ""),
         reason_codes: reasons,
-        next_actions: eligible
+        next_actions: eligible && quote
           ? [
               {
                 tool: "apply_for_loan",

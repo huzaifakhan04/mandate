@@ -81,8 +81,8 @@ export const INVOICE = {
 };
 
 /**
- * Borrower takes 25000 for 14 days (fee 750), with or without the 40000
- * invoice. A receiver containing "pending" leaves the loan DISBURSING
+ * Borrower takes 25000 for 14 days (P3 pricing v2, grade A: fee 270 with the
+ * 40000 invoice, 333 without), with or without the 40000 invoice. A receiver containing "pending" leaves the loan DISBURSING
  * (live-shaped payout: no item in the send response).
  */
 export async function borrow(

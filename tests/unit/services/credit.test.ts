@@ -16,6 +16,9 @@ import { recordScore, scoreAgent } from "@/server/services/credit";
 import { upgradeToTier2 } from "../../helpers/signing";
 import { call, createSimWorld, createTestAgent, type Data } from "../../helpers/world";
 
+/** Score from the agent's real DB facts (no established-credit test override). */
+const REAL_CREDIT = { credit: "real" } as const;
+
 const DAY_MS = 86_400_000;
 
 describe("scoreAgent / recordScore (P3 Task 1)", () => {
@@ -130,7 +133,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
   });
 
   it("T1 (claimed + mandate) scores 20; T2 (doc + key) scores 35 / D", async () => {
-    const { agentId, key } = await createTestAgent(db, worldId);
+    const { agentId, key } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     expect((await scoreAgent(db, worldId, agentId, simNow)).components).toEqual({
       identity: 10,
       history: 0,
@@ -153,7 +156,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
   });
 
   it("3 on-time repaid loans ≥ 1000 cents give 21 history points", async () => {
-    const { agentId } = await createTestAgent(db, worldId);
+    const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     await onTime(agentId, 3);
     const result = await scoreAgent(db, worldId, agentId, simNow);
     expect(result.components.history).toBe(21);
@@ -162,7 +165,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
   });
 
   it("a loan repaid after its due date is late (−15), not on time", async () => {
-    const { agentId } = await createTestAgent(db, worldId);
+    const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     await onTime(agentId, 3);
     const due = new Date(simNow.getTime() - 10 * DAY_MS);
     await insertLoan(agentId, { principalCents: 5000n, status: "repaid", dueSimAt: due, repaidSimAt: simNow });
@@ -170,7 +173,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
   });
 
   it("a charged-off loan wipes history", async () => {
-    const { agentId } = await createTestAgent(db, worldId);
+    const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     await onTime(agentId, 4);
     await insertLoan(agentId, { principalCents: 5000n, status: "charged_off", dueSimAt: simNow, chargedOffAt: simNow });
     expect((await scoreAgent(db, worldId, agentId, simNow)).components.history).toBe(0);
@@ -178,20 +181,20 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
 
   describe("Review Focus 3 — score gaming", () => {
     it("sub-1000-cent loans never count, however many are repaid on time", async () => {
-      const { agentId } = await createTestAgent(db, worldId);
+      const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
       await onTime(agentId, 8, 999n);
       expect((await scoreAgent(db, worldId, agentId, simNow)).components.history).toBe(0);
     });
 
     it("on-time history caps at 35", async () => {
-      const { agentId } = await createTestAgent(db, worldId);
+      const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
       await onTime(agentId, 8);
       expect((await scoreAgent(db, worldId, agentId, simNow)).components.history).toBe(35);
     });
   });
 
   it("exposure: 0 → 10, 50% of max_total_owed → 5, 100% → 0", async () => {
-    const { agentId } = await createTestAgent(db, worldId, "e@example.com", { limits: { maxTotalOwedCents: 20000n } });
+    const { agentId } = await createTestAgent(db, worldId, "e@example.com", { ...REAL_CREDIT, limits: { maxTotalOwedCents: 20000n } });
     expect((await scoreAgent(db, worldId, agentId, simNow)).components.exposure).toBe(10);
     const loanId = await insertLoan(agentId, {
       principalCents: 10000n,
@@ -205,7 +208,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
   });
 
   it("collateral only with an application's invoice coverage: 1.5 → 20, 1.1 → 12, none → 0", async () => {
-    const { agentId } = await createTestAgent(db, worldId);
+    const { agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     expect((await scoreAgent(db, worldId, agentId, simNow)).components.collateral).toBe(0);
     expect((await scoreAgent(db, worldId, agentId, simNow, { invoiceCoverageBps: 15000 })).components.collateral).toBe(20);
     expect((await scoreAgent(db, worldId, agentId, simNow, { invoiceCoverageBps: 11000 })).components.collateral).toBe(12);
@@ -213,12 +216,12 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
 
   it("an agent of another world is not found", async () => {
     const otherWorld = await createSimWorld(db);
-    const { agentId } = await createTestAgent(db, otherWorld);
+    const { agentId } = await createTestAgent(db, otherWorld, "agent@example.com", REAL_CREDIT);
     await expect(scoreAgent(db, worldId, agentId, simNow)).rejects.toThrow();
   });
 
   it("recordScore keeps one current row per agent and appends history with the delta", async () => {
-    const { agentId, principalId } = await createTestAgent(db, worldId);
+    const { agentId, principalId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
     const first = await scoreAgent(db, worldId, agentId, simNow);
     await recordScore(db, worldId, agentId, first, { simNow });
     await onTime(agentId, 2);
@@ -248,7 +251,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
 
   describe("surfaced in get_status and check_eligibility", () => {
     it("get_status shows score, grade, limit, components and the top 3 factors (no collateral)", async () => {
-      const { key } = await createTestAgent(db, worldId);
+      const { key } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
       const result = await call(db, "get_status", key, {});
       expect(result.envelope.status).toBe("OK");
       const credit = (result.envelope.data as Data).credit as Data;
@@ -263,7 +266,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
     });
 
     it("check_eligibility scores collateral only from amount + invoice_amount_cents, and never persists", async () => {
-      const { key, agentId } = await createTestAgent(db, worldId);
+      const { key, agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
       const plain = await call(db, "check_eligibility", key, { amount_cents: 10000, term_days: 7 });
       expect(((plain.envelope.data as Data).credit as Data).components).toMatchObject({ collateral: 0 });
 
@@ -288,7 +291,7 @@ describe("scoreAgent / recordScore (P3 Task 1)", () => {
     });
 
     it("an unclaimed agent still sees its score in check_eligibility", async () => {
-      const { key, agentId } = await createTestAgent(db, worldId);
+      const { key, agentId } = await createTestAgent(db, worldId, "agent@example.com", REAL_CREDIT);
       await db.update(agents).set({ principalId: null, claimedAt: null }).where(eq(agents.id, agentId));
       const result = await call(db, "check_eligibility", key, { amount_cents: 5000, term_days: 7 });
       expect(((result.envelope.data as Data).credit as Data).score).toBe(0);

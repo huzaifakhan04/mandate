@@ -7,7 +7,7 @@ import "@/server/contracts/tools";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
-import { agents, apiKeys, journalEntries, loans, offers, paypalOperations, repaymentLinks } from "@/server/db/schema";
+import { agents, apiKeys, applications, journalEntries, loans, offers, paypalOperations, repaymentLinks } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { disclosureHash } from "@/server/domain/disclosure";
 import { availableLiquidity } from "@/server/domain/liquidity";
@@ -19,6 +19,7 @@ import {
   __resetLoanActivatedHooksForTests,
   applyPayoutOutcome,
   registerLoanActivatedHook,
+  RIGHT_TO_STATEMENT_TEXT,
 } from "@/server/services/loans";
 import { invoiceRepaymentLinkHook } from "@/server/services/repayments";
 import { createWorld } from "@/server/services/worlds";
@@ -134,7 +135,18 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     // Only the bank's seed capital (Ruling W) — not enough for 25000.
     expect(data.max_principal_cents).toBe(Number(SEED));
     expect(data.available_liquidity_cents).toBe(Number(SEED));
-    expect(data.quote).toEqual({ fee_cents: 750, apr_bps: 7821, total_cents: 25750 });
+    // P3 pricing v2, grade A (the helper's established credit), unsecured, 14 days:
+    // 15 + 60 + 50 + 8 = 133 bps → fee ceil(332.5) = 333; APR 333/25000 × 365/14 × 10000 = 3472.7 → 3473.
+    expect(data.quote).toEqual({
+      fee_cents: 333,
+      apr_bps: 3473,
+      total_cents: 25333,
+      grade: "A",
+      score: 80,
+      rate_components: { cost_of_funds_bps: 15, expected_loss_bps: 60, ops_bps: 50, capital_bps: 8, total_bps: 133 },
+      apr_flag: null,
+    });
+    expect(data.effective_cap_cents).toBe(25000); // min(A 50000, tier T1 25000, mandate 50000)
   });
 
   it("check_eligibility on a funded pool: eligible, max principal = min(50000, liquidity); out of range reasons", async () => {
@@ -180,11 +192,13 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const result = await applyFor(db, key, 60000, 5);
     expect(result.envelope.status).toBe("DECLINED");
     // P2 Task 4: 60000 is also above the mandate's 50000 and tier T1's 25000 per-loan caps.
+    // P3 Task 2: the rules pipeline's order — range, tier, mandate, then the grade A limit (50000).
     expect(result.envelope.reason_codes).toEqual([
       "amount_out_of_range",
       "term_out_of_range",
-      "mandate_per_loan",
       "tier_per_loan",
+      "mandate_per_loan",
+      "amount_exceeds_limit",
     ]);
   });
 
@@ -198,25 +212,33 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(result.envelope.status).toBe("INVALID_REQUEST");
   });
 
-  it("M7: an invoice must cover principal + fee — invoice_too_small with the minimum; exactly the minimum is accepted", async () => {
+  it("M7: an invoice must cover principal + fee — invoice_too_small with the minimum; then the 1.1× collateral rule", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 30000);
     const { key } = await createTestAgent(db, worldId);
-    // 25000 for 14 days → fee 750 → minimum invoice 25750.
+    // 25000 for 14 days at grade A; an invoice under 1.1× prices as unsecured → fee 333 → minimum 25333.
     const invoice = (amount: number) => ({
       invoice: { client_email: "client@example.com", amount_cents: amount, due_in_days: 14, description: "Work" },
     });
-    const tooSmall = await applyFor(db, key, 25000, 14, invoice(25749));
+    const tooSmall = await applyFor(db, key, 25000, 14, invoice(25332));
     expect(tooSmall.httpStatus).toBe(400);
     expect(tooSmall.envelope.status).toBe("INVALID_REQUEST");
     expect(tooSmall.envelope.reason_codes).toEqual(["invoice_too_small"]);
-    expect(tooSmall.envelope.data).toEqual({ minimum_invoice_cents: 25750 });
+    expect(tooSmall.envelope.data).toEqual({ minimum_invoice_cents: 25333 });
+    // Refused before anything is written: no application row.
+    expect(await db.select().from(applications).where(eq(applications.worldId, worldId))).toHaveLength(0);
 
     const belowPrincipal = await applyFor(db, key, 25000, 14, invoice(20000));
     expect(belowPrincipal.envelope.reason_codes).toEqual(["invoice_too_small"]);
 
-    const exact = await applyFor(db, key, 25000, 14, invoice(25750));
-    expect(exact.envelope.status).toBe("OFFERED");
+    // Exactly the minimum passes M7 but covers < 1.1× → DECLINED insufficient_collateral (P3 rules step 6).
+    const exact = await applyFor(db, key, 25000, 14, invoice(25333));
+    expect(exact.envelope).toMatchObject({ status: "DECLINED", reason_codes: ["insufficient_collateral"] });
+
+    // 1.1× is covered: fee 15 + 35 + 50 + 8 = 108 bps → 270.
+    const covered = await applyFor(db, key, 25000, 14, invoice(27500));
+    expect(covered.envelope.status).toBe("OFFERED");
+    expect(((covered.envelope.data as Data).disclosure as Data).fee_cents).toBe(270);
   });
 
   it("fund via notes, apply, accept → loan ACTIVE, loans_receivable 25000, balanced ledger", async () => {
@@ -233,16 +255,29 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const disclosure = data.disclosure as Data;
     expect(disclosure).toMatchObject({
       funding_provided_cents: 25000,
-      fee_cents: 750,
-      estimated_apr_bps: 7821,
-      total_repayment_cents: 25750,
+      // Grade A with a 1.6× invoice: 15 + 35 + 50 + 8 = 108 bps → fee 270; APR 270/25000 × 365/14 × 10000 = 2815.7.
+      fee_cents: 270,
+      estimated_apr_bps: 2816,
+      total_repayment_cents: 25270,
+      total_cost_cents: 270,
       term_days: 14,
       prepayment: "No penalty",
       collateral: "Invoice payment link",
-      avoidable_fees: "None in P1",
-      note: "APR above 36% may exceed some state caps (unverified)",
+      avoidable_fees: "None",
       due_rule: "14 days after funds are sent",
+      // P3 Task 2: disclosure v2 — score/grade (80 + 20 collateral), rate components, right to a statement.
+      credit_score: 100,
+      credit_grade: "A",
+      rate_components: { cost_of_funds_bps: 15, expected_loss_bps: 35, ops_bps: 50, capital_bps: 8, total_bps: 108 },
+      right_to_statement: RIGHT_TO_STATEMENT_TEXT,
     });
+    // APR ≤ 36% → no flag.
+    expect(disclosure).not.toHaveProperty("apr_flag");
+    // The v2 fields are covered by the hash.
+    expect(disclosureHash({ ...disclosure, credit_grade: "B" })).not.toBe(data.disclosure_hash);
+    expect(
+      disclosureHash({ ...disclosure, rate_components: { ...(disclosure.rate_components as Data), ops_bps: 0 } }),
+    ).not.toBe(data.disclosure_hash);
     expect(disclosure).not.toHaveProperty("due_date");
     expect(new Date(disclosure.estimated_due_date as string).getTime() - simNow.getTime()).toBeGreaterThanOrEqual(
       14 * 86_400_000,
@@ -277,7 +312,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const [loan] = await db.select().from(loans).where(eq(loans.worldId, worldId));
     expect(loan?.agentId).toBe(agentId);
     expect(loan?.status).toBe("active");
-    expect(loan?.outstandingCents).toBe(25750n);
+    expect(loan?.outstandingCents).toBe(25270n);
     expect(loan?.disbursedSimAt).toBeTruthy();
     expect(loan!.dueSimAt.getTime() - loan!.disbursedSimAt!.getTime()).toBe(14 * 86_400_000);
 
@@ -288,8 +323,8 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
       loan_id: acceptedData.loan_id,
       status: "ACTIVE",
       principal_cents: 25000,
-      fee_cents: 750,
-      outstanding_cents: 25750,
+      fee_cents: 270,
+      outstanding_cents: 25270,
     });
     const history = (loanData.history as Data[]).map((e) => e.type);
     expect(history).toEqual(["loan.offered", "loan.accepted", "loan.disbursed"]);
@@ -475,7 +510,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     const active = await call(db, "get_loan", key, { loan_id: loanId });
     expect((active.envelope.data as Data).status).toBe("ACTIVE");
-    expect((active.envelope.data as Data).outstanding_cents).toBe(25750);
+    expect((active.envelope.data as Data).outstanding_cents).toBe(25333);
     expect(await loansReceivable(db, worldId)).toBe(25000n);
     const entries = await db
       .select()

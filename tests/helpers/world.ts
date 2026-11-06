@@ -13,8 +13,7 @@ import type { Db } from "@/server/db/client";
 import { agents, apiKeys } from "@/server/db/schema";
 import { simApprove } from "@/server/rail/simHandler";
 import { createWorld } from "@/server/services/worlds";
-import type { TestClaimOptions } from "@/server/services/testClaim";
-import { claimAndMandate } from "./kya";
+import { claimAndMandate, type TestKyaOptions } from "./kya";
 
 export type Data = Record<string, unknown>;
 
@@ -27,7 +26,7 @@ export async function createTestAgent(
   db: Db,
   worldId: string,
   payoutReceiver = "agent@example.com",
-  kya: TestClaimOptions = {},
+  kya: TestKyaOptions = {},
 ) {
   const [agent] = await db
     .insert(agents)

@@ -86,7 +86,11 @@ const SEED = 10000n;
 
 const INVOICE = { client_email: "client@example.com", amount_cents: 40000, due_in_days: 14, description: "Website build" };
 
-/** Borrower takes 25000 for 14 days (fee 750), with or without the 40000 invoice; returns the ACTIVE loan id. */
+/**
+ * Borrower takes 25000 for 14 days, with or without the 40000 invoice; returns the ACTIVE loan id.
+ * P3 pricing v2 at grade A (the helper's established credit file): with the 1.6× invoice
+ * 15 + 35 + 50 + 8 = 108 bps → fee 270; without one 15 + 60 + 50 + 8 = 133 bps → fee 333.
+ */
 async function borrow(
   db: Db,
   worldId: string,
@@ -156,7 +160,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     delete process.env.API_KEY_PEPPER;
   });
 
-  it("e2e (sim): client pays the 40000 invoice link with no agent online → REPAID, remainder 14250 paid, holder +600, bank 150", async () => {
+  it("e2e (sim): client pays the 40000 invoice link with no agent online → REPAID, remainder 14730 paid, holder +216, bank 54", async () => {
     const worldId = await createSimWorld(db);
     const lender = await fundPool(db, worldId, 30000);
     const borrower = await borrow(db, worldId);
@@ -207,38 +211,38 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect(repayment).toMatchObject({
       grossCents: 40000n,
       appliedPrincipalCents: 25000n,
-      appliedFeeCents: 750n,
-      remainderCents: 14250n,
+      appliedFeeCents: 270n,
+      remainderCents: 14730n,
       remainderStatus: "paid",
     });
     expect(repayment?.captureId).toBeTruthy();
 
-    // Remainder payout of 14250 succeeded.
+    // Remainder payout of 14730 succeeded.
     const ops = await remainderOps(db, worldId);
     expect(ops).toHaveLength(1);
     expect(ops[0]?.status).toBe("succeeded");
     expect(ops[0]?.sourceId).toBe(repayment!.id);
     const payoutItem = ((ops[0]!.executableRequest as Data).body as { items: Data[] }).items[0]!;
-    expect(payoutItem.amount).toEqual({ currency: "USD", value: "142.50" });
+    expect(payoutItem.amount).toEqual({ currency: "USD", value: "147.30" });
     expect(payoutItem.receiver).toBe("borrower@example.com");
 
     // Ledger.
     expect(await bal(db, worldId, "loans_receivable")).toBe(0n);
-    expect(await bal(db, worldId, "fee_income")).toBe(-750n);
-    expect(await bal(db, worldId, "note_interest_expense")).toBe(600n);
+    expect(await bal(db, worldId, "fee_income")).toBe(-270n);
+    expect(await bal(db, worldId, "note_interest_expense")).toBe(216n);
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
-    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
-    // cash: 30000 − 25000 + 40000 − 14250 = 30750 = holders 30600 + bank 150,
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30216n);
+    // cash: 30000 − 25000 + 40000 − 14730 = 30270 = holders 30216 + bank 54,
     // plus the bank's seed capital (Ruling W), less PayPal's fees (Task 10b),
     // which the bank bears.
-    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30750n - ALL_FEES);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30270n - ALL_FEES);
     expect(await bal(db, worldId, "paypal_fees_expense")).toBe(ALL_FEES);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     await expectPositionsMatchLedger(db, worldId);
 
     const [position] = await db.select().from(notePositions).where(eq(notePositions.agentId, lender.agentId));
-    expect(position?.units).toBe(30600n);
-    expect(position?.accruedCents).toBe(600n);
+    expect(position?.units).toBe(30216n);
+    expect(position?.accruedCents).toBe(216n);
 
     // Events.
     const types = (await db.select().from(events).where(eq(events.aggregateId, borrower.loanId))).map((e) => e.type);
@@ -251,16 +255,16 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect((after.envelope.data as Data).status).toBe("REPAID");
     expect(((after.envelope.data as Data).repayment_link as Data).status).toBe("PAID");
 
-    // get_statement — lender sees 600 earned on a 30600 balance.
+    // get_statement — lender sees 216 earned on a 30216 balance.
     const lenderStatement = await call(db, "get_statement", lender.key, {});
     expect(lenderStatement.envelope.status).toBe("OK");
     const ls = lenderStatement.envelope.data as Data;
-    expect(ls.notes).toEqual({ balance_cents: 30600, earned_cents: 600 });
+    expect(ls.notes).toEqual({ balance_cents: 30216, earned_cents: 216 });
     expect(ls.loans).toEqual([]);
     const lenderLines = ls.ledger_lines as Data[];
     expect(lenderLines.map((l) => [l.account, l.amount_cents])).toEqual([
       ["notes_payable", 30000],
-      ["notes_payable", 600],
+      ["notes_payable", 216],
     ]);
     for (const line of lenderLines) {
       expect(typeof line.sim_at).toBe("string");
@@ -274,12 +278,12 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
       expect.objectContaining({ loan_id: borrower.loanId, status: "REPAID", outstanding_cents: 0 }),
     ]);
     expect((borrowerStatement.ledger_lines as Data[]).map((l) => [l.account, l.amount_cents])).toEqual([
-      ["payable_to_borrower", 14250],
-      ["payable_to_borrower", -14250],
+      ["payable_to_borrower", 14730],
+      ["payable_to_borrower", -14730],
     ]);
   });
 
-  it("partial direct repay 10000 → fee 750 first, principal 9250, ACTIVE with 15750 outstanding; default amount then repays in full", async () => {
+  it("partial direct repay 10000 → fee 333 first, principal 9667, ACTIVE with 15333 outstanding; default amount then repays in full", async () => {
     const worldId = await createSimWorld(db);
     const lender = await fundPool(db, worldId, 30000);
     const borrower = await borrow(db, worldId, { invoice: false });
@@ -308,25 +312,25 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect(confirmed.envelope.data as Data).toMatchObject({
       loan_id: borrower.loanId,
       loan_status: "ACTIVE",
-      applied_fee_cents: 750,
-      applied_principal_cents: 9250,
+      applied_fee_cents: 333,
+      applied_principal_cents: 9667,
       remainder_cents: 0,
-      outstanding_cents: 15750,
+      outstanding_cents: 15333,
     });
 
     const [loan] = await db.select().from(loans).where(eq(loans.id, borrower.loanId));
     expect(loan?.status).toBe("active");
-    expect(loan?.outstandingCents).toBe(15750n);
-    expect(await bal(db, worldId, "loans_receivable")).toBe(15750n);
-    expect(await bal(db, worldId, "fee_income")).toBe(-750n);
-    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
+    expect(loan?.outstandingCents).toBe(15333n);
+    expect(await bal(db, worldId, "loans_receivable")).toBe(15333n);
+    expect(await bal(db, worldId, "fee_income")).toBe(-333n);
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30266n);
     expect(await remainderOps(db, worldId)).toHaveLength(0);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
-    // Default amount = outstanding (15750, all principal — no fee left, so no holders' journal).
+    // Default amount = outstanding (15333, all principal — no fee left, so no holders' journal).
     const rest = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId });
     const restData = rest.envelope.data as Data;
-    expect(restData.amount_cents).toBe(15750);
+    expect(restData.amount_cents).toBe(15333);
     await simApprove(db, restData.checkout_id as string);
     const done = await call(db, "confirm_checkout", borrower.key, { checkout_id: restData.checkout_id });
     expect(done.envelope.status).toBe("COMPLETED");
@@ -336,8 +340,8 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect(repaid?.status).toBe("repaid");
     expect(repaid?.outstandingCents).toBe(0n);
     expect(await bal(db, worldId, "loans_receivable")).toBe(0n);
-    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
-    expect(await bal(db, worldId, "note_interest_expense")).toBe(600n);
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30266n);
+    expect(await bal(db, worldId, "note_interest_expense")).toBe(266n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     await expectPositionsMatchLedger(db, worldId);
 
@@ -347,12 +351,12 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect(again.envelope.status).toBe("INVALID_TRANSITION");
   });
 
-  it("holders' share is cumulative over partial payments: fee paid as 1 then 749 cents → holders 600 in total", async () => {
+  it("holders' share is cumulative over partial payments: fee paid as 1 then 332 cents → holders 266 in total", async () => {
     const worldId = await createSimWorld(db);
     const lender = await fundPool(db, worldId, 30000);
     const borrower = await borrow(db, worldId, { invoice: false });
 
-    for (const amount of [1, 749]) {
+    for (const amount of [1, 332]) {
       const repay = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: amount });
       const checkoutId = (repay.envelope.data as Data).checkout_id as string;
       await simApprove(db, checkoutId);
@@ -360,9 +364,9 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
       expect(done.envelope.status).toBe("COMPLETED");
     }
 
-    expect(await bal(db, worldId, "fee_income")).toBe(-750n);
-    expect(await bal(db, worldId, "note_interest_expense")).toBe(600n);
-    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
+    expect(await bal(db, worldId, "fee_income")).toBe(-333n);
+    expect(await bal(db, worldId, "note_interest_expense")).toBe(266n);
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30266n);
     const [loan] = await db.select().from(loans).where(eq(loans.id, borrower.loanId));
     expect(loan?.outstandingCents).toBe(25000n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
@@ -383,10 +387,10 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const lender = await fundPool(db, worldId, 30000);
     const borrower = await borrow(db, worldId, { invoice: false });
 
-    const over = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: 25751 });
+    const over = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: 25334 });
     expect(over.httpStatus).toBe(400);
     expect(over.envelope.status).toBe("AMOUNT_EXCEEDS_OUTSTANDING");
-    expect((over.envelope.data as Data).outstanding_cents).toBe(25750);
+    expect((over.envelope.data as Data).outstanding_cents).toBe(25333);
 
     const other = await call(db, "repay_loan", lender.key, { loan_id: borrower.loanId });
     expect(other.httpStatus).toBe(404);
@@ -410,7 +414,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const own = await call(db, "confirm_checkout", borrower.key, { checkout_id: link!.paypalOrderId });
     expect(own.envelope.status).toBe("COMPLETED");
     expect((own.envelope.data as Data).loan_status).toBe("REPAID");
-    expect((own.envelope.data as Data).remainder_cents).toBe(14250);
+    expect((own.envelope.data as Data).remainder_cents).toBe(14730);
   });
 
   it("Review Focus 2: settling the same link order twice, then concurrently with confirm_checkout → one journal, one repayment, one remainder payout", async () => {
@@ -440,7 +444,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
       (e) => e.type === "loan.repaid",
     );
     expect(repaidEvents).toHaveLength(1);
-    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30750n - ALL_FEES);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30270n - ALL_FEES);
     expect(await bal(db, worldId, "paypal_fees_expense")).toBe(ALL_FEES); // each fee once
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
@@ -467,7 +471,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     expect((await settleCheckoutByOrderId(db, worldId, "SIMORDER-nope")).status).toBe("NOT_FOUND");
   });
 
-  it("two holders share the fee pro rata (20000/10000 → 400/200)", async () => {
+  it("two holders share the fee pro rata (20000/10000 → 144/72)", async () => {
     const worldId = await createSimWorld(db);
     const big = await fundPool(db, worldId, 20000, "big@example.com");
     const small = await fundPool(db, worldId, 10000, "small@example.com");
@@ -476,13 +480,13 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     await simApprove(db, link!.paypalOrderId!);
     expect((await settleCheckoutByOrderId(db, worldId, link!.paypalOrderId!)).status).toBe("COMPLETED");
 
-    expect(await bal(db, worldId, "notes_payable", big.agentId)).toBe(-20400n);
-    expect(await bal(db, worldId, "notes_payable", small.agentId)).toBe(-10200n);
+    expect(await bal(db, worldId, "notes_payable", big.agentId)).toBe(-20144n);
+    expect(await bal(db, worldId, "notes_payable", small.agentId)).toBe(-10072n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     await expectPositionsMatchLedger(db, worldId);
 
-    // Earned interest is redeemable: the big holder redeems 20400 in full.
-    const redeemed = await call(db, "redeem_notes", big.key, { amount_cents: 20400 });
+    // Earned interest is redeemable: the big holder redeems 20144 in full.
+    const redeemed = await call(db, "redeem_notes", big.key, { amount_cents: 20144 });
     expect(redeemed.envelope.status).toBe("PENDING"); // settled by its afterCommit payout
     const [pos] = await db.select().from(notePositions).where(eq(notePositions.agentId, big.agentId));
     expect(pos?.units).toBe(0n);
@@ -504,14 +508,14 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
 
     const [repayment] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(repayment?.remainderStatus).toBe("failed");
-    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14250n);
+    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14730n);
     expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 45000n - FEES_BEFORE_REMAINDER); // no fee on the failed payout
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     // The borrower's money is not lendable pool liquidity.
-    expect(await availableLiquidity(db, worldId)).toBe(SEED + 30750n - FEES_BEFORE_REMAINDER);
+    expect(await availableLiquidity(db, worldId)).toBe(SEED + 30270n - FEES_BEFORE_REMAINDER);
 
     const status = await call(db, "get_status", borrower.key, {});
-    expect((status.envelope.data as Data).balances).toMatchObject({ payable_to_you_cents: 14250 });
+    expect((status.envelope.data as Data).balances).toMatchObject({ payable_to_you_cents: 14730 });
 
     const types = (await db.select().from(events).where(eq(events.aggregateId, borrower.loanId))).map((e) => e.type);
     expect(types).toContain("loan.remainder_payout_failed");
@@ -519,7 +523,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     // Re-settling doesn't post or pay anything again.
     await settleCheckoutByOrderId(db, worldId, link!.paypalOrderId!);
     expect(await remainderOps(db, worldId)).toHaveLength(1);
-    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14250n);
+    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14730n);
   });
 
   it("a live-shaped (pending) remainder payout is settled later by pollPayoutStatus", async () => {
@@ -537,8 +541,8 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
 
     const [pending] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(pending?.remainderStatus).toBe("pending");
-    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14250n);
-    expect(await availableLiquidity(db, worldId)).toBe(SEED + 30750n - FEES_BEFORE_REMAINDER);
+    expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(-14730n);
+    expect(await availableLiquidity(db, worldId)).toBe(SEED + 30270n - FEES_BEFORE_REMAINDER);
 
     const polled = await pollPayoutStatus(db, pending!.remainderPayoutOpId!);
     expect(polled).toEqual({ polled: true, reason: "polled" });
@@ -546,7 +550,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
     const [paid] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
     expect(paid?.remainderStatus).toBe("paid");
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
-    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30750n - ALL_FEES);
+    expect(await bal(db, worldId, "cash_paypal")).toBe(SEED + 30270n - ALL_FEES);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     expect(await pollPayoutStatus(db, pending!.remainderPayoutOpId!)).toEqual({
@@ -580,7 +584,7 @@ describe("repayment: invoice link, repay_loan, waterfall, remainder, note distri
       remainderStatus: "paid",
     });
     // Holders earned on the fee exactly once.
-    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30600n);
+    expect(await bal(db, worldId, "notes_payable", lender.agentId)).toBe(-30216n);
     expect(await bal(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
     const repaidEvents = (await db.select().from(events).where(eq(events.aggregateId, borrower.loanId))).filter(
