@@ -70,6 +70,15 @@ export interface LoanSummary {
   collateral: "invoice_link" | "none";
   /** The open repayment checkout, if any (status + approve URL). */
   repaymentLink: { status: string; approveUrl: string | null } | null;
+  /**
+   * P4 Task 2: once charged off — what was written off, recovered so far,
+   * and the owner's guarantee link (shown while the loan is CHARGED_OFF).
+   */
+  chargeOff: {
+    writtenOffCents: bigint;
+    recoveredCents: bigint;
+    guaranteeLink: { status: string; approveUrl: string | null; amountCents: bigint } | null;
+  } | null;
   createdAt: Date;
 }
 
@@ -154,8 +163,9 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
     .map((loan) => {
       const offer = offerById.get(loan.offerId);
       const app = offer ? appById.get(offer.applicationId) : undefined;
+      const guarantee = links.find((l) => l.loanId === loan.id && l.kind === "guarantee");
       const link = links
-        .filter((l) => l.loanId === loan.id && (l.status === "open" || l.status === "pending"))
+        .filter((l) => l.loanId === loan.id && l.kind !== "guarantee" && (l.status === "open" || l.status === "pending"))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
       const termDays = offer?.termDays ?? null;
       return {
@@ -173,6 +183,15 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
         disbursedSimAt: loan.disbursedSimAt,
         collateral: app?.invoiceRef ? ("invoice_link" as const) : ("none" as const),
         repaymentLink: link ? { status: link.status, approveUrl: link.approveUrl } : null,
+        chargeOff: loan.chargedOffAt
+          ? {
+              writtenOffCents: loan.chargeOffTotalCents,
+              recoveredCents: loan.recoveredCents,
+              guaranteeLink: guarantee
+                ? { status: guarantee.status, approveUrl: guarantee.approveUrl, amountCents: guarantee.amountCents }
+                : null,
+            }
+          : null,
         createdAt: loan.createdAt,
       };
     })

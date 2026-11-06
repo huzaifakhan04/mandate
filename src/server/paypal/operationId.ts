@@ -25,7 +25,10 @@ export type OperationPurpose =
   | "remainder_payout"
   | "payout_cancel"
   // P2: the $0.01 "Verify with PayPal" order — approved, never captured.
-  | "identity_verification";
+  | "identity_verification"
+  // P4 Task 2: the principal's guarantee checkout, invoked at charge-off
+  // (sourceId = the loan id; captured as `repayment_capture`).
+  | "guarantee";
 
 function uuidBytes(uuid: string): Buffer {
   return Buffer.from(uuid.replace(/-/g, ""), "hex");

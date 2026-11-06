@@ -12,7 +12,7 @@ import { errorMessage, recordJobRun } from "./jobRuns";
  * simulated clock (OFFERED → EXPIRED through the loan machine; a
  * conditional update, so idempotent and safe against a concurrent
  * `accept_offer`); then (P4 Task 1) runs the delinquency ladder
- * (`processDue`: late → penalty → substandard, each step exactly once,
+ * (`processDue`: late → penalty → substandard → charged_off, each step exactly once,
  * plus the daily penalty accrual). A `job_runs` row per world only for a
  * run that did something (or failed); one world failing doesn't stop the others.
  *
@@ -35,7 +35,7 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
   for (const worldId of await listActiveWorldIds(db)) {
     report.worlds += 1;
     let expired = 0;
-    let steps = { late: 0, penalty: 0, substandard: 0 };
+    let steps = { late: 0, penalty: 0, substandard: 0, charged_off: 0 };
     let accrued = 0;
     const errors: string[] = [];
     try {
@@ -56,7 +56,7 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
       report.errors.push({ worldId, message });
     }
     report.expired += expired;
-    const stepCount = steps.late + steps.penalty + steps.substandard;
+    const stepCount = steps.late + steps.penalty + steps.substandard + steps.charged_off;
     report.ladderSteps += stepCount;
     if (expired > 0 || stepCount > 0 || accrued > 0 || errors.length > 0) {
       // Fix round 1 (M2): idle ticks leave no rows.

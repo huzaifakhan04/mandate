@@ -9,7 +9,7 @@ import type { Db } from "../db/client";
 import { agents, events, loans, mandates, noteSeries } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type KyaTier } from "../domain/kya";
-import { isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import { DELINQUENT_LOAN_DB_STATUSES, isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import {
   agreementTextHash,
   checkMandate,
@@ -103,7 +103,8 @@ export async function principalExposure(db: Db, worldId: string, principalId: st
 
 /**
  * P4 mandate freeze: whether any loan of any of `principalId`'s agents in
- * the world is SUBSTANDARD. While it is, new applications by any of their
+ * the world is SUBSTANDARD (or, P4 Task 2, CHARGED_OFF and not yet
+ * recovered). While it is, new applications by any of their
  * agents decline with `delinquent_principal` (and acceptances are refused).
  */
 export async function principalHasSubstandardLoan(db: Db, worldId: string, principalId: string | null): Promise<boolean> {
@@ -122,7 +123,7 @@ export async function principalHasSubstandardLoan(db: Db, worldId: string, princ
         loans.agentId,
         owned.map((row) => row.id),
       ),
-      eq(loans.status, "substandard"),
+      inArray(loans.status, [...DELINQUENT_LOAN_DB_STATUSES]),
     )!,
   );
   return rows.length > 0;

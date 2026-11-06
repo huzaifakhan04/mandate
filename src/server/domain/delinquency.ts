@@ -7,21 +7,31 @@
  * | +1  | `late`        | status LATE; late fee min(500, max(100, 5% × outstanding principal)) |
  * | +3  | `penalty`     | rate penalty starts: ceil(principal × 200 bps × days late ÷ 365)     |
  * | +7  | `substandard` | status SUBSTANDARD; the agent is restricted, the mandate frozen      |
+ * | +10 | `charged_off` | status CHARGED_OFF; written off, holders share the loss, guarantee   |
  *
- * (+10 charge-off is P4 Task 2.) The services (`services/collections.ts`)
+ * The penalty stops accruing at the charge-off day. The services (`services/collections.ts`)
  * apply each step exactly once; this file only decides amounts and order.
  */
 
 const DAY_MS = 86_400_000;
 
-export type LadderStep = "late" | "penalty" | "substandard";
+export type LadderStep = "late" | "penalty" | "substandard" | "charged_off";
 
 /** The steps in the order they must be applied, with their day offsets after the due date. */
 export const LADDER: ReadonlyArray<{ step: LadderStep; day: number }> = [
   { step: "late", day: 1 },
   { step: "penalty", day: 3 },
   { step: "substandard", day: 7 },
+  { step: "charged_off", day: 10 },
 ];
+
+/** P4 Task 2: the charge-off day; the rate penalty accrues through this day at most. */
+export const CHARGE_OFF_DAY = 10;
+
+/** Days late the penalty accrues through at `simNow`: days late, capped at the charge-off day. */
+export function penaltyDays(dueSimAt: Date, simNow: Date): number {
+  return Math.min(daysLate(dueSimAt, simNow), CHARGE_OFF_DAY);
+}
 
 export const LATE_FEE_MIN_CENTS = 100n;
 export const LATE_FEE_MAX_CENTS = 500n;
@@ -52,7 +62,7 @@ export function previousStep(step: LadderStep): LadderStep | null {
 export function dueSteps(applied: string | null, days: number): LadderStep[] {
   const start = applied === null ? 0 : LADDER.findIndex((candidate) => candidate.step === applied) + 1;
   if (start <= 0 && applied !== null) {
-    return []; // A step past this ladder (e.g. Task 2's charge-off): nothing here applies.
+    return []; // An unknown step: nothing here applies.
   }
   return LADDER.slice(start)
     .filter((candidate) => candidate.day <= days)

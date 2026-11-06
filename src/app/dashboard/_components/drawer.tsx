@@ -33,6 +33,7 @@ const LOAN_PILL: Record<string, { tone: Tone; label: string }> = {
   substandard: { tone: "risk", label: "Substandard" },
   defaulted: { tone: "risk", label: "Defaulted" },
   charged_off: { tone: "risk", label: "Charged off" },
+  recovered: { tone: "plain", label: "Recovered" },
   disbursement_failed: { tone: "risk", label: "Disbursement failed" },
 };
 
@@ -425,6 +426,22 @@ function LoanCard({ loan }: { loan: LoanSummary }) {
         <dt>Collateral</dt>
         <dd>{COLLATERAL_LABEL[loan.collateral]}</dd>
       </dl>
+      {loan.chargeOff ? (
+        <dl className="rows num" data-testid="loan-charge-off">
+          <dt>Written off</dt>
+          <dd>{formatCents(loan.chargeOff.writtenOffCents)}</dd>
+          <dt>Recovered</dt>
+          <dd>{formatCents(loan.chargeOff.recoveredCents)}</dd>
+        </dl>
+      ) : null}
+      {loan.status === "charged_off" && loan.chargeOff?.guaranteeLink?.approveUrl && loan.chargeOff.guaranteeLink.status === "open" ? (
+        <div className="link" data-testid="guarantee-link">
+          <Pill tone="risk">Your guarantee · {formatCents(loan.chargeOff.guaranteeLink.amountCents)}</Pill>
+          <a className="mono" href={loan.chargeOff.guaranteeLink.approveUrl} rel="noreferrer noopener" target="_blank">
+            Pay the guarantee
+          </a>
+        </div>
+      ) : null}
       {loan.repaymentLink?.approveUrl ? (
         <div className="link">
           <Pill tone="warn">Awaiting payer</Pill>

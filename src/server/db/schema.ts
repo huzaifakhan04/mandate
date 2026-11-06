@@ -514,8 +514,26 @@ export const loans = pgTable(
       .default(sql`0`),
     /** Days late the penalty has been accrued through (0 = not started). */
     penaltyAccruedDays: integer("penalty_accrued_days").notNull().default(0),
-    /** The last ladder step applied: null | `late` | `penalty` | `substandard` (Task 2 adds `charged_off`). */
+    /** The last ladder step applied: null | `late` | `penalty` | `substandard` | `charged_off`. */
     delinquencyStep: text("delinquency_step"),
+    /**
+     * P4 Task 2 (charge-off at +10). `charge_off_principal_cents` is the
+     * principal written off (journaled: provision → allowance → loans
+     * receivable); `charge_off_total_cents` is everything owed at that
+     * moment — principal + base fee + late fees + penalty (the fees were
+     * memo balances, so they are simply written off) — and the amount of
+     * the principal's guarantee. `holders_loss_cents` is the part of the
+     * principal loss the note holders bore (≤ principal; the bank's capital
+     * absorbs the rest). `recovered_cents` is what payments after the
+     * charge-off have recovered (≤ `charge_off_total_cents`; equal → status
+     * `recovered`).
+     */
+    chargeOffPrincipalCents: bigint("charge_off_principal_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    chargeOffTotalCents: bigint("charge_off_total_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    holdersLossCents: bigint("holders_loss_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -564,6 +582,35 @@ export const loanLadderSteps = pgTable(
 );
 
 /**
+ * P4 Task 2: each note holder's share of a charged-off loan's principal
+ * loss (Dr `notes_payable[holder]` / Cr `provision_expense`, units reduced
+ * by the same amount — Ruling T), and how much of it recoveries have
+ * credited back (`recovered_cents` ≤ `loss_cents`). Written under the
+ * loan row lock only (charge-off step, recovery capture).
+ */
+export const loanHolderLosses = pgTable(
+  "loan_holder_losses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    lossCents: bigint("loss_cents", { mode: "bigint" }).notNull(),
+    recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("loan_holder_losses_loan_agent_idx").on(table.worldId, table.loanId, table.agentId)],
+);
+
+/**
  * P4 Task 1: notices to an agent and its owner (late, penalty,
  * substandard, cured…). One row is visible to both: the agent through
  * `get_status` / `get_loan` (`read_at` = the agent acknowledged it with
@@ -598,8 +645,10 @@ export const agentNotices = pgTable(
 /**
  * Task 7: a repayment checkout for a loan — `kind` `invoice` (the payment
  * link the borrower's client pays; one per loan, created on activation,
- * its `order.create` keyed by the loan id) or `direct` (one per
- * `repay_loan` call, its `order.create` keyed by this row's id).
+ * its `order.create` keyed by the loan id), `direct` (one per
+ * `repay_loan` call, its `order.create` keyed by this row's id) or (P4
+ * Task 2) `guarantee` (the principal's guarantee, invoked at charge-off:
+ * one per loan, its `order.create` purpose `guarantee` keyed by the loan id).
  * `status`: `pending` (order not created yet) → `open` (approve URL
  * known) → `paid` (capture applied) | `review` (captured amount mismatch)
  * | `failed`.
@@ -632,6 +681,10 @@ export const repaymentLinks = pgTable(
     uniqueIndex("repayment_links_one_invoice_per_loan_idx")
       .on(table.worldId, table.loanId)
       .where(sql`${table.kind} = 'invoice'`),
+    // P4 Task 2: one guarantee link per loan (the charge-off step runs once).
+    uniqueIndex("repayment_links_one_guarantee_per_loan_idx")
+      .on(table.worldId, table.loanId)
+      .where(sql`${table.kind} = 'guarantee'`),
   ],
 );
 
@@ -654,6 +707,10 @@ export const repayments = pgTable("repayments", {
   appliedLateFeeCents: bigint("applied_late_fee_cents", {
     mode: "bigint",
   }).notNull(),
+  /** P4 Task 2: what this payment recovered on a charged-off loan (Cr `recoveries_income`). */
+  appliedRecoveryCents: bigint("applied_recovery_cents", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
   /** P4 Task 1: the rate penalty this repayment collected (Cr `penalty_income`). */
   appliedPenaltyCents: bigint("applied_penalty_cents", { mode: "bigint" })
     .notNull()

@@ -26,6 +26,7 @@ import {
   pollPayoutStatus,
   unknownPayoutFee,
 } from "../services/payoutPolling";
+import { refreshGuaranteeLink } from "../services/paymentLinks";
 import { isPollDue } from "../services/pollThrottle";
 import {
   loanIdFromInvoiceSourceId,
@@ -314,6 +315,9 @@ async function followUp(db: Db, op: OperationRecord): Promise<void> {
         await refreshRepaymentLink(db, op.worldId, loanIdFromInvoiceSourceId(op.sourceId));
       } else if (op.purpose === "repayment_direct") {
         await refreshDirectRepayment(db, op.worldId, op.sourceId);
+      } else if (op.purpose === "guarantee") {
+        // P4 Task 2: the principal's guarantee link (sourceId = the loan id).
+        await refreshGuaranteeLink(db, op.worldId, op.sourceId);
       }
       return;
     case "order.capture":

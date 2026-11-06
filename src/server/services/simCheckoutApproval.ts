@@ -28,6 +28,8 @@ export interface SimCheckoutView {
   orderId: string;
   amountCents: bigint;
   status: SimCheckoutStatus;
+  /** The checkout's purpose (`order.create` purpose): P4 Task 2 shows a guarantee differently. */
+  purpose: string | null;
   /** Where the payer lands after approving: the order's `/checkout/<kind>/return?token=<orderId>`. */
   returnPath: string;
 }
@@ -69,7 +71,7 @@ export async function findOwnedSimCheckout(
   }
   const t = paypalOperations;
   const [row] = await db
-    .select({ simState: t.simState, executableRequest: t.executableRequest })
+    .select({ simState: t.simState, executableRequest: t.executableRequest, purpose: t.purpose })
     .from(t)
     .where(
       and(
@@ -90,6 +92,7 @@ export async function findOwnedSimCheckout(
     orderId,
     amountCents: BigInt(typeof state.amountCents === "string" ? state.amountCents : "0"),
     status: (state.status as SimCheckoutStatus) ?? "PAYER_ACTION_REQUIRED",
+    purpose: row.purpose,
     returnPath: returnPathOf(row.executableRequest, world.id, orderId),
   };
 }

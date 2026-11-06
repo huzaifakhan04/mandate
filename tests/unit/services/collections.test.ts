@@ -151,12 +151,12 @@ describe("the delinquency ladder (P4 Task 1)", () => {
     expect(before).toBe(25333n);
 
     // On the due date and just before +1: nothing.
-    expect((await processDue(db, worldId, at(due, 1, -1))).steps).toEqual({ late: 0, penalty: 0, substandard: 0 });
+    expect((await processDue(db, worldId, at(due, 1, -1))).steps).toEqual({ late: 0, penalty: 0, substandard: 0, charged_off: 0 });
     expect((await loanRow(db, borrower.loanId)).status).toBe("active");
 
     // +1: LATE, fee 500, notice, score history −15.
     const late = await processDue(db, worldId, at(due, 1));
-    expect(late.steps).toEqual({ late: 1, penalty: 0, substandard: 0 });
+    expect(late.steps).toEqual({ late: 1, penalty: 0, substandard: 0, charged_off: 0 });
     let loan = await loanRow(db, borrower.loanId);
     expect(loan.status).toBe("late");
     expect(loan.lateFeeOutstandingCents).toBe(500n);

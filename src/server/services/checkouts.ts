@@ -106,6 +106,8 @@ const CAPTURE_PURPOSE_FOR_CHECKOUT_PURPOSE: Partial<Record<OperationPurpose, Ope
   note_purchase: "note_purchase_capture",
   repayment_link: "repayment_capture",
   repayment_direct: "repayment_capture",
+  // P4 Task 2: the principal's guarantee (a repayment of a charged-off loan).
+  guarantee: "repayment_capture",
 };
 
 type OperationRow = typeof paypalOperations.$inferSelect;

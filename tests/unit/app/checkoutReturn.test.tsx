@@ -37,8 +37,8 @@ function findElement(node: ReactNode, type: unknown): ReactElement | null {
 }
 
 describe("I3: /checkout/{kind}/{result} pages", () => {
-  it("prerenders all six kind × result pages", () => {
-    expect(generateStaticParams()).toHaveLength(6);
+  it("prerenders all eight kind × result pages", () => {
+    expect(generateStaticParams()).toHaveLength(8);
   });
 
   for (const kind of KINDS) {

@@ -8,7 +8,7 @@ import { settleCheckoutByOrderId } from "./checkouts";
  * (`/checkout/{kind}/{result}`) that every order is created with.
  */
 
-export const CHECKOUT_KINDS = ["notes", "invoice", "repay"] as const;
+export const CHECKOUT_KINDS = ["notes", "invoice", "repay", "guarantee"] as const;
 export const CHECKOUT_RESULTS = ["return", "cancel"] as const;
 export type CheckoutKind = (typeof CHECKOUT_KINDS)[number];
 export type CheckoutResult = (typeof CHECKOUT_RESULTS)[number];
@@ -32,6 +32,14 @@ export function checkoutPageCopy(kind: string, result: string): CheckoutPageCopy
   }
   if (k === "invoice") {
     return { kind: k, result: r, title: "Thank you", message: "Thanks — your payment to Mandate is being processed." };
+  }
+  if (k === "guarantee") {
+    return {
+      kind: k,
+      result: r,
+      title: "Guarantee paid",
+      message: "Thank you — your guarantee payment is being processed. The loan shows as recovered on your dashboard once it settles.",
+    };
   }
   return {
     kind: k,

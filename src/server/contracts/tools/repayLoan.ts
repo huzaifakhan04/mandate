@@ -30,7 +30,8 @@ export const repayLoanTool = defineTool({
     "Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout " +
     "the agent's human approves (a restricted agent may still repay). amount_cents defaults to " +
     "everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate " +
-    "penalty, the fee, then principal. Present the approve_url to the payer, then call confirm_checkout.",
+    "penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery " +
+    "of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.",
   auth: "agent",
   mutating: true,
   readOnly: false,

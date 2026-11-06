@@ -1,20 +1,46 @@
 import { and, asc, eq, inArray, isNull, lte } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { agentNotices, agents, events, loanLadderSteps, loans, noteSeries, scoreHistory } from "../db/schema";
+import {
+  agentNotices,
+  agents,
+  events,
+  loanHolderLosses,
+  loanLadderSteps,
+  loans,
+  noteSeries,
+  notePositions,
+  noteTransactions,
+  principals,
+  repaymentLinks,
+  scoreHistory,
+} from "../db/schema";
 import { scoped } from "../db/scoped";
 import {
   LATE_SCORE_DELTA,
   daysLate,
   dueSteps,
   lateFeeCents,
+  penaltyDays,
   penaltyIncrement,
   previousStep,
   stepDueAt,
   type LadderStep,
 } from "../domain/delinquency";
-import { fromDbStatus, isOwingStatus, OWING_LOAN_DB_STATUSES, toDbStatus, transition } from "../domain/loanMachine";
+import { distribute } from "../domain/distribution";
+import {
+  DELINQUENT_LOAN_DB_STATUSES,
+  fromDbStatus,
+  isOwingStatus,
+  OWING_LOAN_DB_STATUSES,
+  toDbStatus,
+  transition,
+} from "../domain/loanMachine";
+import { postJournal } from "../ledger/postJournal";
+import { buildCreateOrderRequest, enqueueOperation } from "../paypal/operations";
 import { scoreAgent } from "./credit";
+import { checkoutUrl, refreshGuaranteeLink } from "./paymentLinks";
+import { railForWorld } from "./worlds";
 
 /**
  * P4 Task 1 — collections: the delinquency ladder engine (`processDue`),
@@ -78,12 +104,29 @@ export function outstandingParts(loan: LoanRow): OutstandingParts {
   };
 }
 
-/** Everything a loan still owes: base outstanding + late fees + penalty (0 unless owing). */
+/**
+ * Everything a loan still owes: base outstanding + late fees + penalty
+ * while owing; for a CHARGED_OFF loan (P4 Task 2) what is still
+ * recoverable — the written-off total less what has been recovered; 0
+ * otherwise.
+ */
 export function totalDueCents(loan: LoanRow): bigint {
+  if (loan.status === "charged_off") {
+    return recoverableCents(loan);
+  }
   if (!isOwingStatus(loan.status)) {
     return 0n;
   }
   return loan.outstandingCents + loan.lateFeeOutstandingCents + loan.penaltyOutstandingCents;
+}
+
+/** P4 Task 2: what a charged-off loan can still recover (0 for any other status). */
+export function recoverableCents(loan: LoanRow): bigint {
+  if (loan.status !== "charged_off") {
+    return 0n;
+  }
+  const left = loan.chargeOffTotalCents - loan.recoveredCents;
+  return left > 0n ? left : 0n;
 }
 
 async function appendEvent(
@@ -145,7 +188,8 @@ export async function accruePenaltyLocked(tx: Db, worldId: string, loan: LoanRow
   if (!isOwingStatus(loan.status) || loan.penaltyAccruedDays <= 0) {
     return loan;
   }
-  const days = daysLate(loan.dueSimAt, simNow);
+  // P4 Task 2: the penalty stops at the charge-off day.
+  const days = penaltyDays(loan.dueSimAt, simNow);
   if (days <= loan.penaltyAccruedDays) {
     return loan;
   }
@@ -262,7 +306,7 @@ async function applyPenaltyStep(
 
 /** Starts the penalty accrual (penalty_accrued_days 0 → days late) on the locked, just-updated row. */
 async function accrueFromZero(tx: Db, worldId: string, loan: LoanRow, simNow: Date): Promise<LoanRow> {
-  const days = daysLate(loan.dueSimAt, simNow);
+  const days = penaltyDays(loan.dueSimAt, simNow);
   const add = penaltyIncrement(outstandingParts(loan).principalCents, 0, days);
   const [updated] = await scoped(tx, worldId).update(
     loans,
@@ -328,6 +372,203 @@ async function applySubstandardStep(tx: Db, worldId: string, loan: LoanRow, at: 
   return { total_due_cents: Number(totalDueCents(updated)) };
 }
 
+/**
+ * P4 Task 2 — the +10 charge-off, on the LOCKED loan row (series → loan
+ * locks held; positions are locked here, after the loan). In this one
+ * transaction:
+ * - the penalty is accrued through the charge-off day (and stops there);
+ * - SUBSTANDARD → CHARGED_OFF; the base outstanding, late fees and penalty
+ *   are written off (buckets → 0) and recorded on the loan
+ *   (`charge_off_principal_cents`, `charge_off_total_cents`);
+ * - journal: Dr `provision_expense` / Cr `allowance_for_losses` (P), then
+ *   Dr `allowance_for_losses` / Cr `loans_receivable` (P). The base fee,
+ *   late fees and penalty were never journaled (fee income on collection,
+ *   P1/Task 1) — writing them off posts nothing;
+ * - note holders bear the principal loss pro rata by their units at this
+ *   moment (less their own pending redemptions, so a redemption already
+ *   in flight can't drive units negative): L = min(P, Σ units), shares by
+ *   `distribute` (Σ = L), Dr `notes_payable[holder_i]` / Cr
+ *   `provision_expense` L, units reduced by the same amounts (Ruling T:
+ *   units == −notes_payable[holder]); the bank's capital absorbs P − L;
+ *   each share recorded in `loan_holder_losses` for recovery;
+ * - the principal's guarantee: a `guarantee` `repayment_links` row for
+ *   the written-off total, payable by the owner, and its queued
+ *   `order.create` (purpose `guarantee`, sourceId = loan id) — executed
+ *   after commit by `processDue` (and the reconcile cron);
+ * - `loan.charged_off` event and a notice to the agent and the owner.
+ * The agent stays restricted and the mandate frozen until recovery.
+ */
+async function applyChargeOffStep(
+  tx: Db,
+  worldId: string,
+  locked: LoanRow,
+  at: Date,
+): Promise<Record<string, unknown>> {
+  const loan = await accruePenaltyLocked(tx, worldId, locked, at);
+  const parts = outstandingParts(loan);
+  const total = parts.principalCents + parts.feeCents + parts.lateFeeCents + parts.penaltyCents;
+  const next = transition(fromDbStatus(loan.status), "CHARGE_OFF");
+
+  // Holders' share of the principal loss, by units at this moment.
+  const [series] = await scoped(tx, worldId).select(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
+  const positions = series
+    ? await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.seriesId, series.id))
+    : [];
+  const pending = positions.length
+    ? await scoped(tx, worldId).select(
+        noteTransactions,
+        and(
+          inArray(
+            noteTransactions.positionId,
+            positions.map((position) => position.id),
+          ),
+          eq(noteTransactions.kind, "redeem"),
+          eq(noteTransactions.status, "pending"),
+        )!,
+      )
+    : [];
+  const available = positions.map((position) => {
+    const pendingCents = pending
+      .filter((row) => row.positionId === position.id)
+      .reduce((sum, row) => sum + row.amountCents, 0n);
+    const units = position.units - pendingCents;
+    return { agentId: position.agentId, units: units > 0n ? units : 0n };
+  });
+  const totalUnits = available.reduce((sum, holder) => sum + holder.units, 0n);
+  const holdersLoss = parts.principalCents < totalUnits ? parts.principalCents : totalUnits;
+  const shares = distribute(available, holdersLoss).filter((share) => share.cents > 0n);
+
+  const [updated] = await scoped(tx, worldId).update(
+    loans,
+    {
+      status: toDbStatus(next),
+      delinquencyStep: "charged_off",
+      chargedOffAt: at,
+      chargeOffPrincipalCents: parts.principalCents,
+      chargeOffTotalCents: total,
+      holdersLossCents: holdersLoss,
+      dpd: daysLate(loan.dueSimAt, at),
+      outstandingCents: 0n,
+      lateFeeOutstandingCents: 0n,
+      penaltyOutstandingCents: 0n,
+    },
+    and(eq(loans.id, loan.id), eq(loans.status, "substandard"), eq(loans.delinquencyStep, "substandard"))!,
+  );
+  if (!updated) {
+    throw new Error(`loan ${loan.id} changed under its row lock (charge-off step)`);
+  }
+
+  if (parts.principalCents > 0n) {
+    await postJournal(tx, {
+      worldId,
+      memo: "Loan charged off: provision",
+      sourceType: "loans",
+      sourceId: loan.id,
+      simAt: at,
+      idempotencyKey: `charge_off:${loan.id}:provision`,
+      postings: [
+        { accountCode: "provision_expense", amountCents: parts.principalCents },
+        { accountCode: "allowance_for_losses", amountCents: -parts.principalCents },
+      ],
+    });
+    await postJournal(tx, {
+      worldId,
+      memo: "Loan charged off: written off",
+      sourceType: "loans",
+      sourceId: loan.id,
+      simAt: at,
+      idempotencyKey: `charge_off:${loan.id}:write_off`,
+      postings: [
+        { accountCode: "allowance_for_losses", amountCents: parts.principalCents },
+        { accountCode: "loans_receivable", amountCents: -parts.principalCents },
+      ],
+    });
+  }
+  if (shares.length > 0) {
+    await postJournal(tx, {
+      worldId,
+      memo: "Loan charged off: note holders' share of the loss",
+      sourceType: "loans",
+      sourceId: loan.id,
+      simAt: at,
+      idempotencyKey: `charge_off:${loan.id}:holders`,
+      postings: [
+        ...shares.map((share) => ({
+          accountCode: "notes_payable" as const,
+          ownerRef: share.agentId,
+          amountCents: share.cents,
+        })),
+        { accountCode: "provision_expense", amountCents: -holdersLoss },
+      ],
+    });
+    for (const share of shares) {
+      const position = positions.find((row) => row.agentId === share.agentId)!;
+      await scoped(tx, worldId).update(notePositions, { units: position.units - share.cents }, eq(notePositions.id, position.id));
+      await scoped(tx, worldId).insert(loanHolderLosses, { loanId: loan.id, agentId: share.agentId, lossCents: share.cents });
+    }
+  }
+
+  // The principal's guarantee: a checkout for everything written off.
+  const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
+  const ownerId = loan.principalId ?? agent?.principalId ?? null;
+  const owner = ownerId ? await tx.select().from(principals).where(eq(principals.id, ownerId)).limit(1) : [];
+  const rail = await railForWorld(tx, worldId);
+  const { operationId } = await enqueueOperation(tx, {
+    worldId,
+    rail,
+    kind: "order.create",
+    purpose: "guarantee",
+    sourceId: loan.id,
+    request: buildCreateOrderRequest({
+      amountCents: total,
+      description: `Guarantee: Mandate loan ${loan.id} to ${agent?.name ?? "your agent"} was charged off`.slice(0, 127),
+      customId: loan.id,
+      returnUrl: checkoutUrl("/checkout/guarantee/return"),
+      cancelUrl: checkoutUrl("/checkout/guarantee/cancel"),
+    }),
+  });
+  await scoped(tx, worldId).insert(repaymentLinks, {
+    loanId: loan.id,
+    kind: "guarantee",
+    amountCents: total,
+    payerHint: owner[0]?.email ?? null,
+    status: "pending",
+    createOpId: operationId,
+  });
+
+  const detail = {
+    principal_cents: Number(parts.principalCents),
+    fee_cents: Number(parts.feeCents),
+    late_fee_cents: Number(parts.lateFeeCents),
+    penalty_cents: Number(parts.penaltyCents),
+    written_off_cents: Number(total),
+    holders_loss_cents: Number(holdersLoss),
+    bank_loss_cents: Number(parts.principalCents - holdersLoss),
+    holders: shares.map((share) => ({ agent_id: share.agentId, loss_cents: Number(share.cents) })),
+  };
+  await appendEvent(tx, worldId, {
+    type: "loan.charged_off",
+    aggregateType: "loan",
+    aggregateId: loan.id,
+    simAt: at,
+    payload: detail,
+  });
+  await insertNotice(tx, worldId, {
+    agentId: loan.agentId,
+    principalId: ownerId,
+    kind: "charged_off",
+    loanId: loan.id,
+    simAt: at,
+    body:
+      `Loan ${loan.id} is 10 days past due and has been charged off: ${dollars(total)} is written off ` +
+      `(${dollars(parts.principalCents)} principal, ${dollars(parts.feeCents)} fee, ${dollars(parts.lateFeeCents)} late fees, ` +
+      `${dollars(parts.penaltyCents)} rate penalty). The owner's guarantee is invoked: a payment link for ${dollars(total)} ` +
+      "is on the owner's dashboard. Any payment from now on — the guarantee, the invoice link or repay_loan — is a recovery; " +
+      "the agent stays restricted and the mandate frozen until the full amount is recovered.",
+  });
+  return detail;
+}
+
 export type StepResult = "applied" | "skipped";
 
 /**
@@ -375,6 +616,9 @@ export async function applyLadderStep(
       case "substandard":
         detail = await applySubstandardStep(tx, worldId, loan, at);
         break;
+      case "charged_off":
+        detail = await applyChargeOffStep(tx, worldId, loan, at);
+        break;
     }
     await scoped(tx, worldId).update(loanLadderSteps, { detail }, eq(loanLadderSteps.id, row.id));
     return "applied";
@@ -399,7 +643,7 @@ async function accrueLoan(db: Db, worldId: string, loanId: string, simNow: Date)
 
 export interface ProcessDueReport {
   loans: number;
-  steps: { late: number; penalty: number; substandard: number };
+  steps: Record<LadderStep, number>;
   accrued: number;
   errors: { loanId: string; message: string }[];
 }
@@ -408,13 +652,19 @@ export interface ProcessDueReport {
  * Runs the delinquency ladder for one world at `simNow` (the tick cron for
  * every active world; the private-world advance after each day). For each
  * ACTIVE/LATE/SUBSTANDARD loan more than a day past due: every step that
- * is due and not yet applied, in order, each in its own transaction; then
- * the daily penalty accrual. Idempotent — running it twice, or two runs at
+ * is due and not yet applied, in order, each in its own transaction (P4
+ * Task 2: after a `charged_off` step commits, the guarantee's order is
+ * created); then the daily penalty accrual (which stops at charge-off). Idempotent — running it twice, or two runs at
  * once, applies each step once. A loan that fails is reported and the rest
  * continue. Never call inside a transaction.
  */
 export async function processDue(db: Db, worldId: string, simNow: Date): Promise<ProcessDueReport> {
-  const report: ProcessDueReport = { loans: 0, steps: { late: 0, penalty: 0, substandard: 0 }, accrued: 0, errors: [] };
+  const report: ProcessDueReport = {
+    loans: 0,
+    steps: { late: 0, penalty: 0, substandard: 0, charged_off: 0 },
+    accrued: 0,
+    errors: [],
+  };
   const lateBy = new Date(simNow.getTime() - 86_400_000);
   const candidates = await scoped(db, worldId).selectFields(
     loans,
@@ -428,6 +678,12 @@ export async function processDue(db: Db, worldId: string, simNow: Date): Promise
       for (const step of dueSteps(candidate.delinquencyStep, daysLate(candidate.dueSimAt, simNow))) {
         if ((await applyLadderStep(db, worldId, candidate.id, step, simNow)) === "applied") {
           report.steps[step] += 1;
+          if (step === "charged_off") {
+            // After commit: create the guarantee's order (the reconcile cron retries a failure).
+            await refreshGuaranteeLink(db, worldId, candidate.id, { ignoreBackoff: true }).catch((err: unknown) => {
+              console.error(`[collections] guarantee link for loan ${candidate.id}: ${err instanceof Error ? err.message : String(err)}`);
+            });
+          }
         }
       }
       if (await accrueLoan(db, worldId, candidate.id, simNow)) {
@@ -453,27 +709,7 @@ export async function processDue(db: Db, worldId: string, simNow: Date): Promise
  * notice is written.
  */
 export async function onLoanCured(tx: Db, worldId: string, loan: LoanRow, simAt: Date): Promise<void> {
-  const stillSubstandard = await scoped(tx, worldId).selectFields(
-    loans,
-    { id: loans.id },
-    and(eq(loans.agentId, loan.agentId), eq(loans.status, "substandard"))!,
-  );
-  if (stillSubstandard.length === 0) {
-    const restored = await scoped(tx, worldId).update(
-      agents,
-      { status: "active" },
-      and(eq(agents.id, loan.agentId), eq(agents.status, "restricted"))!,
-    );
-    if (restored.length === 1) {
-      await appendEvent(tx, worldId, {
-        type: "agent.restored",
-        aggregateType: "agent",
-        aggregateId: loan.agentId,
-        simAt,
-        payload: { reason: "loan_cured", loan_id: loan.id },
-      });
-    }
-  }
+  const cleared = await restoreAgentIfClear(tx, worldId, loan, simAt, "loan_cured");
   await appendEvent(tx, worldId, {
     type: "loan.cured",
     aggregateType: "loan",
@@ -491,16 +727,79 @@ export async function onLoanCured(tx: Db, worldId: string, loan: LoanRow, simAt:
     body:
       `Loan ${loan.id} is repaid in full, including ${dollars(loan.lateFeesCents)} in late fees and ` +
       `${dollars(loan.penaltyCents)} in rate penalty. ` +
-      (stillSubstandard.length === 0 ? "Restrictions from this loan are lifted." : "Another loan is still substandard."),
+      (cleared ? "Restrictions from this loan are lifted." : "Another loan is still substandard."),
   });
 }
 
-/** Whether `agentId` has a substandard loan (unfreezing such an agent lands on `restricted`). */
+/**
+ * A `restricted` agent with no other substandard or charged-off loan goes
+ * back to `active` (a frozen agent stays frozen). Returns whether the
+ * agent has no such loan left. Inside the cure / recovery transaction.
+ */
+async function restoreAgentIfClear(tx: Db, worldId: string, loan: LoanRow, simAt: Date, reason: string): Promise<boolean> {
+  const stillDelinquent = await scoped(tx, worldId).selectFields(
+    loans,
+    { id: loans.id },
+    and(eq(loans.agentId, loan.agentId), inArray(loans.status, [...DELINQUENT_LOAN_DB_STATUSES]))!,
+  );
+  if (stillDelinquent.length > 0) {
+    return false;
+  }
+  const restored = await scoped(tx, worldId).update(
+    agents,
+    { status: "active" },
+    and(eq(agents.id, loan.agentId), eq(agents.status, "restricted"))!,
+  );
+  if (restored.length === 1) {
+    await appendEvent(tx, worldId, {
+      type: "agent.restored",
+      aggregateType: "agent",
+      aggregateId: loan.agentId,
+      simAt,
+      payload: { reason, loan_id: loan.id },
+    });
+  }
+  return true;
+}
+
+/**
+ * P4 Task 2: inside the capture transaction that recovered on a
+ * charged-off loan. `recovered` (→ RECOVERED, everything written off is
+ * back): the agent is restored when it has no other delinquent loan, and
+ * the freeze lifts; a `recovered` notice. Partial: a `recovery` notice.
+ */
+export async function onLoanRecovery(
+  tx: Db,
+  worldId: string,
+  loan: LoanRow,
+  simAt: Date,
+  args: { recoveredNowCents: bigint; fullyRecovered: boolean },
+): Promise<void> {
+  const cleared = args.fullyRecovered ? await restoreAgentIfClear(tx, worldId, loan, simAt, "loan_recovered") : false;
+  const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
+  const left = loan.chargeOffTotalCents - loan.recoveredCents;
+  await insertNotice(tx, worldId, {
+    agentId: loan.agentId,
+    principalId: loan.principalId ?? agent?.principalId ?? null,
+    kind: args.fullyRecovered ? "recovered" : "recovery",
+    loanId: loan.id,
+    simAt,
+    body: args.fullyRecovered
+      ? `Loan ${loan.id}: the ${dollars(loan.chargeOffTotalCents)} written off at charge-off is fully recovered. ` +
+        (cleared ? "Restrictions from this loan are lifted." : "Another loan is still substandard or charged off.")
+      : `Loan ${loan.id}: ${dollars(args.recoveredNowCents)} recovered on the charged-off loan; ${dollars(left)} is still owed.`,
+  });
+}
+
+/**
+ * Whether `agentId` has a substandard (or, P4 Task 2, charged-off and not
+ * yet recovered) loan — unfreezing such an agent lands on `restricted`.
+ */
 export async function agentHasSubstandardLoan(db: Db, worldId: string, agentId: string): Promise<boolean> {
   const rows = await scoped(db, worldId).selectFields(
     loans,
     { id: loans.id },
-    and(eq(loans.agentId, agentId), eq(loans.status, "substandard"))!,
+    and(eq(loans.agentId, agentId), inArray(loans.status, [...DELINQUENT_LOAN_DB_STATUSES]))!,
   );
   return rows.length > 0;
 }
