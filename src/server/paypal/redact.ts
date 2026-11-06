@@ -10,7 +10,8 @@
 const SENSITIVE_KEY_RE = /token|secret|password|authorization/i;
 const EMAIL_RE = /^([^\s@]+)(@[^\s@]+)$/;
 
-function maskEmail(value: string): string {
+/** `ab***@example.com`; a value that isn't an email is returned unchanged. */
+export function maskEmail(value: string): string {
   const match = EMAIL_RE.exec(value);
   if (!match) {
     return value;

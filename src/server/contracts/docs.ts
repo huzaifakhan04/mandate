@@ -28,6 +28,40 @@ function mcpUrl(base: string): string {
   return `${base}/api/mcp/mcp`;
 }
 
+export type McpClientId = "claudeCode" | "cursor" | "codex";
+
+/** The MCP clients agents.md (and the dashboard's path-B result page) give a config for. */
+export const MCP_CLIENTS: ReadonlyArray<{ id: McpClientId; title: string; where: string | null; lang: string }> = [
+  { id: "claudeCode", title: "Claude Code", where: null, lang: "sh" },
+  { id: "cursor", title: "Cursor", where: "~/.cursor/mcp.json", lang: "json" },
+  { id: "codex", title: "Codex", where: "~/.codex/config.toml", lang: "toml" },
+];
+
+/**
+ * The MCP config for each client, with `key` as the bearer (agents.md
+ * shows the `<key>` placeholder; the dashboard's path-B result page shows
+ * the agent's real key, once).
+ */
+export function mcpConfigSnippets(baseUrl: string, key = "<key>"): Record<McpClientId, string> {
+  const mcp = mcpUrl(normalizeBaseUrl(baseUrl));
+  return {
+    claudeCode: `claude mcp add --transport http mandate ${mcp} --header "Authorization: Bearer ${key}"`,
+    cursor: `{
+  "mcpServers": {
+    "mandate": {
+      "url": "${mcp}",
+      "headers": { "Authorization": "Bearer ${key}" }
+    }
+  }
+}`,
+    codex: `[mcp_servers.mandate]
+url = "${mcp}"
+
+[mcp_servers.mandate.http_headers]
+Authorization = "Bearer ${key}"`,
+  };
+}
+
 /** A JSON Schema fragment, as produced by `z.toJSONSchema` — loosely typed since we only read a few well-known keys. */
 interface JsonSchemaLike {
   type?: string;
@@ -106,8 +140,18 @@ function toolAnchor(name: string): string {
   return name;
 }
 
+const FENCE = "```";
+
+function renderClientSections(snippets: Record<McpClientId, string>): string {
+  return MCP_CLIENTS.map((client) => {
+    const where = client.where ? `Add to \`${client.where}\`:\n\n` : "";
+    return `### ${client.title}\n\n${where}${FENCE}${client.lang}\n${snippets[client.id]}\n${FENCE}\n`;
+  }).join("\n");
+}
+
 function renderConnectSection(base: string): string {
   const mcp = mcpUrl(base);
+  const snippets = mcpConfigSnippets(base);
   return `## Connect
 
 Mandate exposes every tool over three transports that all share the same \`{status, summary, reason_codes, data, next_actions, docs_url}\` envelope and the same tool names:
@@ -118,39 +162,7 @@ Mandate exposes every tool over three transports that all share the same \`{stat
 
 You need no key at all for \`register_agent\` (and \`get_bank_guide\`) — see **Bootstrapping** below. Every other tool authenticates with \`Authorization: Bearer <api_key>\`, on both REST and MCP (the MCP header is sent the same way, on the HTTP transport).
 
-### Claude Code
-
-\`\`\`sh
-claude mcp add --transport http mandate ${mcp} --header "Authorization: Bearer <key>"
-\`\`\`
-
-### Cursor
-
-Add to \`~/.cursor/mcp.json\`:
-
-\`\`\`json
-{
-  "mcpServers": {
-    "mandate": {
-      "url": "${mcp}",
-      "headers": { "Authorization": "Bearer <key>" }
-    }
-  }
-}
-\`\`\`
-
-### Codex
-
-Add to \`~/.codex/config.toml\`:
-
-\`\`\`toml
-[mcp_servers.mandate]
-url = "${mcp}"
-
-[mcp_servers.mandate.http_headers]
-Authorization = "Bearer <key>"
-\`\`\`
-
+${renderClientSections(snippets)}
 ### curl / REST
 
 \`\`\`sh
@@ -184,12 +196,163 @@ Over MCP, call \`register_agent\` with no \`Authorization\` header at all (point
 function renderQuickstartSection(): string {
   return `## Quickstart
 
-1. **\`register_agent\`** — create the agent and get an \`api_key\`.
+1. **\`register_agent\`** — create the agent and get an \`api_key\` and a \`claim_url\`. You start at tier 0: you can lend now; to borrow, give your human the \`claim_url\` (see [Claiming and KYA tiers](#claiming-and-kya-tiers)).
 2. **\`buy_notes\`** — buy lender notes, funded by a PayPal checkout your human approves (you get back a \`human_approval\` next action with the \`approve_url\`), then \`confirm_checkout\` once they have approved.
-3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything.
+3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything (needs tier ≥ 1: claimed by your human, who has signed a mandate).
 4. **\`apply_for_loan\`** — apply for the amount and term you checked; if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`.
 5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your payout receiver (\`payout_email\`, or \`payout_paypal_id\` if that account's email is unconfirmed).
 6. **Forward the repayment link, or call \`repay_loan\`** — \`get_loan\` returns an invoice \`repayment_link\` your client can pay directly, or call \`repay_loan\` yourself for a human-approved PayPal checkout, then \`confirm_checkout\`.
+`;
+}
+
+function renderClaimingSection(base: string): string {
+  return `## Claiming and KYA tiers
+
+Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may do depends on your tier, which the bank computes from your facts every time (\`get_status\` → \`data.kya\`, with \`borrow_blockers\` saying what is still missing):
+
+| Tier | Requirement | May lend | May borrow |
+| --- | --- | --- | --- |
+| T0 | unclaimed | yes (buy/redeem notes) | no — \`apply_for_loan\` → \`CLAIM_REQUIRED\` (403) with \`data.claim_url\` |
+| T1 | claimed by a PayPal-verified human **and** a signed mandate | yes | within the mandate's limits, per loan ≤ 25000 cents |
+| T2 | T1 + an approved KYA document + a registered Ed25519 key ([Signing requests](#signing-requests-optional-unlocks-tier-t2)) | yes | within the mandate's limits, per loan ≤ 50000 cents |
+
+**What unlocks each tier:**
+
+- **T0 → T1** takes two steps by your human: they claim you (below), then sign a mandate in their dashboard ([Mandates](#mandates)). \`borrow_blockers\` goes \`claim_required\` → \`mandate_missing\` → empty.
+- **T1 → T2** takes one step by you and one by your human: you register an Ed25519 key with \`register_public_key\` (and sign every mutating call from then on), and your human uploads a KYA document (e.g. an operator registration) in their dashboard.
+
+**Claiming — send your human the \`claim_url\`.** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Ask your human to open <claim_url>: give them the link and say what it is for ("claim me as your agent so I can borrow within limits you set"). On that page they:
+
+1. click **Verify with PayPal** and approve a $0.01 identity check in PayPal (it is never charged — the bank only reads which PayPal account approved it), which brings them back to the claim page;
+2. click **Claim agent**;
+3. open their dashboard (\`${base}/dashboard\`) and sign your mandate.
+
+You can't do these steps yourself and you don't need to poll: once your human tells you they are done, call \`get_status\` (\`data.kya.tier\` ≥ 1, \`can_borrow: true\`). Until you are claimed, \`get_status\` keeps showing your \`claim_url\`; \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. If the 7 days ran out, any call that shows you the link issues a fresh one: \`get_status\` and \`check_eligibility\` are read-only tools, but while you are unclaimed they (like \`apply_for_loan\`'s \`CLAIM_REQUIRED\`) **rotate an expired claim link** — the old link stops working, so always pass on the latest \`claim_url\`. Treat the link like a password: give it only to your own human.
+
+**Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits (see [Mandates](#mandates)). Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403).
+`;
+}
+
+function renderMandatesSection(): string {
+  return `## Mandates
+
+A **mandate** is the standing permission your human signs for you: the limits within which you may borrow on their behalf. Your human is the borrower of record. They sign it in their dashboard (a checkbox plus their typed full name; the bank stores the time, a hash of their IP and the sha256 of the signed terms). Each change is a new **version**; signing one replaces the previous version. Revoking it stops new borrowing; loans you already took are unaffected.
+
+**What your human sets:**
+
+| Limit | Meaning |
+|---|---|
+| \`max_per_loan_cents\` | the principal of any one loan |
+| \`max_total_owed_cents\` | what your human may owe in total **across all their agents**: what they owe on every open loan + this loan's principal + fee |
+| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal) |
+| \`max_term_days\` | the loan's term |
+| \`eligible_collateral\` | \`invoice_link\` (you pass an \`invoice\` the bank collects) and/or \`none\` (unsecured) |
+| \`expires_at\` | optional; after it the mandate is no longer in force |
+
+Your per-loan ceiling is the smaller of your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\`.
+
+**What you see:** \`check_eligibility\` returns \`data.mandate\` — \`mandate_id\`, \`version\`, every limit, \`principal_total_owed_cents\` (what your human owes now), \`total_owed_headroom_cents\` (how much more principal + fee they may take on) and \`per_loan_cap_cents\`. Pass \`collateral\` to also check the collateral rule. An offer's \`disclosure\` names the \`mandate_id\` and \`mandate_version\` it was made under (both covered by \`disclosure_hash\`).
+
+**Reason codes** (in \`check_eligibility\` reasons, and on a \`DECLINED\` \`apply_for_loan\`):
+
+| Code | Meaning |
+|---|---|
+| \`mandate_missing\` | no mandate in force — ask your human to sign one (\`apply_for_loan\` → \`MANDATE_REQUIRED\`, 403) |
+| \`mandate_per_loan\` | the amount is above \`max_per_loan_cents\` |
+| \`mandate_total_owed\` | your human's total owed + this principal + fee would be above \`max_total_owed_cents\` |
+| \`mandate_fee\` | the fee is above \`max_fee_bps\` of the principal |
+| \`mandate_term\` | the term is above \`max_term_days\` |
+| \`mandate_collateral\` | the collateral kind (invoice or none) is not in \`eligible_collateral\` |
+| \`tier_per_loan\` | the amount is above your KYA tier's per-loan cap |
+
+**At acceptance** the bank checks the mandate again (serialised with every other acceptance, so two of your human's agents can't both squeeze under \`max_total_owed_cents\`):
+
+- \`MANDATE_REVOKED\` (409) with \`mandate_revoked\` — the mandate was revoked or expired; ask your human to sign a new one.
+- \`MANDATE_REVOKED\` (409) with \`mandate_superseded\` — your human signed a new version after the offer; check eligibility and apply again.
+- \`MANDATE_LIMIT\` (400) with the \`mandate_*\` / \`tier_per_loan\` reasons — the offer no longer fits (typically another of your human's agents borrowed meanwhile); \`data\` carries the current limits and headroom.
+
+**Two clocks.** A mandate is a document your human signs, so its \`expires_at\` is **real calendar time**: it lapses at that wall-clock moment in every world, however far a world's simulated clock has been moved. Everything about loans — an offer's expiry, a loan's due date, accrual — runs on the world's **simulated clock** (the main world's runs at real speed; a private world's can be fast-forwarded). An expired mandate behaves like a revoked one: \`mandate_missing\` at check/apply, \`MANDATE_REVOKED\` (\`mandate_revoked\`) at accept.
+`;
+}
+
+function renderSigningSection(base: string): string {
+  return `## Signing requests (optional, unlocks tier T2)
+
+Signing is optional. A claimed agent with a signed mandate is T1; registering an Ed25519 key **and** having your human upload an approved KYA document (in their dashboard) makes you **T2** (per loan ≤ 50000 cents).
+
+**How a request is signed.** Build this string (\`\\n\` separated, no trailing newline):
+
+\`\`\`text
+\${timestamp}\\n\${METHOD}\\n\${path}\\n\${sha256hex(body)}
+\`\`\`
+
+- \`timestamp\`: unix seconds; must be within **±300 s** of the bank's clock.
+- \`METHOD\`: \`POST\`. \`path\`: the URL path only — \`/api/v1/<tool>\` over REST, \`/api/mcp/mcp\` over MCP.
+- \`body\`: the **exact bytes** you send (over MCP, the whole JSON-RPC request body). Sign the string you send, not a re-serialisation of it.
+
+Sign it with your Ed25519 private key and send:
+
+| Header | Value |
+| --- | --- |
+| \`X-Mandate-Timestamp\` | the \`timestamp\` above |
+| \`X-Mandate-Signature\` | base64 of the 64-byte Ed25519 signature |
+| \`X-Mandate-Previous-Signature\` | key rotation only: the same string signed by your **current** key |
+
+**Register your key** with \`register_public_key\` (\`public_key\`: base64 SPKI DER or raw 32 bytes). That request must itself be signed by the key you are registering. Calling it again with a different key rotates (the old key is revoked) and also needs \`X-Mandate-Previous-Signature\` from the current key.
+
+**Once a key is registered, every mutating call must be signed** (read-only tools like \`get_status\` need not be). Each signature is single-use: to retry a call, sign it again with a fresh timestamp and reuse its \`Idempotency-Key\` so it can't run twice. Over MCP, send exactly **one** \`tools/call\` per signed HTTP request — the signature covers the whole JSON-RPC body, so JSON-RPC batches (an array of calls in one body) are not supported for signed requests.
+
+| Status (HTTP 401) | Meaning |
+| --- | --- |
+| \`SIGNATURE_REQUIRED\` | you have a key, but the headers are missing (or \`previous_signature_required\` on rotation) |
+| \`SIGNATURE_INVALID\` | the signature doesn't verify (wrong key, body, path, or malformed header) |
+| \`SIGNATURE_EXPIRED\` | \`X-Mandate-Timestamp\` is more than 300 s off |
+| \`SIGNATURE_REPLAYED\` | this exact signature was already used |
+
+\`\`\`js
+// Node 20+
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+
+const { publicKey, privateKey } = generateKeyPairSync("ed25519"); // keep privateKey secret
+const publicKeyB64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+
+async function signedPost(tool, args, apiKey) {
+  const path = \`/api/v1/\${tool}\`;
+  const body = JSON.stringify(args);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const digest = createHash("sha256").update(body).digest("hex");
+  const signature = sign(null, Buffer.from(\`\${timestamp}\\nPOST\\n\${path}\\n\${digest}\`), privateKey).toString("base64");
+  const res = await fetch(\`${base}\${path}\`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: \`Bearer \${apiKey}\`,
+      "x-mandate-timestamp": timestamp,
+      "x-mandate-signature": signature,
+    },
+    body,
+  });
+  return res.json();
+}
+
+await signedPost("register_public_key", { public_key: publicKeyB64 }, process.env.MANDATE_API_KEY);
+\`\`\`
+`;
+}
+
+function renderPrivateWorldsSection(base: string): string {
+  return `## Private worlds
+
+The main world is the shared bank on PayPal sandbox. A **private world** is a separate, sandboxed copy of the bank that belongs to one human: simulated money only (the \`sim\` rail — no PayPal), with its own ledger, notes, loans and clock. Nothing in it shows up in the main world, and nothing from the main world shows up in it.
+
+- **Who creates one:** a PayPal-verified human, in their dashboard (\`${base}/dashboard/worlds\` → **Create a world**), up to 3 at a time. Agents can't create worlds.
+- **What's inside:** two lender bots and two borrower bots (with their own mandate) that buy notes, borrow and repay once per simulated day, so the pool has liquidity and activity. Their funds are simulated.
+- **Clock controls:** the owner moves the world's clock **+1 day** or **+7 days** (the bots act for each day that passes, so terms, due dates and repayments play out in minutes) or **Reset**s it to a fresh world.
+- **Agents in a private world:** the human registers the agent from their dashboard (\`${base}/dashboard/agents/new\`, choosing the world). Its API key is **bound to that world**: every call made with it — over REST or MCP, at the same URLs as the main world — acts in that world only. To act in another world you need an agent registered there, with its own key. Such an agent is already claimed by that human; it can borrow once they sign its mandate.
+
+- **Approvals in a private world:** checkouts there are simulated, so a \`human_approval\` \`url\` points at your human's own approval page (\`${base}/dashboard/worlds/<world_id>/checkouts/<checkout_id>/approve\`) instead of PayPal. Hand it over exactly as in the main world: your human opens it while signed in to their dashboard, clicks **Approve** (no PayPal login, no money moves), and you then call \`confirm_checkout\`. Only the world's owner can approve; anyone else gets a 404.
+
+Use a private world to rehearse (buy notes, borrow, let the term pass, repay) with simulated approvals, then do it for real in the main world.
 `;
 }
 
@@ -209,7 +372,9 @@ Several tools (\`buy_notes\`, \`repay_loan\`, \`confirm_checkout\`, \`accept_off
 }
 \`\`\`
 
-\`human_approval\` is not a real tool you call — it is a signal: a human (\`who\` says which one — the \`payer\` funding a checkout, or the \`client\` paying an invoice) must open \`url\` and approve the PayPal checkout before anything else can happen. Tell your human exactly that: what they are approving and why, then show them the \`url\`. Once they confirm they approved it, call the tool named in \`then.tool\` with \`then.args\` (always \`confirm_checkout\`) to capture it. If the response comes back \`PENDING\` or \`AWAITING_APPROVAL\` again, that capture is still settling — call \`confirm_checkout\` again with the same \`checkout_id\`.
+\`human_approval\` is not a real tool you call — it is a signal: a human (\`who\` says which one — the \`payer\` funding a checkout, or the \`client\` paying an invoice) must open \`url\` and approve the PayPal checkout before anything else can happen. Tell your human exactly that: what they are approving and why, then show them the \`url\`. Once they confirm they approved it, call the tool named in \`then.tool\` with \`then.args\` (\`confirm_checkout\` for a checkout) to capture it. If the response comes back \`PENDING\` or \`AWAITING_APPROVAL\` again, that capture is still settling — call \`confirm_checkout\` again with the same \`checkout_id\`.
+
+With \`"who": "owner"\` the \`url\` is not a checkout: it is your claim link or your owner's dashboard (to sign a mandate) — see [Claiming and KYA tiers](#claiming-and-kya-tiers). Show it to your human; once they are done, \`then\` is \`get_status\`.
 `;
 }
 
@@ -258,6 +423,8 @@ Every tool, over REST or MCP, returns the same envelope. A status below is a *tr
 ${rows}
 
 \`reason_codes\` gives machine-readable detail for any non-\`OK\` status (e.g. \`insufficient_note_balance\`, \`offer_expired\`, \`amount_out_of_range\`).
+
+**\`AGENT_NOT_ACTIVE\` (403)** means your human froze you (or you were revoked). Read-only tools keep working. While **frozen**, the money-in tools still work too — \`repay_loan\` and \`confirm_checkout\` — so you can always repay an open loan; buying or redeeming notes, applying for, accepting or declining loans and registering a key are refused until your human unfreezes you. A revoked agent can't call any mutating tool.
 `;
 }
 
@@ -296,6 +463,10 @@ Mandate is a sandbox bank built for AI agents: it issues short-term lender notes
 ${renderConnectSection(base)}
 ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
+${renderClaimingSection(base)}
+${renderMandatesSection()}
+${renderSigningSection(base)}
+${renderPrivateWorldsSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}
@@ -313,7 +484,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, human-approval handling, the full tool reference, errors, and money rules.
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

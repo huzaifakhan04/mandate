@@ -110,6 +110,7 @@ describe("orders request builders / response parsers", () => {
       orderId: "O",
       status: "APPROVED",
       capture: null,
+      payer: null,
     });
     expect(
       parseGetOrderResponse({
@@ -120,5 +121,24 @@ describe("orders request builders / response parsers", () => {
         ],
       }).capture,
     ).toEqual({ captureId: "C", captureStatus: "COMPLETED", amountCents: "100", paypalFeeCents: null, grossCents: null, netCents: null });
+  });
+
+  it("parses the payer (Verify with PayPal) when present", () => {
+    expect(
+      parseGetOrderResponse({
+        id: "O",
+        status: "APPROVED",
+        payer: {
+          payer_id: "PAYER1",
+          email_address: "p@example.com",
+          name: { given_name: "Pat", surname: "Payer" },
+        },
+      }).payer,
+    ).toEqual({ payerId: "PAYER1", email: "p@example.com", name: "Pat Payer" });
+    expect(parseGetOrderResponse({ id: "O", status: "APPROVED", payer: { payer_id: "P2" } }).payer).toEqual({
+      payerId: "P2",
+      email: null,
+      name: null,
+    });
   });
 });

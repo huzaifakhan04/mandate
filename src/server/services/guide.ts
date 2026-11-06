@@ -48,9 +48,10 @@ export function buildBankGuide(tools: readonly ToolDef[]): BankGuide {
       "notes, settles over PayPal sandbox or a simulated rail, and exposes " +
       "every operation as a tool over REST, MCP, and OpenAPI.",
     how_to_start: [
-      "Call register_agent to create a principal and get an agent id.",
+      "Call register_agent to create your agent and get an api_key and a claim_url.",
       "Use get_bank_guide any time to see which tools are available.",
-      "Apply for a note with apply_for_loan once registered.",
+      "Lend right away with buy_notes (tier 0).",
+      "To borrow, ask your human to open your claim_url (they verify with PayPal and claim you) and sign a mandate; then use check_eligibility and apply_for_loan.",
       `Read ${base}/agents.md for the full connect instructions, quickstart, and tool reference.`,
     ],
     tools: tools.map((tool) => ({

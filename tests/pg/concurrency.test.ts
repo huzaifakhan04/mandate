@@ -9,20 +9,24 @@ import type { ToolDef } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
 import {
+  clock,
   events,
   idempotencyKeys,
   journalEntries,
   loans,
+  mandates,
   notePositions,
   noteTransactions,
   paypalOperations,
   repaymentLinks,
   repayments,
 } from "@/server/db/schema";
+import { advanceClock } from "@/server/clock/clock";
 import { createTestDb } from "@/server/db/testing";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
 import { settleCheckoutByOrderId } from "@/server/services/checkouts";
+import { revokeMandate } from "@/server/services/mandates";
 
 import {
   call,
@@ -79,6 +83,24 @@ describe("real Postgres (TEST_PG=1)", () => {
     expect(open).toBe(2);
   });
 
+  it("P2 Task 6/7: two concurrent +7-day clock advances serialise on the clock row — exactly +14 days, each returns its own +7", async () => {
+    const worldId = await createSimWorld(db);
+    const [before] = await db.select().from(clock).where(eq(clock.worldId, worldId));
+    const held = await holdLock(db, sql`select world_id from clock where world_id = ${worldId} for update`);
+    const racing = Promise.all([advanceClock(db, worldId, 7), advanceClock(db, worldId, 7)]);
+    await waitForLockWaiters(db, 2);
+    await held.release();
+    const [first, second] = (await racing).map((d) => d.getTime()).sort((a, b) => a - b);
+
+    const [after] = await db.select().from(clock).where(eq(clock.worldId, worldId));
+    const week = 7n * 86_400_000n;
+    expect(after!.manualOffsetMs - before!.manualOffsetMs).toBe(2n * week);
+    // Each call saw only its own jump: the later result is one week (+ the real ms between them) after the earlier.
+    const gap = second! - first!;
+    expect(gap).toBeGreaterThanOrEqual(Number(week));
+    expect(gap).toBeLessThan(Number(week) + 5_000);
+  });
+
   it("two agents accept 20000 each against a 34245 pool while overlapping → exactly one loan", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 25000);
@@ -101,6 +123,72 @@ describe("real Postgres (TEST_PG=1)", () => {
     expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "INSUFFICIENT_LIQUIDITY"]);
     expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
     expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(20000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("Review Focus 2: two agents of one principal accept at once, together over max_total_owed → exactly one loan", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 100000);
+    // Each offer is 10000 + 150 fee = 10150 ≤ 15000 alone; both would owe 20300.
+    const a = await createTestAgent(db, worldId, "a@example.com", { limits: { maxTotalOwedCents: 15000n } });
+    const b = await createTestAgent(db, worldId, "b@example.com", {
+      principalId: a.principalId,
+      limits: { maxTotalOwedCents: 15000n },
+    });
+    const apply = (key: string) =>
+      call(db, "apply_for_loan", key, { amount_cents: 10000, term_days: 7, purpose: "Working capital" });
+    const offerA = (await apply(a.key)).envelope.data as Data;
+    const offerB = (await apply(b.key)).envelope.data as Data;
+    expect(offerA.offer_id).toBeDefined();
+    expect(offerB.offer_id).toBeDefined();
+
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      call(db, "accept_offer", a.key, { offer_id: offerA.offer_id, disclosure_hash: offerA.disclosure_hash }),
+      call(db, "accept_offer", b.key, { offer_id: offerB.offer_id, disclosure_hash: offerB.disclosure_hash }),
+    ]);
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    const [ra, rb] = await racing;
+
+    expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "MANDATE_LIMIT"]);
+    const loser = ra.envelope.status === "MANDATE_LIMIT" ? ra : rb;
+    expect(loser.httpStatus).toBe(400);
+    expect(loser.envelope.reason_codes).toEqual(["mandate_total_owed"]);
+    expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
+    expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(10000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("M3: revoke_mandate vs accept_offer overlapping → serialised on the series lock: a loan before the revoke, or MANDATE_REVOKED", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const a = await createTestAgent(db, worldId, "a@example.com");
+    const offer = (
+      await call(db, "apply_for_loan", a.key, { amount_cents: 10000, term_days: 7, purpose: "Working capital" })
+    ).envelope.data as Data;
+
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      call(db, "accept_offer", a.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash }),
+      revokeMandate(db, { principalId: a.principalId, agentId: a.agentId }),
+    ]);
+    // Both wait on the series row: the revoke takes it first too (Ruling N order).
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    const [accepted, revoked] = await racing;
+
+    expect(revoked.outcome).toBe("revoked");
+    const [mandate] = await db.select().from(mandates).where(eq(mandates.id, a.mandateId));
+    expect(mandate!.status).toBe("revoked");
+    const worldLoans = await db.select().from(loans).where(eq(loans.worldId, worldId));
+    if (accepted.envelope.status === "ACTIVE") {
+      expect(worldLoans).toHaveLength(1);
+      expect(worldLoans[0]!.createdAt.getTime()).toBeLessThanOrEqual(mandate!.revokedAt!.getTime());
+    } else {
+      expect(accepted.envelope.status).toBe("MANDATE_REVOKED");
+      expect(worldLoans).toHaveLength(0);
+    }
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 

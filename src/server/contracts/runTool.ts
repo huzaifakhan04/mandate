@@ -4,14 +4,18 @@ import { and, eq } from "drizzle-orm";
 
 import type { AgentPrincipal } from "../auth/apiKeys";
 import { verifyApiKey } from "../auth/apiKeys";
+import { checkRequestSignature, parsePublicKey, type SignedRequest } from "../auth/signatures";
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { describeError, isRetryableTransactionError } from "../db/errors";
 import { scoped } from "../db/scoped";
-import { idempotencyKeys } from "../db/schema";
+import { agents, idempotencyKeys, worlds } from "../db/schema";
 import { ensureMainWorldOnce } from "../services/worlds";
 import type { Envelope } from "./envelope";
 import { docsUrlForTool, fail, httpStatusForEnvelope } from "./envelope";
+import { borrowBlockedEnvelope } from "./kyaActions";
+import { activeAgentKey, recordSignatureNonce } from "../auth/agentKeys";
+import { borrowGate } from "../services/kya";
 import type { ToolDef } from "./registry";
 
 export interface RunToolDeps {
@@ -20,7 +24,22 @@ export interface RunToolDeps {
   authorization?: string | null;
   /** The idempotency key, from the `Idempotency-Key` header. */
   idempotencyKey?: string | null;
+  /**
+   * P2 Task 3: the HTTP request facts a signature covers (method, path,
+   * the exact raw body) plus the `X-Mandate-*` signature headers. Absent
+   * means "unsigned": fine for an agent without a signing key, a 401
+   * `SIGNATURE_REQUIRED` on a mutating call from one with a key.
+   */
+  request?: SignedRequest | null;
   requestId?: string;
+  /**
+   * P2 Task 6, server-internal only (the private-world bot runner): act
+   * as this bot agent without an API key. Only an agent row with
+   * `is_bot = true` is accepted (anything else → 401); HTTP and MCP
+   * routes never set it, and bots have no API keys, so nothing outside
+   * the server can drive a bot.
+   */
+  actingBotId?: string | null;
 }
 
 export interface RunToolResult {
@@ -79,6 +98,24 @@ function respond(envelope: Envelope<unknown>, toolName?: string): RunToolResult 
  */
 function withDocsAnchor(envelope: Envelope<unknown>, toolName: string): Envelope<unknown> {
   return { ...envelope, docs_url: docsUrlForTool(toolName) };
+}
+
+/** P2 Task 6: the bot agent `agentId` as a principal, or `null` if it isn't a bot. */
+async function botPrincipal(db: Db, agentId: string): Promise<AgentPrincipal | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(agentId)) {
+    return null;
+  }
+  const [row] = await db
+    .select({ agentId: agents.id, worldId: agents.worldId, status: agents.status })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.isBot, true)))
+    .limit(1);
+  return row ?? null;
+}
+
+async function worldIsActive(db: Db, worldId: string): Promise<boolean> {
+  const [row] = await db.select({ status: worlds.status }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  return row?.status === "active";
 }
 
 /** Strips an optional `Bearer ` prefix from an `Authorization` header value. */
@@ -142,6 +179,78 @@ function extractIdempotencyKeyArg(rawInput: unknown): { input: unknown; key: str
 }
 
 /**
+ * P2 Task 3: the request-signature gate for a mutating call from `agent`.
+ * Returns an error envelope to send back, or `null` to proceed.
+ *
+ * - Normally the signature must verify against the agent's active key;
+ *   with no active key, the call needs no signature.
+ * - `register_public_key` (`tool.signingKeyFromInput`) must be signed by
+ *   the key it registers (proof of possession); rotating away from a
+ *   different active key also needs `X-Mandate-Previous-Signature` from
+ *   that current key, so a stolen API key alone can't swap the key.
+ * - A verified signature is recorded as a nonce first; one already seen
+ *   for this agent → `SIGNATURE_REPLAYED`. This runs before idempotency,
+ *   so a retry must be re-signed (fresh timestamp) and is then replayed
+ *   from its `Idempotency-Key` — a replayed signature never executes.
+ */
+async function signatureGate(
+  db: Db,
+  worldId: string,
+  agentId: string,
+  tool: ToolDef,
+  input: unknown,
+  request: SignedRequest | null,
+): Promise<Envelope<unknown> | null> {
+  const active = await activeAgentKey(db, worldId, agentId);
+  let expectedKey = active?.publicKey ?? null;
+  let previousKey: string | null = null;
+
+  if (tool.signingKeyFromInput) {
+    const parsed = parsePublicKey(tool.signingKeyFromInput(input as never));
+    if (!parsed.ok) {
+      return fail("INVALID_REQUEST", "public_key must be a base64 Ed25519 public key (raw 32 bytes or SPKI DER).", [
+        "invalid_public_key",
+        parsed.reason,
+      ]);
+    }
+    expectedKey = parsed.rawB64;
+    if (active && active.publicKey !== parsed.rawB64) {
+      previousKey = active.publicKey;
+    }
+  }
+
+  if (!expectedKey) {
+    return null;
+  }
+
+  const now = new Date();
+  const check = checkRequestSignature(request, expectedKey, now);
+  if (!check.ok) {
+    return signatureFailure(check.status, check.reason);
+  }
+  if (previousKey) {
+    const previous = checkRequestSignature(request, previousKey, now, "previousSignature");
+    if (!previous.ok) {
+      return signatureFailure(previous.status, previous.reason);
+    }
+  }
+  if (!(await recordSignatureNonce(db, worldId, agentId, check.signatureB64, now))) {
+    return fail("SIGNATURE_REPLAYED", "This signature was already used. Sign each request afresh.", ["signature_replayed"]);
+  }
+  return null;
+}
+
+const SIGNATURE_SUMMARIES: Record<string, string> = {
+  SIGNATURE_REQUIRED: "This agent has a signing key: sign mutating requests (X-Mandate-Timestamp, X-Mandate-Signature).",
+  SIGNATURE_INVALID: "The request signature does not verify against this agent's signing key.",
+  SIGNATURE_EXPIRED: "X-Mandate-Timestamp is more than 300 seconds from the server's clock.",
+};
+
+function signatureFailure(status: string, reason: string): Envelope<unknown> {
+  return fail(status, SIGNATURE_SUMMARIES[status] ?? "Request signature rejected.", [reason]);
+}
+
+/**
  * The single dispatch path shared by REST and MCP:
  *
  * 1. Unknown tool → 404 `NOT_FOUND`.
@@ -154,8 +263,13 @@ function extractIdempotencyKeyArg(rawInput: unknown): { input: unknown; key: str
  *    `idempotency_key_mismatch`). The arg is then stripped and the rest
  *    validated against the tool's Zod schema → 400 `INVALID_REQUEST` on
  *    failure.
- * 4. A mutating tool whose caller is an agent with `status !== 'active'` →
- *    403 `AGENT_NOT_ACTIVE`.
+ * 4. A mutating call from an agent passes the signature gate (P2 Task 3,
+ *    `signatureGate`: 401 `SIGNATURE_REQUIRED`/`_INVALID`/`_EXPIRED`/
+ *    `_REPLAYED`), then one whose agent has `status !== 'active'` → 403
+ *    `AGENT_NOT_ACTIVE` — except that a `frozen`/`restricted` agent may
+ *    still call the money-in tools (`MONEY_IN_TOOLS`: repaying a loan and
+ *    capturing an approved checkout), so freezing never traps a debt; a
+ *    borrowing tool then checks the KYA tier.
  * 5. Mutating tools run inside a `db.transaction`. When the caller is an
  *    authenticated agent AND an idempotency key is present, the key is
  *    handled with a claim-first protocol that stays correct under
@@ -183,11 +297,33 @@ function extractIdempotencyKeyArg(rawInput: unknown): { input: unknown; key: str
  * Every returned/stored/replayed HTTP status is derived from its
  * envelope's `status` via `httpStatusForEnvelope` — never hard-coded.
  */
+/**
+ * P2 final review (M4): tools that only bring money INTO the bank —
+ * `repay_loan` (start a repayment checkout) and `confirm_checkout`
+ * (capture one the human already approved). A frozen or restricted agent
+ * may still call them: freezing stops new borrowing, lending and
+ * redemptions, but must never stop a debt being repaid. A revoked agent
+ * (or one pending its claim) may not.
+ */
+export const MONEY_IN_TOOLS: ReadonlySet<string> = new Set(["repay_loan", "confirm_checkout"]);
+const MONEY_IN_STATUSES: ReadonlySet<string> = new Set(["frozen", "restricted"]);
+
+function mayBringMoneyIn(status: string, toolName: string): boolean {
+  return MONEY_IN_STATUSES.has(status) && MONEY_IN_TOOLS.has(toolName);
+}
+
 export async function runTool(
   tool: ToolDef | undefined,
   toolName: string,
   rawInput: unknown,
-  { getDb, authorization = null, idempotencyKey = null, requestId = randomUUID() }: RunToolDeps,
+  {
+    getDb,
+    authorization = null,
+    idempotencyKey = null,
+    request = null,
+    requestId = randomUUID(),
+    actingBotId = null,
+  }: RunToolDeps,
 ): Promise<RunToolResult> {
   if (!tool) {
     return respond(fail("NOT_FOUND", `Unknown tool: ${toolName}`, [toolName]));
@@ -200,17 +336,31 @@ export async function runTool(
     let worldId: string;
 
     if (tool.auth === "agent") {
-      if (!authorization) {
-        return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]), toolName);
-      }
+      if (actingBotId) {
+        agent = await botPrincipal(db, actingBotId);
+        if (!agent) {
+          return respond(fail("UNAUTHORIZED", "Not a bot agent.", ["not_a_bot"]), toolName);
+        }
+      } else {
+        if (!authorization) {
+          return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]), toolName);
+        }
 
-      const presentedKey = extractApiKey(authorization);
-      agent = await verifyApiKey(db, presentedKey);
-      if (!agent) {
-        return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]), toolName);
+        const presentedKey = extractApiKey(authorization);
+        agent = await verifyApiKey(db, presentedKey);
+        if (!agent) {
+          return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]), toolName);
+        }
       }
 
       worldId = agent.worldId;
+      // P2 Task 6: a reset private world is archived — its agents stop.
+      if (!(await worldIsActive(db, worldId))) {
+        return respond(
+          fail("WORLD_ARCHIVED", "This agent's sandbox world was reset or archived.", ["world_archived"]),
+          toolName,
+        );
+      }
     } else {
       const mainWorld = await ensureMainWorldOnce(db);
       worldId = mainWorld.worldId;
@@ -243,8 +393,25 @@ export async function runTool(
       return respond(fail("INVALID_REQUEST", "Invalid input.", reasonCodes), toolName);
     }
 
-    if (tool.mutating && agent && agent.status !== "active") {
+    // P2 Task 3: signed mutating requests (never stored under an idempotency key).
+    if (tool.mutating && agent) {
+      const rejected = await signatureGate(db, worldId, agent.agentId, tool, parsed.data, request);
+      if (rejected) {
+        return respond(rejected, toolName);
+      }
+    }
+
+    if (tool.mutating && agent && agent.status !== "active" && !mayBringMoneyIn(agent.status, tool.name)) {
       return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]), toolName);
+    }
+
+    // P2 Task 2: KYA tier gate for borrowing tools — never stored under an
+    // idempotency key (the 403 carries the agent's claim URL).
+    if (tool.requiresBorrowTier && agent) {
+      const gate = await borrowGate(db, worldId, agent.agentId);
+      if (gate.tier.borrowBlockers.length > 0) {
+        return respond(borrowBlockedEnvelope(gate.tier.borrowBlockers, gate.claimLink?.url ?? null), toolName);
+      }
     }
 
     const afterCommitCallbacks: Array<() => Promise<void> | void> = [];

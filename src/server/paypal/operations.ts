@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { journalEntries, loans, noteTransactions, paypalOperations, repayments } from "../db/schema";
+import { journalEntries, loans, noteTransactions, paypalOperations, repayments, worlds } from "../db/schema";
 import { simHandle } from "../rail/simHandler";
 import { classifyFailureStatus, computeNextAttemptAt } from "./classify";
 import { PayPalConfigError } from "./config";
@@ -29,7 +29,7 @@ import {
   payoutItemIdFromCancelPath,
   withSenderBatchId,
 } from "./payouts";
-import { redact } from "./redact";
+import { maskEmail, redact } from "./redact";
 import {
   OPERATION_KINDS,
   READ_KINDS,
@@ -39,6 +39,7 @@ import {
   type OperationResponse,
   type OperationResultByKind,
   type OperationStatus,
+  type OrderGetResult,
 } from "./types";
 
 // The service-facing API: services import from here only (never from
@@ -106,6 +107,27 @@ function finalizeRequest(
   return kind === "payout.send" ? withSenderBatchId(request, operationId) : request;
 }
 
+/** Thrown when something tries to queue a PayPal-rail operation in a private (sim-only) world. */
+export class PrivateWorldRailError extends Error {
+  constructor(worldId: string) {
+    super(`World ${worldId} is a private world: it runs on the sim rail only, never PayPal`);
+    this.name = "PrivateWorldRailError";
+  }
+}
+
+/**
+ * P2 Task 6 (Review Focus 5): a private world never creates a `rail =
+ * 'paypal'` operation — every operation row (money-moving or read) is
+ * inserted here, so this is the one choke point. Only PayPal-rail rows
+ * pay for the lookup.
+ */
+async function assertWorldMayUsePaypal(db: Db, worldId: string): Promise<void> {
+  const [world] = await db.select({ kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  if (world?.kind === "private") {
+    throw new PrivateWorldRailError(worldId);
+  }
+}
+
 async function insertQueuedRow(
   db: Db,
   values: {
@@ -120,6 +142,9 @@ async function insertQueuedRow(
   },
 ): Promise<OperationRow | undefined> {
   assertRequestMatchesKind(values.kind, values.request);
+  if (values.rail === "paypal") {
+    await assertWorldMayUsePaypal(db, values.worldId);
+  }
   const request = finalizeRequest(values.kind, values.request, values.id);
   const [inserted] = await db
     .insert(paypalOperations)
@@ -637,6 +662,45 @@ export const RETRY_CAP_AGE_MS = 24 * 60 * 60 * 1000;
 /** `last_error` (and the stored error's `issue`) of an operation given up on by the cap. */
 export const RETRY_CAP_EXCEEDED = "retry_cap_exceeded";
 
+/** `last_error` (and the stored error's `issue`) of an operation given up on because its world was archived (M6). */
+export const WORLD_ARCHIVED_OPERATION_ERROR = "world_archived";
+
+/**
+ * P2 final review (M6): when a private world is archived (reset), its
+ * operations that haven't finished (`queued`, `failed_retryable`,
+ * `in_flight`) become `failed_terminal` / `world_archived` in one
+ * statement, inside the caller's archiving transaction — so no cron keeps
+ * retrying them and nothing stays queued for a world nobody can act in. A
+ * worker still holding an `in_flight` claim can't overwrite this: its
+ * outcome write requires `status = 'in_flight'`. Returns how many rows.
+ */
+export async function failWorldOperations(tx: Db, worldId: string): Promise<number> {
+  const failed = await tx
+    .update(paypalOperations)
+    .set({
+      status: "failed_terminal",
+      lastError: WORLD_ARCHIVED_OPERATION_ERROR,
+      claimedAt: null,
+      nextAttemptAt: null,
+      response: {
+        error: {
+          name: "WORLD_ARCHIVED",
+          issue: WORLD_ARCHIVED_OPERATION_ERROR,
+          message: "The sandbox world was reset or archived before this operation finished.",
+        },
+      },
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(paypalOperations.worldId, worldId),
+        inArray(paypalOperations.status, ["queued", "failed_retryable", "in_flight"]),
+      ),
+    )
+    .returning();
+  return failed.length;
+}
+
 /**
  * Task 10b (Rulings U, V): an operation of a `RETRY_CAPPED_KINDS` kind
  * (only `order.create`) whose outcome would be `failed_retryable` becomes
@@ -697,7 +761,28 @@ function applyRetryCap(claimed: OperationRow, outcome: Outcome, counted: number)
  * When the guarded write loses, only the attempts are counted and the
  * row's current state is returned.
  */
-async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome): Promise<OperationRow> {
+/**
+ * P2 Task 1 fix round 1: what `response` is persisted as. An `order.get`
+ * payer's email (Verify with PayPal) is PII, so the stored copy masks it
+ * (`ab***@example.com`); the payer id stays. Every other field is stored
+ * as parsed (Ruling H: the stored response is what replays return).
+ */
+function responseForStorage(kind: OperationKind, response: OperationResponse): OperationResponse {
+  if (kind !== "order.get") {
+    return response;
+  }
+  const got = response as Partial<OrderGetResult>;
+  if (!got.payer?.email) {
+    return response;
+  }
+  return { ...got, payer: { ...got.payer, email: maskEmail(got.payer.email) } } as OperationResponse;
+}
+
+async function recordOutcome(
+  db: Db,
+  claimed: OperationRow,
+  rawOutcome: Outcome,
+): Promise<{ row: OperationRow; won: boolean }> {
   const t = paypalOperations;
   // A failed run counts as at least one attempt, even when nothing was
   // sent (config error, internal error), so backoff keeps growing.
@@ -707,7 +792,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
   const common = {
     status: outcome.status,
     httpStatus: outcome.httpStatus,
-    response: outcome.response,
+    response: responseForStorage(claimed.kind as OperationKind, outcome.response),
     latencyMs: outcome.latencyMs,
     lastError: outcome.lastError,
     attempts: sql`${t.attempts} + ${counted}`,
@@ -745,7 +830,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
           .returning();
 
   if (written) {
-    return written;
+    return { row: written, won: true };
   }
 
   const [current] = await db
@@ -756,7 +841,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
   if (!current) {
     throw new Error(`paypal_operations row ${claimed.id} vanished mid-execution`);
   }
-  return current;
+  return { row: current, won: false };
 }
 
 /**
@@ -1134,5 +1219,13 @@ export async function executeOperation(
     );
   }
 
-  return toOperationResult(await recordOutcome(db, claimed, outcome));
+  const { row, won } = await recordOutcome(db, claimed, outcome);
+  const result = toOperationResult(row);
+  // P2 Task 1 fix round 1: the run that recorded a success hands its caller
+  // the unmasked parsed result (an order.get payer's full email) in memory;
+  // the stored row — and so every replay — has it masked (responseForStorage).
+  if (won && row.status === "succeeded" && outcome.status === "succeeded") {
+    return { ...result, body: outcome.response };
+  }
+  return result;
 }

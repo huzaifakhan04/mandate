@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -15,6 +16,20 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+/**
+ * Postgres `bytea` (P2 Ruling P2-A: KYA documents live in Postgres, ≤ 2 MB).
+ * Drivers hand back a `Buffer` (node-postgres/Neon) or a `Uint8Array`
+ * (PGlite); both are normalised to a `Buffer`.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
+  dataType() {
+    return "bytea";
+  },
+  fromDriver(value) {
+    return Buffer.isBuffer(value) ? value : Buffer.from(value);
+  },
+});
 
 // -----------------------------------------------------------------------
 // Root / unscoped tables
@@ -46,10 +61,27 @@ export const worlds = pgTable("worlds", {
   ),
   railMode: text("rail_mode").notNull(),
   status: text("status").notNull().default("active"),
+  /**
+   * P2 Task 6: `main` (the shared world, and P1's test worlds) or
+   * `private` (a principal's sandbox world: sim rail only, seeded bots,
+   * clock controls; never reachable from main-world reads).
+   */
+  kind: text("kind").notNull().default("main"),
+  /** P2 Task 6: the system principal that owns this private world's borrower bots. */
+  botPrincipalId: uuid("bot_principal_id").references(() => principals.id),
+  /** P2 Task 6: the bots' RNG seed (defaults to the world id); same seed → same bot behaviour. */
+  botSeed: text("bot_seed"),
+  /** P2 Task 6: the last simulated day (since the clock's anchor) the bots have acted on. */
+  lastBotSimDay: integer("last_bot_sim_day"),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  index("worlds_owner_kind_idx").on(table.ownerPrincipalId, table.kind, table.status),
+  // Review Focus 5: a private world is sim-only, at the row level too.
+  check("worlds_private_is_sim", sql`${table.kind} <> 'private' OR ${table.railMode} = 'sim'`),
+]);
 
 // -----------------------------------------------------------------------
 // World-scoped tables with no further internal dependencies
@@ -194,17 +226,26 @@ export const agents = pgTable("agents", {
   operator: text("operator").notNull(),
   model: text("model").notNull(),
   codeManifestHash: text("code_manifest_hash").notNull(),
-  ed25519Pubkey: text("ed25519_pubkey"),
   kyaTier: integer("kya_tier").notNull().default(0),
   status: text("status").notNull().default("pending"),
+  /** sha256 hex of the claim token (P2 Task 2). Kept after the claim so the link resolves to "already claimed". */
   claimTokenHash: text("claim_token_hash"),
+  /**
+   * Random per-token seed: the token is HMAC(secret, agent id + seed), so
+   * `get_status` can show the claim URL again without storing the token.
+   * Nulled once claimed.
+   */
+  claimTokenSeed: text("claim_token_seed"),
   claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
   payoutReceiver: text("payout_receiver"),
   payoutReceiverType: text("payout_receiver_type"),
+  /** P2 Task 6: a seeded private-world bot (operator "Mandate bots", model "simulated"); acts only via the bot runner. */
+  isBot: boolean("is_bot").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [uniqueIndex("agents_claim_token_hash_idx").on(table.claimTokenHash)]);
 
 export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -235,14 +276,77 @@ export const kyaDocuments = pgTable("kya_documents", {
     .notNull()
     .references(() => principals.id),
   kind: text("kind").notNull(),
-  blobUrl: text("blob_url").notNull(),
+  /** Legacy P0 (Vercel Blob); unused since Ruling P2-A stores `content` inline. */
+  blobUrl: text("blob_url"),
   sha256: text("sha256").notNull(),
+  /** The file itself (P2 Task 3): pdf/png/jpg, ≤ 2 MB, type checked by magic bytes. */
+  content: bytea("content"),
+  /** The detected (magic-byte) media type: application/pdf, image/png or image/jpeg. */
+  contentType: text("content_type"),
+  sizeBytes: integer("size_bytes"),
+  fileName: text("file_name"),
   aiReview: jsonb("ai_review"),
   reviewStatus: text("review_status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * An agent's Ed25519 request-signing key (P2 Task 3). At most one active
+ * (unrevoked) key per agent; registering another revokes the old one.
+ * Having an active key is one of the T2 requirements, and once one exists
+ * every mutating call from that agent must be signed by it.
+ */
+export const agentKeys = pgTable(
+  "agent_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** The raw 32-byte public key, base64. */
+    publicKey: text("public_key").notNull(),
+    alg: text("alg").notNull().default("ed25519"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("agent_keys_one_active_idx")
+      .on(table.agentId)
+      .where(sql`${table.revokedAt} is null`),
+  ],
+);
+
+/**
+ * Seen request signatures (P2 Task 3, replay protection). A signature is
+ * valid for ±300 s around its timestamp, so a row only has to outlive
+ * that 10-minute window; the reconcile cron prunes older rows.
+ */
+export const agentSignatureNonces = pgTable(
+  "agent_signature_nonces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** The signature bytes, re-encoded as standard base64. */
+    signature: text("signature").notNull(),
+    seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_signature_nonces_agent_signature_idx").on(table.agentId, table.signature),
+    index("agent_signature_nonces_seen_at_idx").on(table.seenAt),
+  ],
+);
 
 export const mandates = pgTable("mandates", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -264,13 +368,30 @@ export const mandates = pgTable("mandates", {
   maxFeeBps: integer("max_fee_bps").notNull(),
   maxTermDays: integer("max_term_days").notNull(),
   guaranteeTextHash: text("guarantee_text_hash").notNull(),
+  /** P2 Task 4: optional end of the mandate's validity. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  /** `signed` (the current version) | `superseded` (a newer version was signed) | `revoked`. */
+  status: text("status").notNull().default("signed"),
+  /** The typed full name the human signed with. */
+  signerName: text("signer_name"),
+  /** sha256(IP + SESSION_SECRET) of the signing request. */
+  ipHash: text("ip_hash"),
+  /** sha256 of the canonical JSON of the signed terms (see `domain/mandate.ts`). */
+  termsHash: text("terms_hash"),
   signedAt: timestamp("signed_at", { withTimezone: true }),
   signature: jsonb("signature"),
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("mandates_agent_version_idx").on(table.agentId, table.version),
+  // At most one current (signed) version per agent.
+  uniqueIndex("mandates_one_signed_per_agent_idx")
+    .on(table.agentId)
+    .where(sql`${table.status} = 'signed'`),
+]);
 
 export const applications = pgTable("applications", {
   id: uuid("id").primaryKey().defaultRandom(),

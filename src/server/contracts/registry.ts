@@ -83,6 +83,24 @@ export interface ToolDef<
    * would otherwise freeze a caller's polling loop on a stale snapshot.
    */
   idempotent?: boolean;
+  /**
+   * P2 Task 2: the call borrows, so it needs KYA tier ≥ 1. `runTool`
+   * checks the tier before the handler and before any idempotency
+   * bookkeeping (like `AGENT_NOT_ACTIVE`): a blocked call returns 403
+   * `CLAIM_REQUIRED` (with `data.claim_url`) or `MANDATE_REQUIRED` and is
+   * never stored under an idempotency key — so the claim token never
+   * lands in `idempotency_keys`, and a retry after claiming proceeds.
+   */
+  requiresBorrowTier?: boolean;
+  /**
+   * P2 Task 3 (`register_public_key` only): the base64 public key, taken
+   * from the validated input, that this call's request signature must
+   * verify against — proof of possession of the key being registered —
+   * instead of the agent's current key. When the agent already has a
+   * different active key, `runTool` also requires
+   * `X-Mandate-Previous-Signature` from that current key (rotation).
+   */
+  signingKeyFromInput?: (input: z.infer<Input>) => string;
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;

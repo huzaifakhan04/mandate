@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { ok, type NextAction } from "../envelope";
+import { blockerInstruction, blockerNextActions } from "../kyaActions";
 import { defineTool } from "../registry";
 import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleArgs";
 import { getAgentStatus } from "../../services/agents";
@@ -28,6 +29,17 @@ const outputSchema = z.object({
     max_principal_cents: z.number(),
     available_liquidity_cents: z.number(),
   }),
+  kya: z.object({
+    tier: z.number(),
+    claimed: z.boolean(),
+    claim_url: z.string().nullable(),
+    claim_expires_at: z.string().nullable(),
+    has_current_mandate: z.boolean(),
+    can_borrow: z.boolean(),
+    borrow_blockers: z.array(z.string()),
+    next_tier_requirements: z.array(z.string()),
+    tier_max_per_loan_cents: z.number(),
+  }),
   sim_now: z.string(),
 });
 
@@ -35,10 +47,10 @@ export const getStatusTool = defineTool({
   name: "get_status",
   title: "Get Status",
   description:
-    "Returns the calling agent's own account snapshot: status, note and " +
-    "payable balances, any open loan, lending limits, and the current " +
-    "simulated time. Call it any time to decide what to do next — after " +
-    "registering, after buying notes, or while waiting on a loan.",
+    "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url " +
+    "to give your human while you are unclaimed), note and payable balances, any open loan, " +
+    "lending limits, and the current simulated time. Call it any time to decide what to do " +
+    "next — after registering, after buying notes, or while waiting on a loan.",
   auth: "agent",
   mutating: false,
   readOnly: true,
@@ -75,12 +87,31 @@ export const getStatusTool = defineTool({
         max_principal_cents: status.limits.maxPrincipalCents,
         available_liquidity_cents: Number(status.limits.availableLiquidityCents),
       },
+      kya: {
+        tier: status.kya.tier.tier,
+        claimed: status.kya.tier.claimed,
+        claim_url: status.kya.claimLink?.url ?? null,
+        claim_expires_at: status.kya.claimLink?.expiresAt.toISOString() ?? null,
+        has_current_mandate: status.kya.tier.hasCurrentMandate,
+        can_borrow: status.kya.tier.borrowBlockers.length === 0,
+        borrow_blockers: status.kya.tier.borrowBlockers,
+        next_tier_requirements: status.kya.tier.nextTierRequirements,
+        tier_max_per_loan_cents: status.kya.tier.maxPerLoanCents,
+      },
       sim_now: ctx.simNow.toISOString(),
     };
+    const blockers = status.kya.tier.borrowBlockers;
+    const claimUrl = status.kya.claimLink?.url ?? null;
 
     let nextActions: NextAction[];
     if (status.openLoan) {
       nextActions = [{ tool: "get_loan", args: { loan_id: status.openLoan.loanId } }];
+    } else if (blockers.length > 0) {
+      // Can't borrow yet: the human's step comes first; lending is open.
+      nextActions = [
+        ...blockerNextActions(blockers, claimUrl),
+        ...(status.balances.notesCents === 0n ? [{ tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } }] : []),
+      ];
     } else if (status.balances.notesCents === 0n) {
       nextActions = [
         { tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } },
@@ -91,9 +122,12 @@ export const getStatusTool = defineTool({
       nextActions = [{ tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } }];
     }
 
+    const tierText = blockers.length > 0
+      ? `tier ${data.kya.tier} (can lend, cannot borrow yet). ${blockerInstruction(blockers, claimUrl)}`
+      : `tier ${data.kya.tier} (can lend and borrow).`;
     return ok(data, {
       status: "OK",
-      summary: `Agent ${status.agent.name} is ${data.agent.status}.`,
+      summary: `Agent ${status.agent.name} is ${data.agent.status} at ${tierText}`,
       next_actions: nextActions,
     });
   },

@@ -34,12 +34,13 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 3. **Keys, in two phases.** MCP headers are static per config, so each agent runs twice:
    - **Phase A:** the MCP config has no key. The agent registers and prints `API_KEY=<key>` on its own line. The harness parses it.
    - **Phase B:** the harness resumes the same session (`--resume`) with an MCP config that carries `Authorization: Bearer <key>`, sending `prompts/continue.md`.
-4. **Human approvals.** The harness scans the agent's reply for `sandbox.paypal.com` links:
+4. **Claiming the borrower (P2).** Borrowing needs KYA tier 1. The borrower prompt only says "whenever the bank needs your human to do something, print the link they need". Once the agent has printed its own current `claim_url` (`<base>/claim/<token>`, checked against `get_status`), the harness plays the human in a real browser (`tests/helpers/humanOwner.ts`): it opens the claim page, clicks **Verify with PayPal** and approves the $0.01 identity order as **OWNER** (never captured), clicks **Claim agent**, then signs a mandate in the dashboard drawer ($20 per loan, $50 total owed, 5% fee, 30 days, invoice collateral). It checks `get_status` shows tier 1 and tells the agent "Done … Continue". The test-only `/api/test/claim` shortcut is not used, so this works against a remote `--base` too. If the agent never surfaces the link within the follow-ups, the run fails.
+5. **Human approvals.** The harness scans the agent's reply for `sandbox.paypal.com` links:
    - The lender's checkout is approved as **LENDER**, then the harness resumes with "Approved. Continue."
    - The borrower's payment link must match the loan's open `repayment_link`. The harness pays it as **CLIENT**, falling back to OWNER if PayPal refuses the CLIENT login.
    - If the agent stopped without a link, the harness nudges it ("Continue toward your goal"). It does this at most 6 times per agent.
-5. **Settlement.** Locally, the harness calls `POST /api/cron/reconcile` between agent turns and while it waits. Remotely, it only polls `get_loan`. It waits until the loan is `REPAID` and `loan.remainder_paid` appears in the loan's history.
-6. **Checks.** These use the public tools, called by the harness with the agents' keys:
+6. **Settlement.** Locally, the harness calls `POST /api/cron/reconcile` between agent turns and while it waits. Remotely, it only polls `get_loan`. It waits until the loan is `REPAID` and `loan.remainder_paid` appears in the loan's history.
+7. **Checks.** These use the public tools, called by the harness with the agents' keys:
    - notes are 3000;
    - the loan has principal 1000 and fee 15, with a 1500 link;
    - the loan ends `REPAID` with 0 outstanding;
@@ -47,7 +48,7 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
    - the lender earned 12. This exact value is checked locally only. Remotely, other note holders share the fee, so the check is 1–12.
 
    Locally, `/api/test/ledger` also checks that the trial balance is 0, that no PayPal operation failed, and that exactly two payouts (disbursement and remainder) succeeded. Remotely, these checks are skipped and the results file says so.
-7. **Debrief.** The borrower is told the client paid and asked where things stand. Its answer is recorded but not asserted.
+8. **Debrief.** The borrower is told the client paid and asked where things stand. Its answer is recorded but not asserted.
 
 Each `claude -p` invocation runs with these limits:
 

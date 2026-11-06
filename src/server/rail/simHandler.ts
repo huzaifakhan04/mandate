@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { paypalOperations } from "../db/schema";
+import { paypalOperations, worlds } from "../db/schema";
 import { PayPalApiError } from "../paypal/fetch";
 import { amountToCents, centsToAmount, orderIdFromPath } from "../paypal/orders";
 import { batchIdFromPath, payoutItemIdFromCancelPath } from "../paypal/payouts";
@@ -67,7 +67,34 @@ interface SimOrderState {
    * PENDING captures that later complete or are denied.
    */
   captureStatus?: string;
+  /** Who approved the order (set by `simApprove`); shown on the order from then on, like PayPal's `payer`. */
+  payer?: SimPayer;
+  /**
+   * P2 final review (I-1): the order's `payer-action` link, fixed at
+   * creation. In a private world it is the owner's sim approval page
+   * (`/dashboard/worlds/<id>/checkouts/<orderId>/approve`), so an agent's
+   * `human_approval` there leads somewhere real; elsewhere (the main
+   * world's sim rail, used by tests) it is the inert `sim.paypal.local`
+   * link. Absent on orders created before the field existed.
+   */
+  payerActionUrl?: string;
 }
+
+/** The sim payer `simApprove` records — Verify with PayPal reads it back via `order.get`. */
+export interface SimPayer {
+  payerId: string;
+  email: string;
+  givenName: string;
+  surname: string;
+}
+
+/** `simApprove`'s payer when the caller doesn't name one. */
+export const DEFAULT_SIM_PAYER: SimPayer = {
+  payerId: "SIMPAYER00001",
+  email: "sim-payer@example.com",
+  givenName: "Sim",
+  surname: "Payer",
+};
 
 type SimItemStatus = "SUCCESS" | "FAILED" | "UNCLAIMED" | "RETURNED";
 
@@ -177,6 +204,15 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
     id: state.orderId,
     intent: "CAPTURE",
     status: state.status,
+    ...(state.payer && state.status !== "PAYER_ACTION_REQUIRED"
+      ? {
+          payer: {
+            payer_id: state.payer.payerId,
+            email_address: state.payer.email,
+            name: { given_name: state.payer.givenName, surname: state.payer.surname },
+          },
+        }
+      : {}),
     purchase_units: [
       {
         amount,
@@ -202,11 +238,30 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
     links: [
       {
         rel: "payer-action",
-        href: `https://sim.paypal.local/checkoutnow?token=${encodeURIComponent(state.orderId)}`,
+        href: state.payerActionUrl ?? simCheckoutUrl(state.orderId),
         method: "GET",
       },
     ],
   };
+}
+
+/** The inert payer-action link of a sim order outside a private world. */
+function simCheckoutUrl(orderId: string): string {
+  return `https://sim.paypal.local/checkoutnow?token=${encodeURIComponent(orderId)}`;
+}
+
+/** The owner's approval page for a sim order in private world `worldId` (I-1). */
+export function privateWorldApprovePath(worldId: string, orderId: string): string {
+  return `/dashboard/worlds/${worldId}/checkouts/${encodeURIComponent(orderId)}/approve`;
+}
+
+async function payerActionUrlFor(db: Db, worldId: string, orderId: string): Promise<string> {
+  const [world] = await db.select({ kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  if (world?.kind !== "private") {
+    return simCheckoutUrl(orderId);
+  }
+  const base = (process.env.PUBLIC_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return `${base}${privateWorldApprovePath(worldId, orderId)}`;
 }
 
 async function createOrder(db: Db, req: SimRequest): Promise<SimResponse> {
@@ -218,11 +273,13 @@ async function createOrder(db: Db, req: SimRequest): Promise<SimResponse> {
   if (amountCents <= 0n) {
     return unprocessable("CANNOT_BE_ZERO_OR_NEGATIVE");
   }
+  const orderId = `SIMORDER-${req.operationId}`;
   const state = await initSimState<SimOrderState>(db, req.operationId, {
-    orderId: `SIMORDER-${req.operationId}`,
+    orderId,
     status: "PAYER_ACTION_REQUIRED",
     amountCents: amountCents.toString(),
     captureId: null,
+    payerActionUrl: await payerActionUrlFor(db, req.worldId, orderId),
   });
   return { httpStatus: 201, body: orderBody(state) };
 }
@@ -451,9 +508,10 @@ export async function simSetCaptureStatus(db: Db, orderId: string, captureStatus
  * unique) and must never be reachable from an agent/tool call.
  * Re-approving throws a PayPal-shaped `ORDER_ALREADY_APPROVED` /
  * `ORDER_ALREADY_CAPTURED`, so approve → capture → approve can't reopen
- * a captured order.
+ * a captured order. `payer` (P2) is who approved it — any field left out
+ * comes from `DEFAULT_SIM_PAYER`; `order.get` shows it as PayPal's `payer`.
  */
-export async function simApprove(db: Db, orderId: string): Promise<void> {
+export async function simApprove(db: Db, orderId: string, payer: Partial<SimPayer> = {}): Promise<void> {
   const order = await findOrder(db, orderId, null);
   if (!order) {
     throw new SimRailError(`Unknown sim order ${orderId}`);
@@ -461,7 +519,13 @@ export async function simApprove(db: Db, orderId: string): Promise<void> {
 
   const [updated] = await db
     .update(t)
-    .set({ simState: { ...order.state, status: "APPROVED" } satisfies SimOrderState })
+    .set({
+      simState: {
+        ...order.state,
+        status: "APPROVED",
+        payer: { ...DEFAULT_SIM_PAYER, ...payer },
+      } satisfies SimOrderState,
+    })
     .where(and(eq(t.id, order.id), sql`${t.simState}->>'status' = 'PAYER_ACTION_REQUIRED'`))
     .returning();
   if (updated) {

@@ -4,6 +4,7 @@ import type {
   OrderCaptureResult,
   OrderCreateResult,
   OrderGetResult,
+  OrderPayer,
 } from "./types";
 
 /** Thrown by `amountToCents`/`assertPositiveAmountCents` for malformed or non-positive amounts. */
@@ -213,11 +214,33 @@ export function parseCaptureOrderResponse(
   };
 }
 
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** The order's `payer` (P2 Verify with PayPal), or `null` when the order has none yet. */
+function parsePayer(value: unknown): OrderPayer | null {
+  const payer = asRecord(value);
+  if (!payer) {
+    return null;
+  }
+  const name = asRecord(payer.name);
+  const fullName = [optionalString(name?.given_name), optionalString(name?.surname)]
+    .filter((part): part is string => part !== null)
+    .join(" ");
+  return {
+    payerId: optionalString(payer.payer_id),
+    email: optionalString(payer.email_address),
+    name: fullName.length > 0 ? fullName : null,
+  };
+}
+
 export function parseGetOrderResponse(body: unknown): OrderGetResult {
   const record = asRecord(body);
   return {
     orderId: requireString(record?.id, "the order id"),
     status: requireString(record?.status, "the order status"),
     capture: firstCapture(body),
+    payer: parsePayer(record?.payer),
   };
 }

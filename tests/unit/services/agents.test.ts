@@ -132,10 +132,12 @@ describe("register_agent / get_status tools (via runTool)", () => {
     expect((data.mcp as Record<string, unknown>).header).toBe(
       `Authorization: Bearer ${data.api_key as string}`,
     );
+    // P2: tier 0 — tell the human to claim first; lending is open.
+    expect(data.tier).toBe(0);
     expect(result.envelope.next_actions.map((a) => a.tool)).toEqual([
+      "human_approval",
       "get_status",
       "buy_notes",
-      "check_eligibility",
     ]);
   });
 
@@ -193,9 +195,10 @@ describe("register_agent / get_status tools (via runTool)", () => {
     expect((data.limits as Record<string, unknown>).max_principal_cents).toBe(50000);
     expect((data.limits as Record<string, unknown>).available_liquidity_cents).toBe(10000); // Ruling W seed
     expect(typeof data.sim_now).toBe("string");
+    // P2: unclaimed (tier 0) — claim first, lending is open.
     expect(result.envelope.next_actions.map((a) => a.tool)).toEqual([
+      "human_approval",
       "buy_notes",
-      "check_eligibility",
     ]);
   });
 

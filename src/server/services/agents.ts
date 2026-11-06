@@ -1,3 +1,5 @@
+import { randomUUID } from "crypto";
+
 import { and, eq, inArray } from "drizzle-orm";
 
 import type { GeneratedApiKey } from "../auth/apiKeys";
@@ -8,6 +10,9 @@ import { scoped } from "../db/scoped";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import type { TierResult } from "../domain/kya";
+import { claimLinkForAgent, issueClaimToken, claimUrlForToken, type ClaimLink } from "./claims";
+import { tierForAgent } from "./kya";
 
 /** The plan's fixed P1 loan cap — see `limits.max_principal_cents`. */
 export const MAX_PRINCIPAL_CENTS = 50000;
@@ -30,32 +35,25 @@ export interface RegisterAgentInput {
 export interface RegisterAgentResult {
   agentId: string;
   apiKey: string;
-  /** Always `"active"` in P1 — see the comment on `instantActivationEnabled`. */
+  /**
+   * Always `"active"`: every self-registered agent is active at KYA tier 0
+   * (it may lend; borrowing needs a claim + a signed mandate). The P1
+   * `ALLOW_INSTANT_ACTIVATION` switch no longer decides anything and is
+   * ignored (P2 Global Constraints, "Agent lifecycle").
+   */
   status: "active";
+  /** `${PUBLIC_BASE_URL}/claim/<token>` — for the agent's human. */
+  claimUrl: string;
+  claimExpiresAt: Date;
 }
 
 /**
- * Whether `register_agent` activates new agents immediately. Reads
- * `ALLOW_INSTANT_ACTIVATION` fresh on every call (not memoised) since it's
- * cheap and this isn't a hot path. Unset treats as `true` (P1 default).
- *
- * `false` is read here but NOT implemented: per the plan, that path would
- * leave the agent `pending_claim` and return no API key — a P2 claim
- * flow this task doesn't build. `registerAgent` below throws if this
- * resolves falsy so that misconfiguration fails loudly instead of
- * silently handing back a key for an agent that should have been
- * pending.
- */
-function instantActivationEnabled(): boolean {
-  return process.env.ALLOW_INSTANT_ACTIVATION !== "false";
-}
-
-/**
- * Creates a brand-new agent and API key. No dedupe by `name`/`payoutEmail`
- * — the plan explicitly has `register_agent` create a fresh agent (and a
- * fresh key) on every call, even if an identical one already exists
- * (Ruling D: `auth: 'none'` mutating tools skip idempotency entirely,
- * since there's no agent yet to attribute an `idempotency_keys` row to).
+ * Creates a brand-new agent, its API key and its claim token. No dedupe
+ * by `name`/`payoutEmail` — the plan explicitly has `register_agent`
+ * create a fresh agent (and a fresh key) on every call, even if an
+ * identical one already exists (Ruling D: `auth: 'none'` mutating tools
+ * skip idempotency entirely, since there's no agent yet to attribute an
+ * `idempotency_keys` row to).
  *
  * Must be called with a transactional `tx` (the per-call transaction
  * `runTool` opens for every mutating tool) so the agent row and its API
@@ -65,21 +63,19 @@ export async function registerAgent(
   tx: Db,
   worldId: string,
   input: RegisterAgentInput,
+  now: Date = new Date(),
 ): Promise<RegisterAgentResult> {
-  if (!instantActivationEnabled()) {
-    // See `instantActivationEnabled`'s comment: this is P2 scope.
-    throw new Error(
-      "ALLOW_INSTANT_ACTIVATION=false is not implemented by Task 4 " +
-        "(pending_claim agents with no returned API key are P2 scope).",
-    );
-  }
-
   if (!input.payoutEmail === !input.payoutPaypalId) {
     // Defensive only: the register_agent input schema enforces this.
     throw new Error("registerAgent needs exactly one of payoutEmail / payoutPaypalId");
   }
 
+  // The id is chosen up front: the claim token is derived from it.
+  const agentId = randomUUID();
+  const claim = issueClaimToken(agentId, now);
+
   const [agent] = await scoped(tx, worldId).insert(agents, {
+    id: agentId,
     name: input.name,
     operator: input.operator ?? "unknown",
     model: input.model ?? "unknown",
@@ -89,6 +85,7 @@ export async function registerAgent(
     status: "active",
     payoutReceiver: input.payoutEmail ?? input.payoutPaypalId,
     payoutReceiverType: input.payoutEmail ? "email" : "paypal_id",
+    ...claim.columns,
   });
   if (!agent) {
     throw new Error("Expected an agent row to be inserted");
@@ -101,7 +98,13 @@ export async function registerAgent(
     keyHash: generated.hash,
   });
 
-  return { agentId: agent.id, apiKey: generated.key, status: "active" };
+  return {
+    agentId: agent.id,
+    apiKey: generated.key,
+    status: "active",
+    claimUrl: claimUrlForToken(claim.token),
+    claimExpiresAt: claim.columns.claimExpiresAt,
+  };
 }
 
 /**
@@ -147,12 +150,18 @@ export interface AgentStatus {
     maxPrincipalCents: number;
     availableLiquidityCents: bigint;
   };
+  kya: {
+    tier: TierResult;
+    /** The claim link while unclaimed (an expired token is rotated first), else `null`. */
+    claimLink: ClaimLink | null;
+  };
 }
 
 /**
- * Builds `get_status`'s data for one agent. Read-only: never creates a
- * ledger account (a brand-new agent that has never touched a note or
- * loan simply has zero balances) and never writes anything.
+ * Builds `get_status`'s data for one agent. Never creates a ledger
+ * account (a brand-new agent that has never touched a note or loan
+ * simply has zero balances). Its only write: an unclaimed agent whose
+ * claim token has expired gets a fresh one, so the link it shows works.
  */
 export async function getAgentStatus(
   db: Db,
@@ -191,6 +200,8 @@ export async function getAgentStatus(
   )[0];
 
   const availableLiquidityCents = await availableLiquidity(db, worldId);
+  const tier = await tierForAgent(db, worldId, agentRow);
+  const claimLink = tier.claimed ? null : await claimLinkForAgent(db, worldId, agentRow);
 
   return {
     agent: {
@@ -219,5 +230,6 @@ export async function getAgentStatus(
       maxPrincipalCents: MAX_PRINCIPAL_CENTS,
       availableLiquidityCents,
     },
+    kya: { tier, claimLink },
   };
 }

@@ -51,6 +51,16 @@ describe("renderAgentsMd", () => {
     }
   });
 
+  it("documents claiming and the KYA tiers (P2 Task 2)", () => {
+    expect(md).toContain("## Claiming and KYA tiers");
+    expect(md).toContain(`${BASE_URL}/claim/<token>`);
+    expect(md).toContain("Ask your human to open <claim_url>");
+    expect(md).toContain("`CLAIM_REQUIRED` (403)");
+    expect(md).toContain("`MANDATE_REQUIRED` (403)");
+    expect(md).toContain("per loan ≤ 25000 cents");
+    expect(md).not.toContain("ALLOW_INSTANT_ACTIVATION");
+  });
+
   it("explains human_approval's url/who/then shape", () => {
     expect(md).toContain("human_approval");
     expect(md).toContain('"who": "payer"');
@@ -149,5 +159,107 @@ describe("GET /llms.txt route", () => {
     const body = await res.text();
     expect(body).toMatch(/\/agents\.md/);
     expect(body).toMatch(/\/openapi\.json/);
+  });
+});
+
+describe("agents.md signing section (P2 Task 3)", () => {
+  it("documents the signing headers, the canonical string, the 401 statuses and a runnable Node example", async () => {
+    const { renderAgentsMd } = await import("@/server/contracts/docs");
+    const { knownStatusTable } = await import("@/server/contracts/envelope");
+    const { registry } = await import("@/server/contracts/registry");
+    await import("@/server/contracts/tools");
+    const md = renderAgentsMd(registry, "https://mandate.example", knownStatusTable());
+    const section = md.slice(md.indexOf("## Signing requests (optional, unlocks tier T2)"), md.indexOf("## Human approval"));
+    expect(section.length).toBeGreaterThan(100);
+    for (const text of ["X-Mandate-Timestamp", "X-Mandate-Signature", "X-Mandate-Previous-Signature", "register_public_key", "SIGNATURE_REPLAYED", 'generateKeyPairSync("ed25519")']) {
+      expect(section).toContain(text);
+    }
+    expect(section).toContain("${timestamp}\\n${METHOD}\\n${path}\\n${sha256hex(body)}");
+    expect(section).toContain("const path = `/api/v1/${tool}`;");
+    expect(section).toContain("Buffer.from(`${timestamp}\\nPOST\\n${path}\\n${digest}`)");
+    expect(section).toContain("fetch(`https://mandate.example${path}`");
+    expect(md).toMatch(/\| `SIGNATURE_REQUIRED` \| 401 \|/);
+  });
+});
+
+describe("agents.md mandates section (P2 Task 4)", () => {
+  it("documents what the human sets, what the agent sees, every reason code and the accept-time statuses", async () => {
+    const { renderAgentsMd } = await import("@/server/contracts/docs");
+    const { knownStatusTable } = await import("@/server/contracts/envelope");
+    const { registry } = await import("@/server/contracts/registry");
+    await import("@/server/contracts/tools");
+    const md = renderAgentsMd(registry, "https://mandate.example", knownStatusTable());
+    const section = md.slice(md.indexOf("## Mandates"), md.indexOf("## Signing requests"));
+    expect(section.length).toBeGreaterThan(100);
+    for (const text of [
+      "max_per_loan_cents",
+      "max_total_owed_cents",
+      "max_fee_bps",
+      "max_term_days",
+      "eligible_collateral",
+      "expires_at",
+      "total_owed_headroom_cents",
+      "mandate_version",
+      "mandate_missing",
+      "mandate_per_loan",
+      "mandate_total_owed",
+      "mandate_fee",
+      "mandate_term",
+      "mandate_collateral",
+      "tier_per_loan",
+      "`MANDATE_REVOKED` (409)",
+      "`MANDATE_LIMIT` (400)",
+      "mandate_superseded",
+    ]) {
+      expect(section).toContain(text);
+    }
+    expect(md).toContain("| `MANDATE_REVOKED` | 409 |");
+  });
+});
+
+describe("agents.md identity sections (P2 Task 7)", () => {
+  const md = renderAgentsMd(registry, BASE_URL, knownStatusTable());
+
+  it("explains what unlocks each tier and the human claim flow (send your human the claim_url)", () => {
+    const section = md.slice(md.indexOf("## Claiming and KYA tiers"), md.indexOf("## Mandates"));
+    for (const text of [
+      "| T0 | unclaimed |",
+      "| T1 | claimed by a PayPal-verified human **and** a signed mandate |",
+      "| T2 | T1 + an approved KYA document + a registered Ed25519 key",
+      "**T0 → T1**",
+      "**T1 → T2**",
+      "send your human the `claim_url`",
+      "**Verify with PayPal**",
+      "**Claim agent**",
+      `${BASE_URL}/dashboard`,
+      "`claim_required` → `mandate_missing` → empty",
+    ]) {
+      expect(section).toContain(text);
+    }
+  });
+
+  it("documents Ruling P2-D: mandate expiry is real calendar time, offers run on the simulated clock", () => {
+    const section = md.slice(md.indexOf("## Mandates"), md.indexOf("## Signing requests"));
+    expect(section).toContain("**Two clocks.**");
+    expect(section).toContain("`expires_at` is **real calendar time**");
+    expect(section).toContain("an offer's expiry");
+    expect(section).toContain("**simulated clock**");
+  });
+
+  it("documents private worlds: what they are, how a human creates one, keys bound to a world", () => {
+    const section = md.slice(md.indexOf("## Private worlds"), md.indexOf("## Human approval"));
+    expect(section.length).toBeGreaterThan(200);
+    for (const text of [
+      "simulated money only",
+      `${BASE_URL}/dashboard/worlds`,
+      "up to 3",
+      "two lender bots and two borrower bots",
+      "**+1 day** or **+7 days**",
+      "**bound to that world**",
+      `${BASE_URL}/dashboard/agents/new`,
+    ]) {
+      expect(section).toContain(text);
+    }
+    expect(renderLlmsTxt(BASE_URL)).toContain("private worlds");
   });
 });

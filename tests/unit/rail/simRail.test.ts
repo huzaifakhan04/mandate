@@ -141,6 +141,22 @@ describe("sim rail through enqueueOperation / executeOperation", () => {
         grossCents: "1500",
         netCents: "1426",
       },
+      // P2: simApprove with no payer records the default sim payer.
+      payer: { payerId: "SIMPAYER00001", email: "sim-payer@example.com", name: "Sim Payer" },
+    });
+  });
+
+  it("order.get shows no payer before approval and the named payer after (Verify with PayPal)", async () => {
+    const { result: created } = await createOrder();
+    const orderId = (created.body as { orderId: string }).orderId;
+    const before = await read("order.get", buildGetOrderRequest(orderId));
+    expect((before.body as { payer: unknown }).payer).toBeNull();
+
+    await simRail(db).simApprove(orderId, { payerId: "P-123", email: "who@example.com" });
+    const after = await read("order.get", buildGetOrderRequest(orderId));
+    expect(after.body).toMatchObject({
+      status: "APPROVED",
+      payer: { payerId: "P-123", email: "who@example.com", name: "Sim Payer" },
     });
   });
 

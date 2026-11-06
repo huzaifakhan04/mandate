@@ -53,6 +53,21 @@ async function challengeVisible(page: Page): Promise<boolean> {
   return CHALLENGE_TEXT.test(text);
 }
 
+/**
+ * PayPal sandbox's transient "Things don't appear to be working at the
+ * moment" page (seen after several logins of one account in a short
+ * time). Not a challenge: callers may retry the approval after a pause.
+ */
+export const PAYPAL_GENERIC_ERROR = "PayPal error page: things don't appear to be working at the moment";
+
+async function genericErrorPage(page: Page): Promise<boolean> {
+  const text = await page
+    .locator("body")
+    .innerText({ timeout: 2_000 })
+    .catch(() => "");
+  return /things don.t appear to be working/i.test(text);
+}
+
 async function errorBannerText(page: Page): Promise<string | null> {
   const banner = page.locator("#loginErrorAlert, .notifications [role='alert'], [role='alert']").first();
   if (!(await banner.isVisible().catch(() => false))) {
@@ -71,22 +86,49 @@ export async function approvePayPalCheckout(approveUrl: string, options: Approve
   const started = Date.now();
   const browser = await chromium.launch({ headless: options.headless ?? true });
   const page = await browser.newPage();
-
-  async function finish(ok: boolean, blocked: boolean, errorText: string | null): Promise<ApproveResult> {
-    let screenshotPath: string | null = null;
-    if (!ok && options.screenshotDir) {
-      mkdirSync(options.screenshotDir, { recursive: true });
-      screenshotPath = join(options.screenshotDir, `paypal-${options.label ?? "approve"}-${Date.now()}.png`);
-      await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {
-        screenshotPath = null;
-      });
+  try {
+    try {
+      await page.goto(approveUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
+    } catch (err) {
+      return await approvalResult(page, options, started, false, false, err instanceof Error ? err.message.split("\n")[0]! : String(err));
     }
-    return { ok, blocked, errorText, finalUrl: stripQuery(page.url()), screenshotPath, ms: Date.now() - started };
+    return await approveOnPage(page, options, started);
+  } finally {
+    await browser.close();
   }
+}
+
+/** Builds the result (with a screenshot when it failed). */
+async function approvalResult(
+  page: Page,
+  options: ApproveOptions,
+  started: number,
+  ok: boolean,
+  blocked: boolean,
+  errorText: string | null,
+): Promise<ApproveResult> {
+  let screenshotPath: string | null = null;
+  if (!ok && options.screenshotDir) {
+    mkdirSync(options.screenshotDir, { recursive: true });
+    screenshotPath = join(options.screenshotDir, `paypal-${options.label ?? "approve"}-${Date.now()}.png`);
+    await page.screenshot({ path: screenshotPath, fullPage: true }).catch(() => {
+      screenshotPath = null;
+    });
+  }
+  return { ok, blocked, errorText, finalUrl: stripQuery(page.url()), screenshotPath, ms: Date.now() - started };
+}
+
+/**
+ * Logs in and approves on a page that is already on (or navigating to)
+ * PayPal's checkout — e.g. after a form on our own site 303'd there, so
+ * the cookies our site sets on return land in the same browser context.
+ * Leaves the page open; the caller owns the browser.
+ */
+export async function approveOnPage(page: Page, options: ApproveOptions, started = Date.now()): Promise<ApproveResult> {
+  const finish = (ok: boolean, blocked: boolean, errorText: string | null) =>
+    approvalResult(page, options, started, ok, blocked, errorText);
 
   try {
-    await page.goto(approveUrl, { waitUntil: "domcontentloaded", timeout: 45_000 });
-
     const emailField = page.locator("#email");
     await emailField.waitFor({ state: "visible", timeout: 30_000 });
     await emailField.fill(options.email);
@@ -132,12 +174,17 @@ export async function approvePayPalCheckout(approveUrl: string, options: Approve
       // Wait for the browser to *request* the return URL (not for it to
       // load): PayPal has recorded the approval once it redirects there.
       const redirected = page.waitForRequest((request) => request.url().startsWith(prefix), { timeout: 45_000 });
+      // Never an unhandled rejection if the click throws first and the browser closes.
+      redirected.catch(() => undefined);
       try {
         await payButton.click();
         await redirected;
       } catch {
         if (await challengeVisible(page)) {
           return await finish(false, true, "PayPal showed a captcha / security challenge");
+        }
+        if (await genericErrorPage(page)) {
+          return await finish(false, false, PAYPAL_GENERIC_ERROR);
         }
         return await finish(false, false, (await errorBannerText(page)) ?? "PayPal did not redirect to the return URL");
       }
@@ -148,7 +195,5 @@ export async function approvePayPalCheckout(approveUrl: string, options: Approve
     return await finish(true, false, null);
   } catch (err) {
     return await finish(false, false, err instanceof Error ? err.message.split("\n")[0]! : String(err));
-  } finally {
-    await browser.close();
   }
 }

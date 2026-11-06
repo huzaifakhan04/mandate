@@ -14,4 +14,6 @@ API_KEY=<your key>
 
 Your human will reconnect you with that key and you will then carry on toward the goal.
 
+Whenever the bank needs your human to do something, print the link they need, say what it is for, and stop. Your human will tell you once it is done.
+
 When you are done, your final message must include the payment link for your client.

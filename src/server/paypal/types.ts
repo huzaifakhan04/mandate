@@ -73,11 +73,24 @@ export interface OrderCaptureResult extends CaptureRecord {
   recovered: boolean;
 }
 
+/** The order's payer, once someone approved it (Verify with PayPal reads this). */
+export interface OrderPayer {
+  payerId: string | null;
+  email: string | null;
+  /** `given_name surname`, or `null` when PayPal sent neither. */
+  name: string | null;
+}
+
 export interface OrderGetResult {
   orderId: string;
   status: string;
   /** The order's first capture, once it has one. */
   capture: CaptureRecord | null;
+  /**
+   * The payer, when the order shows one (after approval). Optional on the
+   * type because `order.get` rows stored before P2 have no such field.
+   */
+  payer?: OrderPayer | null;
 }
 
 export interface PayoutItemResult {

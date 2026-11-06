@@ -199,3 +199,36 @@ test("M1: MCP tools/call honours the Idempotency-Key header (replay + header/arg
   expect(mismatch.status).toBe("INVALID_REQUEST");
   expect(mismatch.reason_codes).toContain("idempotency_key_mismatch");
 });
+
+test("P2 Task 3: MCP signatures cover the raw JSON-RPC body; after register_public_key unsigned mutating calls are rejected", async ({
+  request,
+}) => {
+  const { createHash, generateKeyPairSync, sign } = await import("crypto");
+  const registered = await mcpCall(request, 40, "register_agent", { name: "Signer E2E", payout_email: "signer-e2e@example.com" });
+  const apiKey = (registered.data as { api_key: string }).api_key;
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const spki = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+
+  async function rawCall(id: number, name: string, args: Record<string, unknown>, signIt: boolean): Promise<Envelope> {
+    const body = JSON.stringify({ jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } });
+    const headers: Record<string, string> = { ...MCP_HEADERS, authorization: `Bearer ${apiKey}` };
+    if (signIt) {
+      const ts = String(Math.floor(Date.now() / 1000));
+      const digest = createHash("sha256").update(body).digest("hex");
+      headers["x-mandate-timestamp"] = ts;
+      headers["x-mandate-signature"] = sign(null, Buffer.from(`${ts}\nPOST\n/api/mcp/mcp\n${digest}`), privateKey).toString("base64");
+    }
+    const res = await request.post(MCP_URL, { headers, data: body });
+    expect(res.status()).toBe(200);
+    return (await readJsonRpc(res)).result!.structuredContent!;
+  }
+
+  const registeredKey = await rawCall(41, "register_public_key", { public_key: spki }, true);
+  expect(registeredKey.status).toBe("OK");
+
+  const unsigned = await rawCall(42, "redeem_notes", { amount_cents: 1000 }, false);
+  expect(unsigned.status).toBe("SIGNATURE_REQUIRED");
+
+  const signed = await rawCall(43, "redeem_notes", { amount_cents: 1000 }, true);
+  expect(signed.status).not.toMatch(/^SIGNATURE_/);
+});

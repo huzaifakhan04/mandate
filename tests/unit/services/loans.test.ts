@@ -47,6 +47,8 @@ async function createTestAgent(db: Db, worldId: string, payoutReceiver: string |
 
   const generated = generateApiKey();
   await db.insert(apiKeys).values({ worldId, agentId: agent!.id, prefix: generated.prefix, keyHash: generated.hash });
+  // P2: borrowing needs KYA tier 1 (claimed + signed mandate).
+  await claimAndMandate(db, agent!.id);
   return { agentId: agent!.id, key: generated.key };
 }
 
@@ -65,6 +67,7 @@ async function call(
 }
 
 import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
+import { claimAndMandate } from "../../helpers/kya";
 
 /** Funds the world's pool by `amountCents` via a lender's sim note purchase. */
 async function fundPool(db: Db, worldId: string, amountCents: number) {
@@ -176,7 +179,13 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     const result = await applyFor(db, key, 60000, 5);
     expect(result.envelope.status).toBe("DECLINED");
-    expect(result.envelope.reason_codes).toEqual(["amount_out_of_range", "term_out_of_range"]);
+    // P2 Task 4: 60000 is also above the mandate's 50000 and tier T1's 25000 per-loan caps.
+    expect(result.envelope.reason_codes).toEqual([
+      "amount_out_of_range",
+      "term_out_of_range",
+      "mandate_per_loan",
+      "tier_per_loan",
+    ]);
   });
 
   it("apply rejects an invoice smaller than the loan amount (INVALID_REQUEST)", async () => {

@@ -1,9 +1,11 @@
+import { AsyncLocalStorage } from "async_hooks";
 import { randomUUID } from "crypto";
 
 import { createMcpHandler } from "mcp-handler";
 
 import { findTool, registry } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
+import { signedRequestFrom, type SignedRequest } from "@/server/auth/signatures";
 import "@/server/contracts/tools";
 import { getDb } from "@/server/db/client";
 
@@ -34,10 +36,26 @@ import { getDb } from "@/server/db/client";
  * this header or as the `idempotency_key` argument; if both are present they
  * must agree (`runTool` answers `idempotency_key_mismatch` otherwise).
  */
-function headerDeps(headers: Headers | undefined): { authorization: string | null; idempotencyKey: string | null } {
+/**
+ * P2 Task 3: an MCP request signature covers `POST /api/mcp/mcp` and the
+ * raw JSON-RPC HTTP body. The SDK consumes and parses that body before a
+ * `tools/call` handler runs, so `dispatch` reads a copy first and carries
+ * it (with the signature headers) through this request's async context.
+ * No context (shouldn't happen) means "unsigned" — fail-closed for an
+ * agent with a key.
+ */
+const MCP_SIGNED_PATH = "/api/mcp/mcp";
+const signedRequestContext = new AsyncLocalStorage<SignedRequest>();
+
+function headerDeps(headers: Headers | undefined): {
+  authorization: string | null;
+  idempotencyKey: string | null;
+  request: SignedRequest | null;
+} {
   return {
     authorization: headers?.get("authorization") ?? null,
     idempotencyKey: headers?.get("idempotency-key") ?? null,
+    request: signedRequestContext.getStore() ?? null,
   };
 }
 
@@ -107,7 +125,9 @@ async function dispatch(req: Request, { params }: RouteParams): Promise<Response
   if (transport !== "mcp") {
     return new Response("Not Found", { status: 404 });
   }
-  return mcpHandler(req);
+  const method = req.method.toUpperCase();
+  const rawBody = method === "POST" ? await req.clone().text() : "";
+  return signedRequestContext.run(signedRequestFrom(req.headers, method, MCP_SIGNED_PATH, rawBody), () => mcpHandler(req));
 }
 
 export { dispatch as DELETE, dispatch as GET, dispatch as POST };

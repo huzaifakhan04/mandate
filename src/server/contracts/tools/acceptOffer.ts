@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { fail, ok, type Envelope } from "../envelope";
+import { borrowBlockedEnvelope, mandateLimitEnvelope, mandateRevokedEnvelope } from "../kyaActions";
 import { defineTool, type FinalizeCtx } from "../registry";
 import {
   applyPayoutOutcome,
@@ -109,7 +110,11 @@ export const acceptOfferTool = defineTool({
   title: "Accept Offer",
   description:
     "Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with " +
-    "the offer (proof the disclosure was read). The bank re-checks liquidity, creates the loan and " +
+    "the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / " +
+    "MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the " +
+    "mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with " +
+    "mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) " +
+    "and liquidity, creates the loan and " +
     "pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING " +
     "(poll get_loan) or DISBURSEMENT_FAILED (with the reason).",
   auth: "agent",
@@ -155,6 +160,12 @@ export const acceptOfferTool = defineTool({
         return fail("PAYOUT_RECEIVER_MISSING", "This agent has no payout receiver on file.", [
           "payout_receiver_missing",
         ]);
+      case "borrow_blocked":
+        return borrowBlockedEnvelope(result.blockers, null);
+      case "mandate_revoked":
+        return mandateRevokedEnvelope(result.reason, result.retry);
+      case "mandate_limit":
+        return mandateLimitEnvelope(result.reasons, result.mandate, result.retry);
       case "disbursing":
         break;
     }
