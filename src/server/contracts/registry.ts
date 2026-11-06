@@ -4,6 +4,7 @@ import type { AgentPrincipal } from "../auth/apiKeys";
 import type { Db } from "../db/client";
 import type { scoped } from "../db/scoped";
 import type { Envelope } from "./envelope";
+import { TOOL_GROUPS, toolExamples, toolGroup, toolHints } from "./toolMeta";
 
 /**
  * Per-request context handed to every tool handler.
@@ -192,28 +193,42 @@ const envelopeJsonSchema = {
 
 /**
  * Builds the OpenAPI 3.1 document for the registry: one `POST /api/v1/{name}`
- * path per registered tool. Request bodies come from `z.toJSONSchema(input)`;
- * every response uses the shared envelope schema.
+ * path per registered tool. Request bodies come from `z.toJSONSchema(input)`
+ * (with the curated examples from `toolMeta`); every response uses the
+ * shared envelope schema. Operations are tagged with their Postman/SDK
+ * folder, and agent-scoped tools declare the bearer security scheme so
+ * generated SDKs (APIMatic) and the Postman collection wire auth for them.
+ * `baseUrl`, when given, becomes the document's single server.
  */
-export function buildOpenApiDocument(): Record<string, unknown> {
+export function buildOpenApiDocument(baseUrl?: string): Record<string, unknown> {
   const paths: Record<string, unknown> = {};
 
   for (const tool of registry) {
+    const examples = toolExamples(tool);
+    const exampleEntries = Object.fromEntries(
+      examples.map((example, index) => [index === 0 ? "default" : `example_${index + 1}`, { summary: example.summary, value: example.args }]),
+    );
     paths[`/api/v1/${tool.name}`] = {
       post: {
         operationId: tool.name,
         summary: tool.title,
         description: tool.description,
+        tags: [toolGroup(tool)],
+        security: tool.auth === "agent" ? [{ bearerAuth: [] }] : [],
+        "x-mcp-annotations": toolHints(tool),
         requestBody: {
           required: true,
           content: {
-            "application/json": { schema: z.toJSONSchema(tool.input) },
+            "application/json": {
+              schema: z.toJSONSchema(tool.input),
+              ...(examples.length > 0 ? { examples: exampleEntries } : {}),
+            },
           },
         },
         responses: {
           "200": {
             description: "Envelope response",
-            content: { "application/json": { schema: envelopeJsonSchema } },
+            content: { "application/json": { schema: { $ref: "#/components/schemas/Envelope" } } },
           },
         },
       },
@@ -222,7 +237,21 @@ export function buildOpenApiDocument(): Record<string, unknown> {
 
   return {
     openapi: "3.1.0",
-    info: { title: "Mandate Bank API", version: "1.0.0" },
+    info: {
+      title: "Mandate Bank API",
+      version: "1.0.0",
+      description:
+        "Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. " +
+        "Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.",
+    },
+    ...(baseUrl ? { servers: [{ url: baseUrl.replace(/\/+$/, "") }] } : {}),
+    tags: TOOL_GROUPS.map((name) => ({ name })),
+    components: {
+      securitySchemes: {
+        bearerAuth: { type: "http", scheme: "bearer", description: "The api_key returned once by register_agent." },
+      },
+      schemas: { Envelope: envelopeJsonSchema },
+    },
     paths,
   };
 }

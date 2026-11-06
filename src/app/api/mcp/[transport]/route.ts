@@ -5,6 +5,7 @@ import { createMcpHandler } from "mcp-handler";
 
 import { findTool, registry } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
+import { describeWithExample, toolHints } from "@/server/contracts/toolMeta";
 import { signedRequestFrom, type SignedRequest } from "@/server/auth/signatures";
 import "@/server/contracts/tools";
 import { getDb } from "@/server/db/client";
@@ -73,8 +74,11 @@ const mcpHandler = createMcpHandler(
         tool.name,
         {
           title: tool.title,
-          description: tool.description,
+          // P7: one concise example call appended, and the MCP hints
+          // (read-only / destructive / idempotent / open-world) from toolMeta.
+          description: describeWithExample(tool),
           inputSchema: tool.input,
+          annotations: { title: tool.title, ...toolHints(tool) },
         },
         // Unreachable in practice: the `tools/call` override installed
         // below intercepts every call before the SDK's per-tool dispatch

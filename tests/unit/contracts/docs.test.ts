@@ -128,7 +128,7 @@ describe("renderAgentsMd", () => {
   });
 
   it("includes a plausible example input for register_agent (spot check)", () => {
-    expect(md).toContain('"name": "example"');
+    expect(md).toContain('"name": "Acme Ops Agent"');
     expect(md).toContain('"payout_email": "agent@example.com"');
   });
 });
