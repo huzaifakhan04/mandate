@@ -291,6 +291,55 @@ describe("private worlds (P2 Task 6)", () => {
     expect(res.envelope.status).toBe("WORLD_ARCHIVED");
   }, 60_000);
 
+  it("M6: reset fails the archived world's unfinished sim ops (world_archived) in one go; finished ops and other worlds are untouched", async () => {
+    const worldId = await create("Pending");
+    const other = await create("Other");
+    const request = {
+      method: "POST" as const,
+      path: "/v2/checkout/orders",
+      body: { intent: "CAPTURE", purchase_units: [{ amount: { currency_code: "USD", value: "10.00" } }] },
+    };
+    const enqueue = async (world: string, n: number) => {
+      const { operationId } = await enqueueOperation(db, {
+        worldId: world,
+        rail: "sim",
+        kind: "order.create",
+        purpose: "note_purchase",
+        sourceId: `00000000-0000-4000-8000-00000000000${n}`,
+        request,
+      });
+      return operationId;
+    };
+    const ids: Record<string, string> = {};
+    for (const [n, status] of (["queued", "failed_retryable", "in_flight", "succeeded", "failed_terminal"] as const).entries()) {
+      ids[status] = await enqueue(worldId, n + 1);
+      await db
+        .update(paypalOperations)
+        .set({ status, claimedAt: status === "in_flight" ? new Date() : null, lastError: status === "failed_terminal" ? "earlier" : null })
+        .where(eq(paypalOperations.id, ids[status]!));
+    }
+    const elsewhere = await enqueue(other, 9);
+
+    expect((await resetPrivateWorld(db, owner, worldId)).outcome).toBe("reset");
+
+    const rows = await db.select().from(paypalOperations).where(eq(paypalOperations.worldId, worldId));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    for (const status of ["queued", "failed_retryable", "in_flight"]) {
+      expect(byId.get(ids[status]!), status).toMatchObject({
+        status: "failed_terminal",
+        lastError: "world_archived",
+        claimedAt: null,
+        nextAttemptAt: null,
+      });
+    }
+    expect(byId.get(ids.succeeded!)!.status).toBe("succeeded");
+    expect(byId.get(ids.failed_terminal!)).toMatchObject({ status: "failed_terminal", lastError: "earlier" });
+    // Nothing of the archived world is left queued; the owner's other world keeps its queue.
+    expect(rows.filter((row) => ["queued", "failed_retryable", "in_flight"].includes(row.status))).toEqual([]);
+    const [kept] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, elsewhere));
+    expect(kept!.status).toBe("queued");
+  }, 60_000);
+
   it("path B into a private world: only the owner's own active private world; the main dashboard excludes it", async () => {
     const worldId = await create();
     const intruder = await newPrincipal("INTRUDER");
