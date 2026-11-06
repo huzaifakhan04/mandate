@@ -63,12 +63,20 @@ export const confirmCheckoutTool = defineTool({
     }
 
     if (pending.outcome === "awaiting_create") {
-      const result = await finalizeAwaitingCreate(ctx.db, pending.createOperationId);
+      const result = await finalizeAwaitingCreate(ctx.db, ctx.worldId, {
+        checkoutPurpose: pending.checkoutPurpose,
+        createSourceId: pending.createSourceId,
+        createOperationId: pending.createOperationId,
+      });
       return ok(result.data, {
         status: result.status,
         summary: result.summary,
         reason_codes: result.reasonCodes,
-        next_actions: result.approveUrl
+        next_actions: result.status === "CHECKOUT_FAILED"
+          ? result.nextAction
+            ? [result.nextAction]
+            : []
+          : result.approveUrl
           ? [
               {
                 tool: "human_approval",

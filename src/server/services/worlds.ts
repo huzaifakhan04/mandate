@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 
+import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { clock, noteSeries, worlds } from "../db/schema";
 import { ensureChartOfAccounts } from "../ledger/accounts";
@@ -45,16 +46,37 @@ async function ensureNoteSeries(db: Db, worldId: string): Promise<void> {
 /** Ruling W: the default opening capital when `BANK_SEED_CAPITAL_CENTS` is unset. */
 export const DEFAULT_BANK_SEED_CAPITAL_CENTS = 10000n;
 
-/** `BANK_SEED_CAPITAL_CENTS` (a non-negative integer number of cents), or the default. */
-export function bankSeedCapitalCents(): bigint {
-  const raw = process.env.BANK_SEED_CAPITAL_CENTS?.trim();
-  if (!raw) {
+function parseBankSeedCapital(raw: string | undefined): bigint | Error {
+  const value = raw?.trim();
+  if (!value) {
     return DEFAULT_BANK_SEED_CAPITAL_CENTS;
   }
-  if (!/^\d+$/.test(raw)) {
-    throw new Error(`BANK_SEED_CAPITAL_CENTS must be a non-negative integer number of cents, got ${JSON.stringify(raw)}`);
+  if (!/^\d+$/.test(value)) {
+    return new Error(
+      `BANK_SEED_CAPITAL_CENTS must be a non-negative integer number of cents (e.g. "10000"), got ${JSON.stringify(value)}`,
+    );
   }
-  return BigInt(raw);
+  return BigInt(value);
+}
+
+/**
+ * Fix round 3 (M4): the parsed `BANK_SEED_CAPITAL_CENTS`, validated once
+ * per distinct env value (the process env doesn't change between
+ * requests; keying on the raw string keeps tests that set it working)
+ * — a malformed value's error is cached and rethrown, not re-parsed.
+ */
+let seedCapitalCache: { raw: string | undefined; result: bigint | Error } | undefined;
+
+/** `BANK_SEED_CAPITAL_CENTS` (a non-negative integer number of cents), or the default. Throws if malformed. */
+export function bankSeedCapitalCents(): bigint {
+  const raw = process.env.BANK_SEED_CAPITAL_CENTS;
+  if (!seedCapitalCache || seedCapitalCache.raw !== raw) {
+    seedCapitalCache = { raw, result: parseBankSeedCapital(raw) };
+  }
+  if (seedCapitalCache.result instanceof Error) {
+    throw seedCapitalCache.result;
+  }
+  return seedCapitalCache.result;
 }
 
 /**
@@ -82,7 +104,8 @@ async function ensureBankSeedCapital(db: Db, worldId: string): Promise<void> {
     memo: "Bank opening capital",
     sourceType: "worlds",
     sourceId: worldId,
-    simAt: new Date(),
+    // Fix round 3 (M3): the world's simulated now (its clock row exists by now — same transaction).
+    simAt: await getSimNow(db, worldId),
     idempotencyKey: `bank_capital:seed:${worldId}`,
     postings: [
       { accountCode: "cash_paypal", amountCents: cents },

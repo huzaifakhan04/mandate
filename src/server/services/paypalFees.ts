@@ -53,6 +53,13 @@ async function postFee(tx: Db, source: FeeJournalSource, memo: string, key: stri
 /**
  * Journals a COMPLETED capture's PayPal fee (no-op when PayPal reported
  * none). Call with the transaction that applies the capture's effect.
+ *
+ * Known gap (review M5, accepted): a capture fee PayPal didn't report when
+ * the capture was applied (no `seller_receivable_breakdown`) is NOT
+ * back-filled later, and a capture that went to `review` (amount mismatch)
+ * journals neither its cash nor its fee — an operator booking that capture
+ * by hand must book its fee by hand too (Dr paypal_fees_expense / Cr
+ * cash_paypal, key `paypal_fee:capture:<captureId>`).
  */
 export async function postCaptureFee(
   tx: Db,
@@ -75,19 +82,35 @@ export interface KnownPayoutFee {
  * The batch's fee once it is known for a SUCCESS item: from the newest
  * `payout.get` read whose item is SUCCESS and that reports a fee, else
  * from the send result under the same condition, else `null` (not known
- * yet — e.g. PayPal's live POST reports no fee; a later poll will).
+ * yet — e.g. PayPal's live POST reports no fee; a later poll will). A
+ * zero fee is known only on a final (SUCCESS) batch (fix round 3, M6).
  * Results stored before Task 10b have no `feeCents` at all (→ unknown).
  */
 export function knownPayoutFee(send: PayoutSendResult, latestGet: PayoutGetResult | null): KnownPayoutFee | null {
-  const fromGet = latestGet?.items[0]?.transactionStatus === "SUCCESS" ? (latestGet.feeCents ?? null) : null;
-  if (latestGet && fromGet !== null) {
-    return { batchId: latestGet.batchId, feeCents: BigInt(fromGet) };
+  const fromGet = latestGet ? feeOf(latestGet.batchId, latestGet.batchStatus, latestGet.items[0], latestGet.feeCents) : null;
+  return fromGet ?? feeOf(send.batchId, send.batchStatus, send.item, send.feeCents);
+}
+
+/**
+ * One response's fee for a SUCCESS item, or `null`. Fix round 3 (M6): a
+ * zero fee counts as known only once the batch itself is final
+ * (`batch_status` SUCCESS) — PayPal may report `0.00` while the batch is
+ * still processing and fill the real fee in later.
+ */
+function feeOf(
+  batchId: string,
+  batchStatus: string,
+  item: { transactionStatus: string } | null | undefined,
+  feeCents: string | null | undefined,
+): KnownPayoutFee | null {
+  if (item?.transactionStatus !== "SUCCESS" || feeCents === null || feeCents === undefined) {
+    return null;
   }
-  const fromSend = send.item?.transactionStatus === "SUCCESS" ? (send.feeCents ?? null) : null;
-  if (fromSend !== null) {
-    return { batchId: send.batchId, feeCents: BigInt(fromSend) };
+  const cents = BigInt(feeCents);
+  if (cents === 0n && batchStatus !== "SUCCESS") {
+    return null;
   }
-  return null;
+  return { batchId, feeCents: cents };
 }
 
 /** Journals a payout batch's PayPal fee. Call with the transaction that applies the payout's success. */

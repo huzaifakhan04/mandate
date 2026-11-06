@@ -126,12 +126,33 @@ export const paypalOperations = pgTable("paypal_operations", {
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
+  /**
+   * Task 10b fix round 3 (M2): last write to the row (set by Drizzle on
+   * every `update()`), so the reconcile cron can list only recently capped
+   * operations.
+   */
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
 }, (table) => [
   // P0 carry-forward M6 / Task 8 M3: reads by PayPal id within a world
   // (order/payout poll throttles, order → create op lookups) …
   index("paypal_operations_world_kind_paypal_id_idx").on(table.worldId, table.kind, table.paypalId),
   // … and across worlds (a webhook's resource → its operation).
   index("paypal_operations_kind_paypal_id_idx").on(table.kind, table.paypalId),
+  // Task 10b fix round 3 (M1): the reconcile cron's per-world scans of
+  // non-final rows (due ops, retrying/capped anomalies) …
+  index("paypal_operations_world_open_status_idx")
+    .on(table.worldId, table.status)
+    .where(sql`${table.status} in ('failed_retryable', 'failed_terminal', 'queued', 'in_flight')`),
+  // … and of recent succeeded payout sends (fee polling / payout_fee_unknown).
+  index("paypal_operations_world_kind_status_created_idx").on(
+    table.worldId,
+    table.kind,
+    table.status,
+    table.createdAt,
+  ),
 ]);
 
 export const clock = pgTable("clock", {

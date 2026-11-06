@@ -2,11 +2,11 @@ import { and, eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Db } from "@/server/db/client";
-import { journalEntries } from "@/server/db/schema";
+import { clock, journalEntries, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { availableLiquidity } from "@/server/domain/liquidity";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
-import { createWorld, ensureMainWorld } from "@/server/services/worlds";
+import { bankSeedCapitalCents, createWorld, ensureMainWorld } from "@/server/services/worlds";
 
 /**
  * Ruling W: every world opens with the bank's own capital — Dr
@@ -54,11 +54,33 @@ describe("bank seed capital (Ruling W)", () => {
     expect(await availableLiquidity(db, empty)).toBe(0n);
   });
 
-  it("rejects a malformed BANK_SEED_CAPITAL_CENTS", async () => {
+  it("rejects a malformed BANK_SEED_CAPITAL_CENTS with a clear message (parsed once per value, M4)", async () => {
     process.env.BANK_SEED_CAPITAL_CENTS = "12.5";
+    expect(() => bankSeedCapitalCents()).toThrow(
+      'BANK_SEED_CAPITAL_CENTS must be a non-negative integer number of cents (e.g. "10000"), got "12.5"',
+    );
+    // The cached failure is rethrown, not re-parsed into something else.
+    expect(() => bankSeedCapitalCents()).toThrow(/got "12\.5"/);
     await expect(createWorld(db, { name: "Bad", ownerPrincipalId: null, railMode: "sim" })).rejects.toThrow(
       /BANK_SEED_CAPITAL_CENTS/,
     );
+    process.env.BANK_SEED_CAPITAL_CENTS = "300";
+    expect(bankSeedCapitalCents()).toBe(300n);
+  });
+
+  it("the seed journal's sim_at is the world's simulated now (M3)", async () => {
+    const anchorSim = new Date("2020-01-01T00:00:00.000Z");
+    const [world] = await db
+      .insert(worlds)
+      .values({ slug: "main", name: "Main", ownerPrincipalId: null, railMode: "paypal" })
+      .returning();
+    await db.insert(clock).values({ worldId: world!.id, anchorReal: new Date(), anchorSim, speed: "0", manualOffsetMs: 0n });
+
+    const { worldId } = await ensureMainWorld(db);
+
+    expect(worldId).toBe(world!.id);
+    const [seed] = await seedEntries(db, worldId);
+    expect(seed!.simAt.toISOString()).toBe(anchorSim.toISOString());
   });
 
   it("ensureMainWorld seeds the main world exactly once across repeated ensures", async () => {

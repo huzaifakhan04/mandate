@@ -85,6 +85,13 @@
       "when": 1793916695115,
       "tag": "0011_paypal_operations_paypal_id_idx",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1793930192723,
+      "tag": "0012_paypal_operations_updated_at_indexes",
+      "breakpoints": true
     }
   ]
 }

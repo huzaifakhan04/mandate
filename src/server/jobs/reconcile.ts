@@ -9,7 +9,7 @@ import {
   getOperation,
   latestPayoutGetForSend,
   listDueOperations,
-  listRecentSucceededPayoutSends,
+  listPayoutSendsAwaitingFee,
   listTroubledOperations,
   orderPollTimes,
   type OperationRecord,
@@ -17,7 +17,7 @@ import {
   type TroubledOperation,
   type PayoutSendResult,
 } from "../paypal/operations";
-import { settleCheckoutByOrderId } from "../services/checkouts";
+import { failCheckoutWithTerminalCreate, settleCheckoutByOrderId } from "../services/checkouts";
 import {
   dispatchPayoutOutcome,
   PAYOUT_FEE_POLL_WINDOW_MS,
@@ -56,6 +56,8 @@ import { errorMessage, previousAnomalyCount, recordJobRun } from "./jobRuns";
  *    pending note buys, open invoice/direct repayment links — no sooner
  *    than 30 s after the order was created, then throttled by its age
  *    (1 m / 5 m / 30 m / 6 h, `isPollDue`).
+ *    A pending note buy whose `order.create` is `failed_terminal` (it will
+ *    never get an order) is failed instead (Task 10b fix round 3, I1).
  * 4. Anomalies, listed (not fixed): note txs and repayment links in
  *    `review` (captured cash not journaled), UNCLAIMED payouts whose cancel
  *    failed terminally or keeps failing retryably (liquidity stays
@@ -376,7 +378,7 @@ async function pollPayouts(run: Run, worldId: string): Promise<void> {
   // a cheap no-op once the fee is known).
   const pendingIds = new Set(pending.map((source) => source.sendOperationId));
   const since = new Date(run.now.getTime() - PAYOUT_FEE_POLL_WINDOW_MS);
-  for (const sendOperationId of await listRecentSucceededPayoutSends(run.db, worldId, { since })) {
+  for (const sendOperationId of await listPayoutSendsAwaitingFee(run.db, worldId, { since })) {
     if (pendingIds.has(sendOperationId)) {
       continue;
     }
@@ -401,6 +403,9 @@ async function openCheckoutOrderIds(db: Db, worldId: string): Promise<string[]> 
     const create = await getOperation(db, buy.opId!);
     if (create?.status === "succeeded" && create.kind === "order.create") {
       orderIds.push((create.body as OrderCreateResult).orderId);
+    } else if (create?.status === "failed_terminal") {
+      // Task 10b fix round 3 (I1): the create will never produce an order — fail the buy.
+      await failCheckoutWithTerminalCreate(db, worldId, buy.opId!);
     }
   }
   const links = await scoped(db, worldId).select(
@@ -523,18 +528,12 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
     });
   }
 
-  for (const op of await listTroubledOperations(db, worldId, "retrying", { minAttempts: RETRYING_ANOMALY_ATTEMPTS })) {
-    anomalies.push({ type: "operation_retrying", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
-  }
-  for (const op of await listTroubledOperations(db, worldId, "capped")) {
-    anomalies.push({ type: "operation_retry_cap_exceeded", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
-  }
 
   // Payouts whose PayPal fee was never reported within the fee-poll window
   // (the cron stopped reading for it): cash_paypal may be high by that fee.
   const feeWindowEnd = new Date(run.now.getTime() - PAYOUT_FEE_POLL_WINDOW_MS);
   const feeListSince = new Date(run.now.getTime() - FEE_UNKNOWN_LIST_WINDOW_MS);
-  for (const sendOperationId of await listRecentSucceededPayoutSends(db, worldId, {
+  for (const sendOperationId of await listPayoutSendsAwaitingFee(db, worldId, {
     since: feeListSince,
     before: feeWindowEnd,
   })) {
@@ -549,9 +548,12 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
     }
   }
 
+  // Fix round 3 (M2): a cancel already listed here isn't listed again as operation_retrying.
+  const listedCancelIds = new Set<string>();
   for (const source of await pendingPayoutSources(db, worldId)) {
     const itemId = await unclaimedItemWithFailedCancel(db, worldId, source.sendOperationId);
     if (itemId) {
+      listedCancelIds.add(deriveOperationId(worldId, "payout_cancel", itemId));
       anomalies.push({
         type: "unclaimed_cancel_failed",
         worldId,
@@ -559,6 +561,18 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
         detail: { kind: source.kind, payout_item_id: itemId, reason: "liquidity_reserved_until_resolved" },
       });
     }
+  }
+
+  for (const op of await listTroubledOperations(db, worldId, "retrying", { minAttempts: RETRYING_ANOMALY_ATTEMPTS })) {
+    if (listedCancelIds.has(op.operationId)) {
+      continue;
+    }
+    anomalies.push({ type: "operation_retrying", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
+  }
+  // Fix round 3 (M2): only ops capped (last updated) in the last 7 days — older ones were reported already.
+  const cappedSince = new Date(run.now.getTime() - CAPPED_ANOMALY_WINDOW_MS);
+  for (const op of await listTroubledOperations(db, worldId, "capped", { updatedSince: cappedSince })) {
+    anomalies.push({ type: "operation_retry_cap_exceeded", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
   }
 }
 
@@ -568,6 +582,9 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
  * never-reported fee doesn't cost queries every minute forever.
  */
 const FEE_UNKNOWN_LIST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Fix round 3 (M2): `operation_retry_cap_exceeded` lists ops capped (last updated) within this window. */
+const CAPPED_ANOMALY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Task 10b: a write operation still `failed_retryable` after this many attempts is listed. */
 const RETRYING_ANOMALY_ATTEMPTS = 5;

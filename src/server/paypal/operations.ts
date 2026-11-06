@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { paypalOperations } from "../db/schema";
+import { journalEntries, loans, noteTransactions, paypalOperations, repayments } from "../db/schema";
 import { simHandle } from "../rail/simHandler";
 import { classifyFailureStatus, computeNextAttemptAt } from "./classify";
 import { PayPalConfigError } from "./config";
@@ -867,12 +867,17 @@ export interface TroubledOperation {
  * - `retrying`: `failed_retryable` with ≥ `minAttempts` attempts;
  * - `capped`: `failed_terminal` given up on by the retry cap
  *   (`last_error = retry_cap_exceeded`).
+ * `updatedSince` (fix round 3, M2) keeps only rows last written at or after it.
  */
 export async function listTroubledOperations(
   db: Db,
   worldId: string,
   which: "retrying" | "capped",
-  { minAttempts = 0, limit = 100 }: { minAttempts?: number; limit?: number } = {},
+  {
+    minAttempts = 0,
+    updatedSince,
+    limit = 100,
+  }: { minAttempts?: number; updatedSince?: Date; limit?: number } = {},
 ): Promise<TroubledOperation[]> {
   const t = paypalOperations;
   const rows = await db
@@ -888,6 +893,7 @@ export async function listTroubledOperations(
         which === "retrying"
           ? and(eq(t.status, "failed_retryable"), gte(t.attempts, minAttempts))
           : and(eq(t.status, "failed_terminal"), eq(t.lastError, RETRY_CAP_EXCEEDED)),
+        updatedSince ? gte(t.updatedAt, updatedSince) : undefined,
       ),
     )
     .orderBy(t.createdAt, t.id)
@@ -979,18 +985,41 @@ export async function latestPayoutGetForSend(
 }
 
 /**
- * Task 10b (reconcile, payout fees): succeeded `payout.send` operations
- * in `worldId` enqueued at or after `since` (and before `before`, when
- * given), oldest first, at most
- * `limit` — candidates whose PayPal fee may still have to be read and
- * journaled after their source settled.
+ * Task 10b (reconcile, payout fees; fix round 3 I2): succeeded
+ * `payout.send` operations in `worldId` enqueued at or after `since` (and
+ * before `before`, when given) whose batch fee may still need reading or
+ * journaling — newest first, at most `limit`. Excluded in SQL:
+ * - sends whose `paypal_fee:payout:<batchId>` journal already exists;
+ * - sends whose source did not succeed (loan never disbursed, redemption
+ *   not completed, remainder not paid) — a failed payout has no fee, and a
+ *   still-pending one is polled through its source instead.
+ * Sends whose fee was known to be zero (no journal) stay listed until they
+ * age out of the window; checking them is a cheap no-op.
+ *
+ * Reads the domain tables (`loans`, `note_transactions`, `repayments`) and
+ * `journal_entries` here because services stay off `paypal_operations`
+ * (the world-isolation guard) — the query is still world-scoped.
  */
-export async function listRecentSucceededPayoutSends(
+export async function listPayoutSendsAwaitingFee(
   db: Db,
   worldId: string,
-  { since, before, limit = 200 }: { since: Date; before?: Date; limit?: number },
+  { since, before, limit = 100 }: { since: Date; before?: Date; limit?: number },
 ): Promise<string[]> {
   const t = paypalOperations;
+  const sourceSucceeded = sql`(
+    (${t.purpose} = 'loan_disbursement' and exists (
+      select 1 from ${loans} where ${loans.worldId} = ${t.worldId}
+        and ${loans.id}::text = ${t.sourceId} and ${loans.disbursedSimAt} is not null))
+    or (${t.purpose} = 'note_redemption' and exists (
+      select 1 from ${noteTransactions} where ${noteTransactions.worldId} = ${t.worldId}
+        and ${noteTransactions.id}::text = ${t.sourceId} and ${noteTransactions.status} = 'completed'))
+    or (${t.purpose} = 'remainder_payout' and exists (
+      select 1 from ${repayments} where ${repayments.worldId} = ${t.worldId}
+        and ${repayments.id}::text = ${t.sourceId} and ${repayments.remainderStatus} = 'paid'))
+  )`;
+  const feeJournaled = sql`exists (
+    select 1 from ${journalEntries} where ${journalEntries.worldId} = ${t.worldId}
+      and ${journalEntries.idempotencyKey} = 'paypal_fee:payout:' || ${t.paypalId})`;
   const rows = await db
     .select({ id: t.id })
     .from(t)
@@ -1001,9 +1030,11 @@ export async function listRecentSucceededPayoutSends(
         eq(t.status, "succeeded"),
         gte(t.createdAt, since),
         before ? lt(t.createdAt, before) : undefined,
+        sourceSucceeded,
+        sql`not ${feeJournaled}`,
       ),
     )
-    .orderBy(t.createdAt, t.id)
+    .orderBy(desc(t.createdAt), desc(t.id))
     .limit(limit);
   return rows.map((row) => row.id);
 }

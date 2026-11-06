@@ -1,0 +1,3 @@
+ALTER TABLE "paypal_operations" ADD COLUMN "updated_at" timestamp with time zone DEFAULT now() NOT NULL;--> statement-breakpoint
+CREATE INDEX "paypal_operations_world_open_status_idx" ON "paypal_operations" USING btree ("world_id","status") WHERE "paypal_operations"."status" in ('failed_retryable', 'failed_terminal', 'queued', 'in_flight');--> statement-breakpoint
+CREATE INDEX "paypal_operations_world_kind_status_created_idx" ON "paypal_operations" USING btree ("world_id","kind","status","created_at");

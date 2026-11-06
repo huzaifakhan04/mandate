@@ -338,7 +338,7 @@ describe("reconcile cron", () => {
       .update(paypalOperations)
       .set({
         status: "failed_retryable",
-        attempts: 3,
+        attempts: 6,
         lastError: "INTERNAL_SERVER_ERROR",
         nextAttemptAt: sql`now() + interval '1 hour'`,
         response: { error: { name: "INTERNAL_SERVER_ERROR", issue: null, message: null, debugId: null, details: null } },
@@ -355,6 +355,8 @@ describe("reconcile cron", () => {
     expect(report.anomalies).toContainEqual(
       expect.objectContaining({ type: "unclaimed_cancel_failed", worldId, sourceId: borrower.loanId }),
     );
+    // Fix round 3 (M2): listed once — not also as operation_retrying.
+    expect(report.anomalies.filter((a) => a.type === "operation_retrying")).toEqual([]);
   });
 
   it("Task 10b: lists write operations retrying ≥ 5 attempts (operation_retrying) — never reads — and capped ones", async () => {
@@ -404,7 +406,33 @@ describe("reconcile cron", () => {
       .set({ status: "failed_terminal", attempts: 20, lastError: "retry_cap_exceeded" })
       .where(eq(paypalOperations.id, cappedId));
 
+    // Fix round 3 (M2): a capped op last updated more than 7 days ago is no longer listed.
+    const { operationId: staleCappedId } = await enqueueOperation(db, {
+      worldId,
+      rail: "sim",
+      kind: "order.create",
+      purpose: "note_purchase",
+      sourceId: "00000000-0000-4000-8000-0000000000aa",
+      request: buildCreateOrderRequest({
+        amountCents: 1000n,
+        description: "x",
+        customId: "c",
+        returnUrl: "https://e.com/r",
+        cancelUrl: "https://e.com/c",
+      }),
+    });
+    await db
+      .update(paypalOperations)
+      .set({ status: "failed_terminal", attempts: 20, lastError: "retry_cap_exceeded" })
+      .where(eq(paypalOperations.id, staleCappedId));
+    await db.execute(
+      sql`update paypal_operations set updated_at = now() - interval '8 days' where id = ${staleCappedId}`,
+    );
+
     const report = await runReconcile(db, { now: later() });
+    expect(report.anomalies.filter((a) => a.type === "operation_retry_cap_exceeded").map((a) => a.sourceId)).toEqual([
+      cappedId,
+    ]);
     expect(report.anomalies.filter((a) => a.type === "operation_retrying")).toEqual([
       {
         type: "operation_retrying",

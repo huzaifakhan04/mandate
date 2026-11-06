@@ -278,12 +278,27 @@ async function checkoutFailed(
  * outcome of `beginConfirmCheckout`) and returns its approve URL once it
  * succeeds — the `confirm_checkout` retry path Ruling K calls for when
  * `buy_notes`'s own `finalize` couldn't get one.
+ *
+ * Task 10b fix round 3 (I1): a create that ended `failed_terminal` (a
+ * definite rejection, or given up on by the retry cap — Ruling V) can
+ * never produce an order, so the checkout is failed: the handler's
+ * `applyFailure` runs and the result is `CHECKOUT_FAILED` with the
+ * handler's retry next action (the checkout id is the source id — there
+ * is no order id).
  */
 export async function finalizeAwaitingCreate(
   db: Db,
-  createOperationId: string,
+  worldId: string,
+  args: { checkoutPurpose: OperationPurpose; createSourceId: string; createOperationId: string },
 ): Promise<FinalizeConfirmCheckoutResult> {
-  const result = await executeOperation(db, createOperationId, { ignoreBackoff: true });
+  const result = await executeOperation(db, args.createOperationId, { ignoreBackoff: true });
+  if (result.status === "failed_terminal") {
+    const handler = getCaptureHandler(args.checkoutPurpose);
+    if (handler) {
+      const reason = providerReason(errorBody(result));
+      return checkoutFailed(db, worldId, handler, { createSourceId: args.createSourceId, orderId: args.createSourceId }, reason);
+    }
+  }
   if (result.status === "succeeded") {
     const body = successBody(result, "order.create");
     return {
@@ -559,6 +574,31 @@ export async function finalizeConfirmCheckout(
   args: SettleCheckoutArgs,
 ): Promise<FinalizeConfirmCheckoutResult> {
   return settleCheckout(db, worldId, simNow, args);
+}
+
+/**
+ * Task 10b fix round 3 (I1), for the reconcile cron: if the checkout's
+ * `order.create` operation is `failed_terminal` (it will never produce an
+ * order), fails the checkout via its handler's `applyFailure` (idempotent;
+ * credits nothing) and returns `true`; otherwise `false`. Never call inside
+ * a transaction.
+ */
+export async function failCheckoutWithTerminalCreate(
+  db: Db,
+  worldId: string,
+  createOperationId: string,
+): Promise<boolean> {
+  const createOp = await scoped(db, worldId).findOne(paypalOperations, eq(paypalOperations.id, createOperationId));
+  if (createOp?.kind !== "order.create" || createOp.status !== "failed_terminal" || !createOp.purpose || !createOp.sourceId) {
+    return false;
+  }
+  const handler = getCaptureHandler(createOp.purpose);
+  if (!handler) {
+    return false;
+  }
+  const reason = providerReason((createOp.response as OperationError | null)?.error);
+  await handler.applyFailure(db, worldId, { createSourceId: createOp.sourceId, orderId: createOp.sourceId, reason });
+  return true;
 }
 
 /**

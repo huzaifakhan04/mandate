@@ -9,6 +9,8 @@ import { CHART_OF_ACCOUNTS } from "@/server/ledger/accounts";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { runReconcile } from "@/server/jobs/reconcile";
 import { simApprove } from "@/server/rail/simHandler";
+import { listPayoutSendsAwaitingFee } from "@/server/paypal/operations";
+import { knownPayoutFee } from "@/server/services/paypalFees";
 import { dispatchPayoutOutcome, pollPayoutStatus } from "@/server/services/payoutPolling";
 
 import {
@@ -47,6 +49,25 @@ async function feesExpense(db: Db, worldId: string) {
 async function postingsOf(db: Db, entryId: string) {
   return db.select().from(postings).where(eq(postings.entryId, entryId));
 }
+
+describe("knownPayoutFee (fix round 3, M6)", () => {
+  const send = { batchId: "B", batchStatus: "PENDING", item: null, feeCents: null };
+  const get = (batchStatus: string, feeCents: string | null) => ({
+    batchId: "B",
+    batchStatus,
+    items: [{ itemId: "I", transactionStatus: "SUCCESS" }],
+    feeCents,
+  });
+
+  it("a non-zero fee on a SUCCESS item is known", () => {
+    expect(knownPayoutFee(send, get("PROCESSING", "25"))).toEqual({ batchId: "B", feeCents: 25n });
+  });
+
+  it("a 0.00 fee is known only once the batch itself is final (SUCCESS)", () => {
+    expect(knownPayoutFee(send, get("PROCESSING", "0"))).toBeNull();
+    expect(knownPayoutFee(send, get("SUCCESS", "0"))).toEqual({ batchId: "B", feeCents: 0n });
+  });
+});
 
 describe("PayPal fee journaling", () => {
   let db: Db;
@@ -178,6 +199,29 @@ describe("PayPal fee journaling", () => {
       },
     });
     expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:payout:")).toHaveLength(0);
+  });
+
+  it("fix round 3 (I2): the fee scan skips sends whose fee is journaled or whose source failed, newest first", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 100000);
+    const journaled = await borrow(db, worldId, { invoice: false }); // fee journaled with the disbursement
+    const failed = await borrow(db, worldId, { invoice: false, receiver: "fail-borrower@example.com" });
+    expect((await getLoan(db, failed.loanId)).status).toBe("disbursement_failed");
+    const older = await borrow(db, worldId, { invoice: false, receiver: "pending-a@example.com" });
+    await dispatchPayoutOutcome(db, older.sendOpId, { itemStatus: "SUCCESS", source: "webhook" });
+    const newer = await borrow(db, worldId, { invoice: false, receiver: "pending-b@example.com" });
+    await dispatchPayoutOutcome(db, newer.sendOpId, { itemStatus: "SUCCESS", source: "webhook" });
+    // Make the order deterministic: `older` was sent a minute earlier.
+    await db
+      .update(paypalOperations)
+      .set({ createdAt: sql`now() - interval '1 minute'` })
+      .where(eq(paypalOperations.id, older.sendOpId));
+
+    const listed = await listPayoutSendsAwaitingFee(db, worldId, { since: new Date(Date.now() - 3_600_000) });
+    expect(listed).toEqual([newer.sendOpId, older.sendOpId]);
+    expect(listed).not.toContain(journaled.sendOpId);
+    expect(listed).not.toContain(failed.sendOpId);
+    expect(await listPayoutSendsAwaitingFee(db, worldId, { since: new Date(0), limit: 1 })).toEqual([newer.sendOpId]);
   });
 
   it("a note redemption's payout fee is journaled; a failed payout has none", async () => {
