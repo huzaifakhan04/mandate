@@ -6,7 +6,7 @@ import { ownedAgent } from "../auth/ownership";
 import { sessionSecret } from "../auth/session";
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
-import { agents, events, loans, mandates } from "../db/schema";
+import { agents, events, loans, mandates, noteSeries } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type KyaTier } from "../domain/kya";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
@@ -306,7 +306,20 @@ export type RevokeMandateOutcome =
   | { outcome: "no_mandate" }
   | { outcome: "not_found" };
 
-/** Revokes the agent's current mandate (owner only). Existing loans are unaffected. */
+/** The world's single note series (`services/worlds.ts`) — the Ruling N lock. */
+const MANDATE_POOL_A_NAME = "Mandate Pool A";
+
+/**
+ * Revokes the agent's current mandate (owner only). Existing loans are
+ * unaffected.
+ *
+ * Lock order (P2 final review, M3): the note series row first, then the
+ * agent row — Ruling N, the same order every `accept_offer` takes. So a
+ * revoke and a concurrent acceptance serialise: the acceptance either
+ * commits first (the loan stands, as any existing loan does) or runs after
+ * the revoke and is refused `MANDATE_REVOKED`; never a loan accepted
+ * against a mandate revoked mid-check.
+ */
 export async function revokeMandate(
   db: Db,
   params: { principalId: string; agentId: string; now?: Date },
@@ -317,6 +330,7 @@ export async function revokeMandate(
     return { outcome: "not_found" };
   }
   return db.transaction(async (tx) => {
+    await scoped(tx, agent.worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
     const [locked] = await scoped(tx, agent.worldId).forUpdate(
       agents,
       and(eq(agents.id, agent.id), eq(agents.principalId, params.principalId))!,
