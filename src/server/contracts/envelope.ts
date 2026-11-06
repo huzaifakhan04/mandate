@@ -117,6 +117,8 @@ const STATUS_HTTP: Record<string, number> = {
   SIGNATURE_INVALID: 401,
   SIGNATURE_EXPIRED: 401,
   SIGNATURE_REPLAYED: 401,
+  // P2 Task 6 (private worlds): the agent's sandbox world was reset.
+  WORLD_ARCHIVED: 410,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

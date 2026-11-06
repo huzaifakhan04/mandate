@@ -9,7 +9,7 @@ import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { describeError, isRetryableTransactionError } from "../db/errors";
 import { scoped } from "../db/scoped";
-import { idempotencyKeys } from "../db/schema";
+import { agents, idempotencyKeys, worlds } from "../db/schema";
 import { ensureMainWorldOnce } from "../services/worlds";
 import type { Envelope } from "./envelope";
 import { docsUrlForTool, fail, httpStatusForEnvelope } from "./envelope";
@@ -32,6 +32,14 @@ export interface RunToolDeps {
    */
   request?: SignedRequest | null;
   requestId?: string;
+  /**
+   * P2 Task 6, server-internal only (the private-world bot runner): act
+   * as this bot agent without an API key. Only an agent row with
+   * `is_bot = true` is accepted (anything else → 401); HTTP and MCP
+   * routes never set it, and bots have no API keys, so nothing outside
+   * the server can drive a bot.
+   */
+  actingBotId?: string | null;
 }
 
 export interface RunToolResult {
@@ -90,6 +98,24 @@ function respond(envelope: Envelope<unknown>, toolName?: string): RunToolResult 
  */
 function withDocsAnchor(envelope: Envelope<unknown>, toolName: string): Envelope<unknown> {
   return { ...envelope, docs_url: docsUrlForTool(toolName) };
+}
+
+/** P2 Task 6: the bot agent `agentId` as a principal, or `null` if it isn't a bot. */
+async function botPrincipal(db: Db, agentId: string): Promise<AgentPrincipal | null> {
+  if (!/^[0-9a-f-]{36}$/i.test(agentId)) {
+    return null;
+  }
+  const [row] = await db
+    .select({ agentId: agents.id, worldId: agents.worldId, status: agents.status })
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.isBot, true)))
+    .limit(1);
+  return row ?? null;
+}
+
+async function worldIsActive(db: Db, worldId: string): Promise<boolean> {
+  const [row] = await db.select({ status: worlds.status }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  return row?.status === "active";
 }
 
 /** Strips an optional `Bearer ` prefix from an `Authorization` header value. */
@@ -272,7 +298,14 @@ export async function runTool(
   tool: ToolDef | undefined,
   toolName: string,
   rawInput: unknown,
-  { getDb, authorization = null, idempotencyKey = null, request = null, requestId = randomUUID() }: RunToolDeps,
+  {
+    getDb,
+    authorization = null,
+    idempotencyKey = null,
+    request = null,
+    requestId = randomUUID(),
+    actingBotId = null,
+  }: RunToolDeps,
 ): Promise<RunToolResult> {
   if (!tool) {
     return respond(fail("NOT_FOUND", `Unknown tool: ${toolName}`, [toolName]));
@@ -285,17 +318,31 @@ export async function runTool(
     let worldId: string;
 
     if (tool.auth === "agent") {
-      if (!authorization) {
-        return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]), toolName);
-      }
+      if (actingBotId) {
+        agent = await botPrincipal(db, actingBotId);
+        if (!agent) {
+          return respond(fail("UNAUTHORIZED", "Not a bot agent.", ["not_a_bot"]), toolName);
+        }
+      } else {
+        if (!authorization) {
+          return respond(fail("UNAUTHORIZED", "Missing API key.", ["missing_api_key"]), toolName);
+        }
 
-      const presentedKey = extractApiKey(authorization);
-      agent = await verifyApiKey(db, presentedKey);
-      if (!agent) {
-        return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]), toolName);
+        const presentedKey = extractApiKey(authorization);
+        agent = await verifyApiKey(db, presentedKey);
+        if (!agent) {
+          return respond(fail("UNAUTHORIZED", "Invalid API key.", ["invalid_api_key"]), toolName);
+        }
       }
 
       worldId = agent.worldId;
+      // P2 Task 6: a reset private world is archived — its agents stop.
+      if (!(await worldIsActive(db, worldId))) {
+        return respond(
+          fail("WORLD_ARCHIVED", "This agent's sandbox world was reset or archived.", ["world_archived"]),
+          toolName,
+        );
+      }
     } else {
       const mainWorld = await ensureMainWorldOnce(db);
       worldId = mainWorld.worldId;

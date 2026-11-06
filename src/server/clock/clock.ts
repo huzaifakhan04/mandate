@@ -77,3 +77,31 @@ export async function advanceClock(
 
   return getSimNow(db, worldId);
 }
+
+const DAY_MS = 86_400_000;
+
+export interface SimDay {
+  simNow: Date;
+  /** The clock's anchor: simulated day 0 starts here. */
+  anchorSim: Date;
+  /** Whole simulated days since the anchor (P2 Task 6: the bots' day counter). */
+  day: number;
+}
+
+/** A world's simulated now plus its whole-day index since the clock's anchor. */
+export async function getSimDay(db: Db, worldId: string, realNow: Date = new Date()): Promise<SimDay> {
+  const [row] = await db.select().from(clock).where(eq(clock.worldId, worldId));
+  if (!row) {
+    throw new Error(`No clock row found for world ${worldId}`);
+  }
+  const now = simNow(
+    { anchorReal: row.anchorReal, anchorSim: row.anchorSim, speed: Number(row.speed), manualOffsetMs: row.manualOffsetMs },
+    realNow,
+  );
+  return { simNow: now, anchorSim: row.anchorSim, day: simDayIndex(row.anchorSim, now) };
+}
+
+/** Pure: whole simulated days from `anchorSim` to `at` (floored). */
+export function simDayIndex(anchorSim: Date, at: Date): number {
+  return Math.floor((at.getTime() - anchorSim.getTime()) / DAY_MS);
+}

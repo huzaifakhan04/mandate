@@ -30,6 +30,25 @@
 .dash .nav { display: flex; gap: 4px; }
 .dash .nav a { color: var(--muted); padding: 6px 12px; border-radius: 8px; font-weight: 500; }
 .dash .nav a[aria-current="page"] { color: var(--ink); background: var(--surface); }
+.dash .worldswitch { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.dash .worldswitch select { width: auto; max-width: 200px; padding: 5px 8px; font-size: 12px; }
+.dash .world-banner { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border: 1px solid #cfdcfb; background: #f3f6fe; border-radius: 12px; padding: 10px 14px; margin-bottom: 16px; font-size: 13px; }
+.dash .world-banner b { font-weight: 600; }
+.dash .world-banner .grow { flex: 1; min-width: 0; }
+.dash .clock { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.dash .clock form { margin: 0; }
+.dash .botgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+.dash .bot { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 6px; min-width: 0; background: #fff; }
+.dash .bot h3 { margin: 0; font-size: 14px; font-weight: 600; display: flex; justify-content: space-between; gap: 8px; }
+.dash .bot small { color: var(--faint); font-size: 11px; }
+.dash .daylog { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; font-size: 13px; }
+.dash .daylog li { border-left: 3px solid var(--line); padding: 2px 0 2px 10px; min-width: 0; }
+.dash .daylog li b { font-weight: 600; }
+.dash .daylog ul { list-style: none; margin: 4px 0 0; padding: 0; color: var(--muted); display: grid; gap: 2px; }
+.dash .worldlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.dash .worldlist li { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; }
+.dash .worldlist li > div { flex: 1; min-width: 0; }
+.dash .worldlist small { display: block; color: var(--faint); font-size: 12px; }
 .dash .who { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 13px; min-width: 0; }
 .dash .who .id { text-align: right; min-width: 0; }
 .dash .who .id b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
@@ -203,6 +222,7 @@
 @media (max-width: 640px) {
   .dash .top { gap: 12px; padding: 0 16px; }
   .dash .nav { display: none; }
+  .dash .worldswitch select { max-width: 130px; }
   .dash .who .id { display: none; }
   .dash .page { padding: 20px 16px 24px; }
   .dash .head { flex-direction: column; align-items: flex-start; }

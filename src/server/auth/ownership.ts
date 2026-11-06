@@ -1,7 +1,7 @@
 import { and, asc, eq, isNotNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { agents } from "../db/schema";
+import { agents, worlds } from "../db/schema";
 
 /**
  * Owner-route ownership checks (P2, Review Focus 3).
@@ -46,4 +46,20 @@ export async function ownedAgents(db: Db, principalId: string): Promise<OwnedAge
     .where(and(eq(agents.principalId, principalId), isNotNull(agents.claimedAt)))
     .orderBy(asc(agents.createdAt), asc(agents.id));
   return rows;
+}
+
+/**
+ * P2 Task 6: the active world whose agent holds the claim token hash
+ * `tokenHash` (claim links work the same in private worlds), or `null`.
+ * The hash is globally unique (`agents_claim_token_hash_idx`); callers
+ * still scope the claim itself to the returned world.
+ */
+export async function worldIdForClaimTokenHash(db: Db, tokenHash: string): Promise<string | null> {
+  const [row] = await db
+    .select({ worldId: agents.worldId })
+    .from(agents)
+    .innerJoin(worlds, eq(worlds.id, agents.worldId))
+    .where(and(eq(agents.claimTokenHash, tokenHash), eq(worlds.status, "active")))
+    .limit(1);
+  return row?.worldId ?? null;
 }

@@ -3,7 +3,7 @@ import { randomUUID } from "crypto";
 import { and, desc, eq, gte, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { journalEntries, loans, noteTransactions, paypalOperations, repayments } from "../db/schema";
+import { journalEntries, loans, noteTransactions, paypalOperations, repayments, worlds } from "../db/schema";
 import { simHandle } from "../rail/simHandler";
 import { classifyFailureStatus, computeNextAttemptAt } from "./classify";
 import { PayPalConfigError } from "./config";
@@ -107,6 +107,27 @@ function finalizeRequest(
   return kind === "payout.send" ? withSenderBatchId(request, operationId) : request;
 }
 
+/** Thrown when something tries to queue a PayPal-rail operation in a private (sim-only) world. */
+export class PrivateWorldRailError extends Error {
+  constructor(worldId: string) {
+    super(`World ${worldId} is a private world: it runs on the sim rail only, never PayPal`);
+    this.name = "PrivateWorldRailError";
+  }
+}
+
+/**
+ * P2 Task 6 (Review Focus 5): a private world never creates a `rail =
+ * 'paypal'` operation — every operation row (money-moving or read) is
+ * inserted here, so this is the one choke point. Only PayPal-rail rows
+ * pay for the lookup.
+ */
+async function assertWorldMayUsePaypal(db: Db, worldId: string): Promise<void> {
+  const [world] = await db.select({ kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  if (world?.kind === "private") {
+    throw new PrivateWorldRailError(worldId);
+  }
+}
+
 async function insertQueuedRow(
   db: Db,
   values: {
@@ -121,6 +142,9 @@ async function insertQueuedRow(
   },
 ): Promise<OperationRow | undefined> {
   assertRequestMatchesKind(values.kind, values.request);
+  if (values.rail === "paypal") {
+    await assertWorldMayUsePaypal(db, values.worldId);
+  }
   const request = finalizeRequest(values.kind, values.request, values.id);
   const [inserted] = await db
     .insert(paypalOperations)

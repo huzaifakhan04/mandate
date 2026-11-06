@@ -2,6 +2,7 @@ import { createHash, createHmac, randomBytes } from "crypto";
 
 import { and, eq, isNull } from "drizzle-orm";
 
+import { worldIdForClaimTokenHash } from "../auth/ownership";
 import { sessionSecret } from "../auth/session";
 import type { Db } from "../db/client";
 import { agents, principals } from "../db/schema";
@@ -143,12 +144,21 @@ function classify(agent: AgentRow | undefined, now: Date): ClaimLookup {
   return { state: "claimable", agent: summary(agent), expiresAt: agent.claimExpiresAt };
 }
 
+/**
+ * The world a claim token's agent lives in — the main world, or (P2 Task
+ * 6) a private world; an unknown token falls back to main, where it then
+ * resolves to "invalid".
+ */
+async function claimWorldId(db: Db, tokenHash: string): Promise<string> {
+  return (await worldIdForClaimTokenHash(db, tokenHash)) ?? (await ensureMainWorldOnce(db)).worldId;
+}
+
 /** What a claim link points at right now (read-only; for the claim page). */
 export async function lookupClaim(db: Db, token: string, now: Date = new Date()): Promise<ClaimLookup> {
   if (!TOKEN_RE.test(token)) {
     return { state: "invalid" };
   }
-  const { worldId } = await ensureMainWorldOnce(db);
+  const worldId = await claimWorldId(db, hashClaimToken(token));
   const agent = await scoped(db, worldId).findOne(agents, eq(agents.claimTokenHash, hashClaimToken(token)));
   return classify(agent, now);
 }
@@ -184,8 +194,8 @@ export async function claimAgent(
   if (!principal || !principal.verifiedAt) {
     return { outcome: "principal_unverified" };
   }
-  const { worldId } = await ensureMainWorldOnce(db);
   const tokenHash = hashClaimToken(token);
+  const worldId = await claimWorldId(db, tokenHash);
 
   return db.transaction(async (tx) => {
     const [agent] = await scoped(tx, worldId).forUpdate(agents, eq(agents.claimTokenHash, tokenHash));

@@ -7,6 +7,7 @@ import type { Db } from "../db/client";
 import { agentKeys, agents, apiKeys, events } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { registerAgent } from "./agents";
+import { ownedPrivateWorld } from "./privateWorldAccess";
 import { ensureMainWorldOnce } from "./worlds";
 
 /**
@@ -99,17 +100,42 @@ export interface OwnerRegistered {
 }
 
 /**
- * Creates an agent in the main world already claimed by `principalId`:
- * status `active`, tier 0 until the owner signs a mandate. No claim
- * token is left on the row — there is nobody else to hand it to.
+ * Creates an agent already claimed by `principalId`: status `active`,
+ * tier 0 until the owner signs a mandate. No claim token is left on the
+ * row — there is nobody else to hand it to. The agent (and its key) is
+ * bound to the main world, or (P2 Task 6) to `options.worldId` when that
+ * is one of the principal's own active private worlds — any other world
+ * → `world_not_found`.
  */
 export async function registerOwnedAgent(
   db: Db,
   principalId: string,
   input: OwnerRegisterInput,
+  now?: Date,
+): Promise<OwnerRegistered>;
+export async function registerOwnedAgent(
+  db: Db,
+  principalId: string,
+  input: OwnerRegisterInput,
+  now: Date,
+  options: { worldId?: string | null },
+): Promise<OwnerRegistered | { outcome: "world_not_found" }>;
+export async function registerOwnedAgent(
+  db: Db,
+  principalId: string,
+  input: OwnerRegisterInput,
   now: Date = new Date(),
-): Promise<OwnerRegistered> {
-  const { worldId } = await ensureMainWorldOnce(db);
+  options: { worldId?: string | null } = {},
+): Promise<OwnerRegistered | { outcome: "world_not_found" }> {
+  const { worldId: mainWorldId } = await ensureMainWorldOnce(db);
+  let worldId = mainWorldId;
+  if (options.worldId && options.worldId !== mainWorldId) {
+    const world = await ownedPrivateWorld(db, principalId, options.worldId);
+    if (!world) {
+      return { outcome: "world_not_found" };
+    }
+    worldId = world.id;
+  }
   return db.transaction(async (tx) => {
     const registered = await registerAgent(
       tx,

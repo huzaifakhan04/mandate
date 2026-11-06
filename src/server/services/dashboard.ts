@@ -17,6 +17,7 @@ import {
   notePositions,
   offers,
   repaymentLinks,
+  worlds,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type TierResult } from "../domain/kya";
@@ -212,9 +213,43 @@ async function cardFor(db: Db, agent: OwnedAgent, now: Date): Promise<{ card: Ag
   };
 }
 
-/** The principal's agents as cards, plus the summary strip. */
-export async function ownerDashboard(db: Db, principalId: string, now: Date = new Date()): Promise<OwnerDashboard> {
+/**
+ * P2 Task 6 (Review Focus 5): the agents one dashboard view shows —
+ * those in `worldId` when a private world is selected, otherwise those
+ * in non-private worlds only (the main view never shows a private
+ * world's agents).
+ */
+async function agentsInView(db: Db, principalId: string, worldId: string | undefined): Promise<OwnedAgent[]> {
   const owned = await ownedAgents(db, principalId);
+  if (worldId) {
+    return owned.filter((agent) => agent.worldId === worldId);
+  }
+  const worldIds = [...new Set(owned.map((agent) => agent.worldId))];
+  if (worldIds.length === 0) {
+    return [];
+  }
+  const privateIds = new Set(
+    (
+      await db
+        .select({ id: worlds.id })
+        .from(worlds)
+        .where(and(inArray(worlds.id, worldIds), eq(worlds.kind, "private")))
+    ).map((row) => row.id),
+  );
+  return owned.filter((agent) => !privateIds.has(agent.worldId));
+}
+
+/**
+ * The principal's agents as cards, plus the summary strip — for one
+ * private world (`options.worldId`) or, by default, the main view.
+ */
+export async function ownerDashboard(
+  db: Db,
+  principalId: string,
+  now: Date = new Date(),
+  options: { worldId?: string } = {},
+): Promise<OwnerDashboard> {
+  const owned = await agentsInView(db, principalId, options.worldId);
   const results = [];
   for (const agent of owned) {
     results.push(await cardFor(db, agent, now));

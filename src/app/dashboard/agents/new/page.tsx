@@ -3,6 +3,8 @@ import Link from "next/link";
 import { Suspense } from "react";
 
 import { requirePagePrincipal } from "@/server/auth/guard";
+import { getDb } from "@/server/db/client";
+import { listOwnedPrivateWorlds } from "@/server/services/privateWorldAccess";
 
 import { DashFrame, LEGAL, LoadingFrame, TopBar } from "../../_components/chrome";
 import "../../dashboard.css";
@@ -33,6 +35,10 @@ function one(value: string | string[] | undefined): string | undefined {
 async function RegisterForm({ searchParams }: { searchParams: SearchParams }) {
   const session = await requirePagePrincipal("/dashboard/agents/new");
   const params = await searchParams;
+  // P2 Task 6: path B can bind the agent (and its key) to one of my private sandbox worlds.
+  const privateWorlds = await listOwnedPrivateWorlds(await getDb(), session.principalId);
+  const requestedWorld = one(params.world);
+  const selectedWorld = privateWorlds.some((world) => world.id === requestedWorld) ? requestedWorld : "main";
   const errors = new Set((one(params.fields) ?? "").split(",").filter(Boolean));
   const failed = one(params.error);
   const field = (name: string) => ({
@@ -139,6 +145,22 @@ async function RegisterForm({ searchParams }: { searchParams: SearchParams }) {
               </span>
               {err("payout")}
             </div>
+            {privateWorlds.length > 0 ? (
+              <div className="field">
+                <label htmlFor="r-world">World</label>
+                <select className="input" id="r-world" name="world" defaultValue={selectedWorld} aria-describedby="hint-world">
+                  <option value="main">Main world (PayPal sandbox)</option>
+                  {privateWorlds.map((world) => (
+                    <option key={world.id} value={world.id}>
+                      {world.name} · private sandbox (simulated)
+                    </option>
+                  ))}
+                </select>
+                <span className="hint" id="hint-world">
+                  The agent and its API key belong to this world. Sandbox worlds use simulated money only.
+                </span>
+              </div>
+            ) : null}
             <button type="submit" className="btn primary block">
               Register agent
             </button>

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
@@ -10,6 +10,12 @@ export interface CreateWorldInput {
   name: string;
   ownerPrincipalId: string | null;
   railMode: "paypal" | "sim" | "mixed";
+  /** P2 Task 6: `private` worlds are sim-only sandboxes (default `main`). */
+  kind?: "main" | "private";
+  /** P2 Task 6: the system principal owning a private world's borrower bots. */
+  botPrincipalId?: string | null;
+  /** P2 Task 6: the bots' RNG seed (defaults to the world id). */
+  botSeed?: string | null;
 }
 
 /**
@@ -127,7 +133,9 @@ export async function railForWorld(db: Db, worldId: string): Promise<"paypal" | 
   if (!world) {
     throw new Error(`Expected world ${worldId} to exist`);
   }
-  return world.railMode === "sim" ? "sim" : "paypal";
+  // P2 Task 6: a private world is sim-only whatever its rail_mode says
+  // (the row's CHECK constraint enforces it too).
+  return world.railMode === "sim" || world.kind === "private" ? "sim" : "paypal";
 }
 
 /**
@@ -139,6 +147,16 @@ export async function listActiveWorldIds(db: Db): Promise<string[]> {
     .select({ id: worlds.id })
     .from(worlds)
     .where(eq(worlds.status, "active"))
+    .orderBy(worlds.createdAt, worlds.id);
+  return rows.map((row) => row.id);
+}
+
+/** P2 Task 6: every active private world's id, oldest first (the tick runs their bots). */
+export async function listActivePrivateWorldIds(db: Db): Promise<string[]> {
+  const rows = await db
+    .select({ id: worlds.id })
+    .from(worlds)
+    .where(and(eq(worlds.status, "active"), eq(worlds.kind, "private")))
     .orderBy(worlds.createdAt, worlds.id);
   return rows.map((row) => row.id);
 }
@@ -263,38 +281,51 @@ export async function createWorld(
   db: Db,
   input: CreateWorldInput,
 ): Promise<{ worldId: string; slug: string }> {
-  const base = slugify(input.name) || "world";
+  return db.transaction((tx) => createWorldInTx(tx, input));
+}
+
+/**
+ * `createWorld`'s body, for a caller that already holds a transaction
+ * (P2 Task 6: a private world is created under the owner's row lock).
+ */
+export async function createWorldInTx(
+  tx: Db,
+  input: CreateWorldInput,
+): Promise<{ worldId: string; slug: string }> {
+  const base = (slugify(input.name) || "world").slice(0, 40);
   const suffix = Math.random().toString(36).slice(2, 8);
   const slug = `${base}-${suffix}`;
   const now = new Date();
 
-  return db.transaction(async (tx) => {
-    const [world] = await tx
-      .insert(worlds)
-      .values({
-        slug,
-        name: input.name,
-        ownerPrincipalId: input.ownerPrincipalId,
-        railMode: input.railMode,
-      })
-      .returning();
+  const [world] = await tx
+    .insert(worlds)
+    .values({
+      slug,
+      name: input.name,
+      ownerPrincipalId: input.ownerPrincipalId,
+      railMode: input.railMode,
+      kind: input.kind ?? "main",
+      botPrincipalId: input.botPrincipalId ?? null,
+      botSeed: input.botSeed ?? null,
+      lastBotSimDay: input.kind === "private" ? 0 : null,
+    })
+    .returning();
 
-    if (!world) {
-      throw new Error("Expected world to be inserted");
-    }
+  if (!world) {
+    throw new Error("Expected world to be inserted");
+  }
 
-    await tx.insert(clock).values({
-      worldId: world.id,
-      anchorReal: now,
-      anchorSim: now,
-      speed: "0",
-      manualOffsetMs: 0n,
-    });
-
-    await ensureChartOfAccounts(tx, world.id);
-    await ensureNoteSeries(tx, world.id);
-    await ensureBankSeedCapital(tx, world.id);
-
-    return { worldId: world.id, slug: world.slug };
+  await tx.insert(clock).values({
+    worldId: world.id,
+    anchorReal: now,
+    anchorSim: now,
+    speed: "0",
+    manualOffsetMs: 0n,
   });
+
+  await ensureChartOfAccounts(tx, world.id);
+  await ensureNoteSeries(tx, world.id);
+  await ensureBankSeedCapital(tx, world.id);
+
+  return { worldId: world.id, slug: world.slug };
 }

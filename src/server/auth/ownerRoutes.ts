@@ -18,7 +18,8 @@ import { isSameOriginPost } from "./routes";
  *
  * - `POST /dashboard/agents` — path B: register an agent already claimed
  *   by the signed-in principal (form: `name`, `operator`, `model`,
- *   `payout` = PayPal email or payer ID). 303 → the one-time key page.
+ *   `payout` = PayPal email or payer ID, optional `world` = one of their
+ *   private worlds, P2 Task 6). 303 → the one-time key page.
  * - `POST /dashboard/agents/<id>/freeze` and `/unfreeze`.
  * - `POST /dashboard/agents/<id>/key/revoke` — revoke the Ed25519 signing key.
  * - `POST /dashboard/agents/<id>/api-key/rotate` — new API key, old ones
@@ -35,18 +36,18 @@ import { isSameOriginPost } from "./routes";
 
 const MAX_BODY_BYTES = 16 * 1024;
 
-function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
+export function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
   });
 }
 
-function wantsHtml(request: Request): boolean {
+export function wantsHtml(request: Request): boolean {
   return (request.headers.get("accept") ?? "").includes("text/html");
 }
 
-function seeOther(request: Request, path: string, cookies: string[] = []): Response {
+export function seeOther(request: Request, path: string, cookies: string[] = []): Response {
   const headers = new Headers({ location: new URL(path, request.url).toString(), "cache-control": "no-store" });
   for (const cookie of cookies) {
     headers.append("set-cookie", cookie);
@@ -59,7 +60,7 @@ function plain(status: number, text: string): Response {
 }
 
 /** An error: JSON, or for a browser form a 303 to `back` with `?<param>=<code>` (401 → sign in; 403/404 → plain text). */
-function failure(
+export function failure(
   request: Request,
   status: number,
   code: string,
@@ -83,7 +84,7 @@ function agentBack(agentId: string, query: Record<string, string>) {
 }
 
 /** Same origin, then a session, then the body size. The principal id, or the refusal. */
-function gate(
+export function gate(
   request: Request,
   back: { path: string; returnTo: string } | null,
 ): { principalId: string } | Response {
@@ -100,7 +101,7 @@ function gate(
   return { principalId: session.principalId };
 }
 
-async function readFields(request: Request): Promise<Record<string, unknown> | null> {
+export async function readFields(request: Request): Promise<Record<string, unknown> | null> {
   const type = request.headers.get("content-type") ?? "";
   try {
     if (type.includes("application/json")) {
@@ -152,18 +153,28 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
           query.set(name, value);
         }
       }
+      if (typeof fields?.world === "string" && isUuid(fields.world)) {
+        query.set("world", fields.world);
+      }
       return wantsHtml(request)
         ? seeOther(request, `/dashboard/agents/new?${query.toString()}`)
         : json(400, { error: "invalid_agent", message: "Some fields are missing or invalid.", fields: parsed.errors });
     }
+    // P2 Task 6: `world` = the main world (empty / "main") or one of the
+    // principal's active private worlds; anything else → 404.
+    const worldField = typeof fields?.world === "string" ? fields.world.trim() : "";
+    const worldId = worldField && worldField !== "main" ? worldField : null;
     try {
-      const result = await registerOwnedAgent(await getDb(), gated.principalId, parsed.input);
+      const result = await registerOwnedAgent(await getDb(), gated.principalId, parsed.input, new Date(), { worldId });
+      if (result.outcome === "world_not_found") {
+        return failure(request, 404, "world_not_found", "World not found.", null);
+      }
       const cookie = revealCookieHeader(
         sealReveal({ principalId: gated.principalId, agentId: result.agentId, apiKey: result.apiKey, kind: "registered" }),
       );
       return wantsHtml(request)
         ? seeOther(request, apiKeyPagePath(result.agentId), [cookie])
-        : json(201, { agent_id: result.agentId, api_key: result.apiKey, status: "ACTIVE", tier: 0 });
+        : json(201, { agent_id: result.agentId, api_key: result.apiKey, world_id: result.worldId, status: "ACTIVE", tier: 0 });
     } catch (err) {
       console.error(`[owner] register failed: ${err instanceof Error ? err.name : "unknown error"}`);
       return failure(request, 500, "error", "Something went wrong registering this agent.", {

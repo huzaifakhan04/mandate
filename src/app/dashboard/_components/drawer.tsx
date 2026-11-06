@@ -644,11 +644,21 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
   );
 }
 
-export function AgentDrawer({ agent, tab, params }: { agent: AgentDetailView; tab: DrawerTab; params: DrawerParams }) {
+export function AgentDrawer({
+  agent,
+  tab,
+  params,
+  closeHref = "/dashboard",
+}: {
+  agent: AgentDetailView;
+  tab: DrawerTab;
+  params: DrawerParams;
+  closeHref?: string;
+}) {
   const pill = STATUS_PILL[agent.display];
   return (
     <aside className="drawer" id="agent-drawer" aria-labelledby="drawer-title" tabIndex={-1} data-testid="agent-drawer">
-      <DrawerKeys closeHref="/dashboard" />
+      <DrawerKeys closeHref={closeHref} />
       <div className="dh">
         <div className={`ag${agent.display === "active" ? "" : " muted"}`} aria-hidden="true">
           {agent.name.slice(0, 1).toUpperCase()}
@@ -662,7 +672,7 @@ export function AgentDrawer({ agent, tab, params }: { agent: AgentDetailView; ta
         <span data-testid="drawer-status">
           <Pill tone={pill.tone}>{pill.label}</Pill>
         </span>
-        <Link className="x" href="/dashboard" aria-label="Close details" scroll={false}>
+        <Link className="x" href={closeHref} aria-label="Close details" scroll={false}>
           ×
         </Link>
       </div>

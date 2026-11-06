@@ -61,10 +61,27 @@ export const worlds = pgTable("worlds", {
   ),
   railMode: text("rail_mode").notNull(),
   status: text("status").notNull().default("active"),
+  /**
+   * P2 Task 6: `main` (the shared world, and P1's test worlds) or
+   * `private` (a principal's sandbox world: sim rail only, seeded bots,
+   * clock controls; never reachable from main-world reads).
+   */
+  kind: text("kind").notNull().default("main"),
+  /** P2 Task 6: the system principal that owns this private world's borrower bots. */
+  botPrincipalId: uuid("bot_principal_id").references(() => principals.id),
+  /** P2 Task 6: the bots' RNG seed (defaults to the world id); same seed → same bot behaviour. */
+  botSeed: text("bot_seed"),
+  /** P2 Task 6: the last simulated day (since the clock's anchor) the bots have acted on. */
+  lastBotSimDay: integer("last_bot_sim_day"),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  index("worlds_owner_kind_idx").on(table.ownerPrincipalId, table.kind, table.status),
+  // Review Focus 5: a private world is sim-only, at the row level too.
+  check("worlds_private_is_sim", sql`${table.kind} <> 'private' OR ${table.railMode} = 'sim'`),
+]);
 
 // -----------------------------------------------------------------------
 // World-scoped tables with no further internal dependencies
@@ -223,6 +240,8 @@ export const agents = pgTable("agents", {
   claimedAt: timestamp("claimed_at", { withTimezone: true }),
   payoutReceiver: text("payout_receiver"),
   payoutReceiverType: text("payout_receiver_type"),
+  /** P2 Task 6: a seeded private-world bot (operator "Mandate bots", model "simulated"); acts only via the bot runner. */
+  isBot: boolean("is_bot").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
