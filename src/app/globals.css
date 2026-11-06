@@ -8,6 +8,19 @@
   --money-in: #0f9d58;
   --risk: #d93025;
   --foreground: var(--ink);
+  /* P2 owner dashboard (docs/design/owner-dashboard-v1.html) */
+  --muted: #5b6472;
+  --faint: #6b7380;
+  --line: #e3e6eb;
+  --accent-soft: #eef2fd;
+  --money-in-soft: #e8f5ee;
+  --risk-soft: #fcedec;
+  --risk-ink: #8e1f17;
+  --money-in-ink: #0a7a44;
+  --amber: #8f5500;
+  --amber-soft: #fff4e0;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(21, 24, 29, 0.04), 0 4px 16px rgba(21, 24, 29, 0.06);
 }
 
 @theme inline {

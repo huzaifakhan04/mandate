@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  dollarsToCentsField,
+  percentToBpsField,
   checkMandate,
   effectivePerLoanCap,
   mandateTermsHash,
@@ -163,5 +165,22 @@ describe("mandateTermsHash", () => {
     expect(mandateTermsHash({ ...record })).toBe(mandateTermsHash(record));
     expect(mandateTermsHash({ ...record, version: 2 })).not.toBe(mandateTermsHash(record));
     expect(mandateTermsHash({ ...record, terms: { ...record.terms, maxFeeBps: 501 } })).not.toBe(mandateTermsHash(record));
+  });
+});
+
+describe("dashboard form fields in dollars and percent (P2 Task 5)", () => {
+  it("converts exactly, without floats", () => {
+    expect(dollarsToCentsField("300")).toBe("30000");
+    expect(dollarsToCentsField("$1,250.5")).toBe("125050");
+    expect(dollarsToCentsField(" 0.07 ")).toBe("7");
+    expect(percentToBpsField("3")).toBe("300");
+    expect(percentToBpsField("2.55%")).toBe("255");
+  });
+  it("absent → undefined; malformed → 'invalid' (fails validation)", () => {
+    expect(dollarsToCentsField(undefined)).toBeUndefined();
+    expect(dollarsToCentsField("  ")).toBeUndefined();
+    expect(dollarsToCentsField("1.234")).toBe("invalid");
+    expect(dollarsToCentsField("-5")).toBe("invalid");
+    expect(percentToBpsField("1e3")).toBe("invalid");
   });
 });

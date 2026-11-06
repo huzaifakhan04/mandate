@@ -25,6 +25,10 @@ export default defineConfig({
       // Tools that create/verify API keys need a pepper; .env.local may not
       // carry one for local runs. Test-only value; never a real secret.
       API_KEY_PEPPER: process.env.API_KEY_PEPPER || "e2e-test-pepper",
+      // P2 Task 5: the owner journey signs in through the env-gated
+      // POST /api/test/session (the main world is on the real PayPal rail,
+      // so a browser can't approve a sandbox order here). 404 in production.
+      MANDATE_TEST_ENDPOINTS: "1",
     },
   },
 });

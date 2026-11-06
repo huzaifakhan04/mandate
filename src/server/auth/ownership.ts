@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, asc, eq, isNotNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { agents } from "../db/schema";
@@ -32,4 +32,18 @@ export async function ownedAgent(db: Db, principalId: string, agentId: string): 
     .where(and(eq(agents.id, agentId), eq(agents.principalId, principalId)))
     .limit(1);
   return agent && agent.claimedAt ? agent : null;
+}
+
+/**
+ * Every agent `principalId` has claimed, across worlds, oldest first. The
+ * dashboard's read model groups them by `worldId` and scopes every later
+ * query to that world.
+ */
+export async function ownedAgents(db: Db, principalId: string): Promise<OwnedAgent[]> {
+  const rows = await db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.principalId, principalId), isNotNull(agents.claimedAt)))
+    .orderBy(asc(agents.createdAt), asc(agents.id));
+  return rows;
 }

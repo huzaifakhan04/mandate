@@ -1,6 +1,7 @@
 import type { Db } from "../db/client";
-import type { MandateSignInput } from "../domain/mandate";
+import { dollarsToCentsField, percentToBpsField, type MandateSignInput } from "../domain/mandate";
 import { clientIp, revokeMandate, signMandate, type MandateRow } from "../services/mandates";
+import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
 import { isUuid } from "./ownership";
 import { isSameOriginPost } from "./routes";
@@ -13,7 +14,9 @@ import { isSameOriginPost } from "./routes";
  *   `max_per_loan_cents`, `max_total_owed_cents`, `max_fee_bps`,
  *   `max_term_days`, `eligible_collateral` (array, repeated form field or
  *   comma-separated), optional `expires_at`, `typed_name` and `agree`.
- *   JSON, urlencoded or multipart.
+ *   JSON, urlencoded or multipart. A form may instead send the limits as
+ *   the dashboard asks for them: `max_per_loan_usd`, `max_total_owed_usd`
+ *   (dollars, up to 2 decimals) and `max_fee_pct` (percent, up to 2 decimals).
  * - `POST /dashboard/agents/<id>/mandate/revoke` — revoke the current one.
  *
  * Session (401) + ownership (anyone else's agent or a malformed id → 404,
@@ -41,8 +44,8 @@ function seeOther(request: Request, path: string): Response {
   });
 }
 
-function agentPage(agentId: string): string {
-  return `/dashboard/agents/${agentId}`;
+function agentPage(agentId: string, query: Record<string, string> = {}): string {
+  return agentDashboardPath(agentId, query);
 }
 
 function failure(
@@ -55,7 +58,7 @@ function failure(
 ): Response {
   if (wantsHtml(request)) {
     if (status === 401) {
-      return seeOther(request, signInPath(agentPage(agentId)));
+      return seeOther(request, signInPath(`/dashboard?agent=${agentId}`));
     }
     if (status === 403 || status === 404) {
       return new Response(status === 403 ? "Forbidden" : "Not found", {
@@ -63,8 +66,8 @@ function failure(
         headers: { "content-type": "text/plain", "cache-control": "no-store" },
       });
     }
-    const fields = Array.isArray(extra.fields) ? `&fields=${encodeURIComponent((extra.fields as string[]).join(","))}` : "";
-    return seeOther(request, `${agentPage(agentId)}?mandate_error=${code}${fields}`);
+    const fields: Record<string, string> = Array.isArray(extra.fields) ? { fields: (extra.fields as string[]).join(",") } : {};
+    return seeOther(request, agentPage(agentId, { mandate_error: code, ...fields }));
   }
   return json(status, { error: code, message, ...extra });
 }
@@ -102,10 +105,11 @@ async function readSignInput(request: Request): Promise<MandateSignInput | null>
       return typeof value === "string" ? value : undefined;
     };
     const collateral = form.getAll("eligible_collateral").filter((v): v is string => typeof v === "string");
+    // The dashboard form asks in dollars and percent; cents/bps win when both are sent.
     return {
-      max_per_loan_cents: field("max_per_loan_cents"),
-      max_total_owed_cents: field("max_total_owed_cents"),
-      max_fee_bps: field("max_fee_bps"),
+      max_per_loan_cents: field("max_per_loan_cents") ?? dollarsToCentsField(field("max_per_loan_usd")),
+      max_total_owed_cents: field("max_total_owed_cents") ?? dollarsToCentsField(field("max_total_owed_usd")),
+      max_fee_bps: field("max_fee_bps") ?? percentToBpsField(field("max_fee_pct")),
       max_term_days: field("max_term_days"),
       eligible_collateral: collateral.length > 1 ? collateral : collateral[0],
       expires_at: field("expires_at"),
@@ -161,7 +165,7 @@ export function createMandateHandlers({ getDb }: { getDb: () => Promise<Db> }) {
           });
         case "signed":
           return wantsHtml(request)
-            ? seeOther(request, `${agentPage(agentId)}?mandate=signed`)
+            ? seeOther(request, agentPage(agentId, { mandate: "signed" }))
             : json(201, {
                 mandate: mandateJson(result.mandate),
                 superseded: result.superseded ? { id: result.superseded.id, version: result.superseded.version } : null,
@@ -187,7 +191,7 @@ export function createMandateHandlers({ getDb }: { getDb: () => Promise<Db> }) {
           return failure(request, agentId, 409, "no_mandate", "This agent has no mandate in force.");
         case "revoked":
           return wantsHtml(request)
-            ? seeOther(request, `${agentPage(agentId)}?mandate=revoked`)
+            ? seeOther(request, agentPage(agentId, { mandate: "revoked" }))
             : json(200, { mandate: mandateJson(result.mandate) });
       }
     } catch (err) {

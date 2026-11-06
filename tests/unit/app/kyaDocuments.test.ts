@@ -187,6 +187,6 @@ describe("/dashboard/agents/[id]/documents", () => {
       agentId,
     );
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe(`${ORIGIN}/dashboard/agents/${agentId}?document=uploaded`);
+    expect(res.headers.get("location")).toBe(`${ORIGIN}/dashboard?agent=${agentId}&document=uploaded#agent-drawer`);
   });
 });

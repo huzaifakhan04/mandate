@@ -152,6 +152,33 @@ export function mandateTermsHash(record: MandateSignedRecord): string {
   return createHash("sha256").update(mandateCanonicalJson(record)).digest("hex");
 }
 
+/**
+ * Pure: a form's dollar amount ("300", "$1,250.50") as a cents string for
+ * `parseMandateSignInput`; `undefined` when absent, `"invalid"` when not
+ * a plain amount with at most two decimals (so the field fails validation).
+ */
+export function dollarsToCentsField(value: string | undefined): string | undefined {
+  return decimalField(value, 2, /^\$/);
+}
+
+/** Pure: a form's percent ("3", "2.5%") as basis points (300, 250), like `dollarsToCentsField`. */
+export function percentToBpsField(value: string | undefined): string | undefined {
+  return decimalField(value, 2, /%$/);
+}
+
+function decimalField(value: string | undefined, decimals: number, strip: RegExp): string | undefined {
+  if (value === undefined || value.trim() === "") {
+    return undefined;
+  }
+  const cleaned = value.trim().replace(strip, "").replace(/,/g, "").trim();
+  const match = /^(\d{1,12})(?:\.(\d{1,2}))?$/.exec(cleaned);
+  if (!match) {
+    return "invalid";
+  }
+  const fraction = (match[2] ?? "").padEnd(decimals, "0");
+  return (BigInt(match[1]!) * 10n ** BigInt(decimals) + BigInt(fraction || "0")).toString();
+}
+
 /** Raw sign-form fields (JSON numbers/strings or form-encoded strings). */
 export interface MandateSignInput {
   max_per_loan_cents?: unknown;

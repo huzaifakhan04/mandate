@@ -121,7 +121,7 @@ describe("/dashboard/agents/[id]/mandate", () => {
       agentId,
     );
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe(`${ORIGIN}/dashboard/agents/${agentId}?mandate=signed`);
+    expect(response.headers.get("location")).toBe(`${ORIGIN}/dashboard?agent=${agentId}&mandate=signed#agent-drawer`);
     expect((await rows())[1]).toMatchObject({ maxPerLoanCents: 15000n, eligibleCollateral: ["invoice_link", "none"] });
   });
 

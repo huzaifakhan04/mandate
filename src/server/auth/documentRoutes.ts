@@ -7,6 +7,7 @@ import {
   uploadKyaDocument,
   type KyaDocumentSummary,
 } from "../services/kyaDocs";
+import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
 import { isSameOriginPost } from "./routes";
 
@@ -47,15 +48,15 @@ function seeOther(request: Request, path: string): Response {
   });
 }
 
-function agentPage(agentId: string): string {
-  return `/dashboard/agents/${agentId}`;
+function agentPage(agentId: string, query: Record<string, string> = {}): string {
+  return agentDashboardPath(agentId, query);
 }
 
 /** An error, as JSON or (browser form) a redirect back to the agent page. */
 function failure(request: Request, agentId: string, status: number, code: string, message: string): Response {
   if (wantsHtml(request)) {
     if (status === 401) {
-      return seeOther(request, signInPath(agentPage(agentId)));
+      return seeOther(request, signInPath(`/dashboard?agent=${agentId}`));
     }
     if (status === 403 || status === 404) {
       return new Response(status === 403 ? "Forbidden" : "Not found", {
@@ -63,13 +64,13 @@ function failure(request: Request, agentId: string, status: number, code: string
         headers: { "content-type": "text/plain", "cache-control": "no-store" },
       });
     }
-    return seeOther(request, `${agentPage(agentId)}?document_error=${code}`);
+    return seeOther(request, agentPage(agentId, { document_error: code }));
   }
   return json(status, { error: code, message });
 }
 
 function success(request: Request, agentId: string, status: number, kind: Kind, body: unknown): Response {
-  return wantsHtml(request) ? seeOther(request, `${agentPage(agentId)}?document=${kind}`) : json(status, body);
+  return wantsHtml(request) ? seeOther(request, agentPage(agentId, { document: kind })) : json(status, body);
 }
 
 function toJson(doc: KyaDocumentSummary) {

@@ -28,6 +28,40 @@ function mcpUrl(base: string): string {
   return `${base}/api/mcp/mcp`;
 }
 
+export type McpClientId = "claudeCode" | "cursor" | "codex";
+
+/** The MCP clients agents.md (and the dashboard's path-B result page) give a config for. */
+export const MCP_CLIENTS: ReadonlyArray<{ id: McpClientId; title: string; where: string | null; lang: string }> = [
+  { id: "claudeCode", title: "Claude Code", where: null, lang: "sh" },
+  { id: "cursor", title: "Cursor", where: "~/.cursor/mcp.json", lang: "json" },
+  { id: "codex", title: "Codex", where: "~/.codex/config.toml", lang: "toml" },
+];
+
+/**
+ * The MCP config for each client, with `key` as the bearer (agents.md
+ * shows the `<key>` placeholder; the dashboard's path-B result page shows
+ * the agent's real key, once).
+ */
+export function mcpConfigSnippets(baseUrl: string, key = "<key>"): Record<McpClientId, string> {
+  const mcp = mcpUrl(normalizeBaseUrl(baseUrl));
+  return {
+    claudeCode: `claude mcp add --transport http mandate ${mcp} --header "Authorization: Bearer ${key}"`,
+    cursor: `{
+  "mcpServers": {
+    "mandate": {
+      "url": "${mcp}",
+      "headers": { "Authorization": "Bearer ${key}" }
+    }
+  }
+}`,
+    codex: `[mcp_servers.mandate]
+url = "${mcp}"
+
+[mcp_servers.mandate.http_headers]
+Authorization = "Bearer ${key}"`,
+  };
+}
+
 /** A JSON Schema fragment, as produced by `z.toJSONSchema` — loosely typed since we only read a few well-known keys. */
 interface JsonSchemaLike {
   type?: string;
@@ -106,8 +140,18 @@ function toolAnchor(name: string): string {
   return name;
 }
 
+const FENCE = "```";
+
+function renderClientSections(snippets: Record<McpClientId, string>): string {
+  return MCP_CLIENTS.map((client) => {
+    const where = client.where ? `Add to \`${client.where}\`:\n\n` : "";
+    return `### ${client.title}\n\n${where}${FENCE}${client.lang}\n${snippets[client.id]}\n${FENCE}\n`;
+  }).join("\n");
+}
+
 function renderConnectSection(base: string): string {
   const mcp = mcpUrl(base);
+  const snippets = mcpConfigSnippets(base);
   return `## Connect
 
 Mandate exposes every tool over three transports that all share the same \`{status, summary, reason_codes, data, next_actions, docs_url}\` envelope and the same tool names:
@@ -118,39 +162,7 @@ Mandate exposes every tool over three transports that all share the same \`{stat
 
 You need no key at all for \`register_agent\` (and \`get_bank_guide\`) — see **Bootstrapping** below. Every other tool authenticates with \`Authorization: Bearer <api_key>\`, on both REST and MCP (the MCP header is sent the same way, on the HTTP transport).
 
-### Claude Code
-
-\`\`\`sh
-claude mcp add --transport http mandate ${mcp} --header "Authorization: Bearer <key>"
-\`\`\`
-
-### Cursor
-
-Add to \`~/.cursor/mcp.json\`:
-
-\`\`\`json
-{
-  "mcpServers": {
-    "mandate": {
-      "url": "${mcp}",
-      "headers": { "Authorization": "Bearer <key>" }
-    }
-  }
-}
-\`\`\`
-
-### Codex
-
-Add to \`~/.codex/config.toml\`:
-
-\`\`\`toml
-[mcp_servers.mandate]
-url = "${mcp}"
-
-[mcp_servers.mandate.http_headers]
-Authorization = "Bearer <key>"
-\`\`\`
-
+${renderClientSections(snippets)}
 ### curl / REST
 
 \`\`\`sh
