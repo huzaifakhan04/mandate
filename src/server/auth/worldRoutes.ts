@@ -1,5 +1,6 @@
 import type { Db } from "../db/client";
 import { advancePrivateWorld, createPrivateWorld, resetPrivateWorld } from "../services/privateWorlds";
+import { STRESS_SCENARIOS, triggerStressScenario } from "../services/stress";
 import { failure, gate, json, readFields, seeOther, wantsHtml } from "./ownerRoutes";
 import { isUuid } from "./ownership";
 
@@ -13,6 +14,9 @@ import { isUuid } from "./ownership";
  *   moves a day at a time and the bots act for each day. 303 back.
  * - `POST /dashboard/worlds/<id>/reset` — archive the world, open a
  *   fresh one with the same name. 303 → the new world.
+ * - `POST /dashboard/worlds/<id>/stress` — P5 Task 4: `scenario` =
+ *   `default_wave` | `note_run` | `rate_spike` (`services/stress.ts`).
+ *   303 back (`?stress=<scenario>`); JSON 200 `{event_id, sim_day, params}`.
  *
  * Every route: same origin (403), a session (401; a browser goes to
  * /verify), then ownership — another principal's world, an archived one,
@@ -119,5 +123,38 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     }
   }
 
-  return { create, advance, reset };
+  async function stress(request: Request, worldId: string): Promise<Response> {
+    if (!isUuid(worldId)) {
+      return failure(request, 404, "not_found", "World not found.", null);
+    }
+    const gated = gate(request, worldBack(worldId, {}));
+    if (gated instanceof Response) {
+      return gated;
+    }
+    const fields = await readFields(request);
+    try {
+      // Ownership first: a foreign world or the main world 404s whatever `scenario` says.
+      const result = await triggerStressScenario(await getDb(), gated.principalId, worldId, fields?.scenario);
+      if (result.outcome === "not_found") {
+        return failure(request, 404, "not_found", "World not found.", null);
+      }
+      if (result.outcome === "invalid") {
+        return failure(
+          request,
+          400,
+          "invalid_scenario",
+          `Choose a scenario: ${STRESS_SCENARIOS.join(", ")}.`,
+          worldBack(worldId, { error: "scenario" }),
+        );
+      }
+      return wantsHtml(request)
+        ? seeOther(request, worldPagePath(worldId, { stress: result.scenario }))
+        : json(200, { ok: true, scenario: result.scenario, event_id: result.eventId, sim_day: result.simDay, params: result.params });
+    } catch (err) {
+      console.error(`[worlds] stress failed: ${errorName(err)}`);
+      return failure(request, 500, "error", "Something went wrong.", worldBack(worldId, { error: "error" }));
+    }
+  }
+
+  return { create, advance, reset, stress };
 }

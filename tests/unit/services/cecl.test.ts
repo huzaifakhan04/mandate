@@ -9,7 +9,7 @@
 import { and, asc, eq, like } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { advanceClock } from "@/server/clock/clock";
+import { advanceClock, getSimDay } from "@/server/clock/clock";
 import type { Db } from "@/server/db/client";
 import { economyState, journalEntries, loanLadderSteps, loans, notePositions, offers, postings, principals } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
@@ -134,6 +134,39 @@ describe("CECL allowance (P5 Task 2)", () => {
     const day3 = await stepEconomy(db, worldId, 3);
     expect(day3.ceclReserveCents).toBe(reserve2);
     expect(await ceclJournals()).toHaveLength(3);
+    await expectInvariants();
+  });
+
+  it("carried M1/M2 (P5 Task 4): a catch-up books CECL on the LAST day it inserts; back-filled days book nothing", async () => {
+    await fundPool(db, worldId, 60000);
+    const first = await borrow("late-catchup@example.com");
+    const reserve = ceclLoanCents({ outstandingPrincipalCents: first.principal, expectedLossBps: first.el, delinquent: false });
+
+    const day4 = await stepEconomy(db, worldId, 4);
+    expect(day4.simDay).toBe(4);
+    expect(day4.ceclReserveCents).toBe(reserve);
+    expect((await ceclJournals()).map((entry) => entry.idempotencyKey)).toEqual([`cecl:${worldId}:4`]);
+    const rows = await db.select().from(economyState).where(eq(economyState.worldId, worldId)).orderBy(asc(economyState.simDay));
+    expect(rows.map((row) => [row.simDay, row.ceclReserveCents])).toEqual([
+      [0, 0n],
+      [1, 0n],
+      [2, 0n],
+      [3, 0n],
+      [4, reserve],
+    ]);
+    // The journal is dated on day 4 of the world's clock.
+    const [journal] = await ceclJournals();
+    const { anchorSim } = await getSimDay(db, worldId);
+    expect(journal!.simAt.getTime()).toBe(anchorSim.getTime() + 4 * DAY_MS);
+
+    // A second loan, then a 3-day catch-up: only day 7 books (the delta for the new loan).
+    const second = await borrow("late-catchup-2@example.com", 10000);
+    const reserve2 = ceclLoanCents({ outstandingPrincipalCents: second.principal, expectedLossBps: second.el, delinquent: false });
+    const day7 = await stepEconomy(db, worldId, 7);
+    expect(day7.ceclReserveCents).toBe(reserve + reserve2);
+    expect((await ceclJournals()).map((entry) => entry.idempotencyKey)).toEqual([`cecl:${worldId}:4`, `cecl:${worldId}:7`]);
+    const later = await db.select().from(economyState).where(eq(economyState.worldId, worldId)).orderBy(asc(economyState.simDay));
+    expect(later.slice(5).map((row) => row.ceclReserveCents)).toEqual([reserve, reserve, reserve + reserve2]);
     await expectInvariants();
   });
 

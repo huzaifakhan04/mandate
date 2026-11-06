@@ -24,10 +24,15 @@ const DAY_MS = 86_400_000;
  * `TREASURY_POLICY_DISABLED=1` turns the gates off for worlds WITHOUT a
  * policy row — set only by the vitest configs, so the pre-P5 suites keep
  * testing what they test (their small pools would otherwise trip the
- * concentration limit). Production never sets it; a world with a row
- * always has its policy enforced.
+ * concentration limit). Production never sets it — and it is ignored
+ * when `NODE_ENV=production` (Ruling P5-A); a world with a row always has
+ * its policy enforced.
  */
 export function treasuryDefaultsDisabled(): boolean {
+  // Ruling P5-A: never in production, whatever the environment says.
+  if (process.env.NODE_ENV === "production") {
+    return false;
+  }
   return process.env.TREASURY_POLICY_DISABLED === "1";
 }
 

@@ -7,12 +7,23 @@
  * Also runs on real Postgres (`test:pg`); the overlapping races are in
  * tests/pg/concurrency.test.ts.
  */
-import { and, asc, eq } from "drizzle-orm";
+import { readFileSync } from "fs";
+import path from "path";
+
+import { and, asc, eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { advanceClock, getSimNow } from "@/server/clock/clock";
 import type { Db } from "@/server/db/client";
-import { economyState, loanHolderLosses, loans, notePositions, noteTransactions, paypalOperations } from "@/server/db/schema";
+import {
+  economyState,
+  loanHolderLosses,
+  loans,
+  notePositions,
+  noteTransactions,
+  paypalOperations,
+  treasuryPolicy,
+} from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { availableLiquidity } from "@/server/domain/liquidity";
 import { REASON_TEXT } from "@/server/domain/reasons";
@@ -22,7 +33,8 @@ import { simApprove } from "@/server/rail/simHandler";
 import { processDue } from "@/server/services/collections";
 import { stepEconomyToNow } from "@/server/services/economy";
 import { applyRedemptionPayoutOutcome, processRedemptionQueue, queuedRedemptionsFor } from "@/server/services/notes";
-import { getTreasuryPolicy, setTreasuryPolicy } from "@/server/services/treasury";
+import { getTreasuryPolicy, setTreasuryPolicy, treasuryDefaultsDisabled } from "@/server/services/treasury";
+import { ensureMainWorld } from "@/server/services/worlds";
 
 import { call, createSimWorld, createTestAgent, fundPool, type Data } from "../../helpers/world";
 
@@ -95,6 +107,39 @@ describe("treasury policy (P5 Task 3)", () => {
     await setTreasuryPolicy(db, worldId, { reserveFloorBps: 2000 });
     expect(await getTreasuryPolicy(db, worldId)).toEqual({ reserveFloorBps: 2000, concentrationBps: 3000, dailyBudgetBps: 4000 });
     await expect(setTreasuryPolicy(db, worldId, { concentrationBps: 10001 })).rejects.toThrow(/0\.\.10000/);
+  });
+
+  it("Ruling P5-A: TREASURY_POLICY_DISABLED is ignored when NODE_ENV=production (the defaults apply)", async () => {
+    vi.stubEnv("TREASURY_POLICY_DISABLED", "1");
+    expect(await getTreasuryPolicy(db, worldId)).toBeNull();
+    vi.stubEnv("NODE_ENV", "production");
+    expect(treasuryDefaultsDisabled()).toBe(false);
+    expect(await getTreasuryPolicy(db, worldId)).toEqual({ reserveFloorBps: 1500, concentrationBps: 3000, dailyBudgetBps: 4000 });
+  });
+
+  it("Ruling P5-A: the main world has its own policy row (budget 100%, concentration 50%, floor 15%), seeded once and never replaced", async () => {
+    const { worldId: mainId } = await ensureMainWorld(db);
+    expect(await getTreasuryPolicy(db, mainId)).toEqual({ reserveFloorBps: 1500, concentrationBps: 5000, dailyBudgetBps: 10000 });
+    await setTreasuryPolicy(db, mainId, { reserveFloorBps: 2000 });
+    await ensureMainWorld(db);
+    expect(await getTreasuryPolicy(db, mainId)).toEqual({ reserveFloorBps: 2000, concentrationBps: 5000, dailyBudgetBps: 10000 });
+    expect(await db.select().from(treasuryPolicy).where(eq(treasuryPolicy.worldId, mainId))).toHaveLength(1);
+    // Other worlds get no row.
+    expect(await db.select().from(treasuryPolicy).where(eq(treasuryPolicy.worldId, worldId))).toHaveLength(0);
+  });
+
+  it("Ruling P5-A: migration 0028 back-fills an existing main world's policy row (and leaves a present one alone)", async () => {
+    const { worldId: mainId } = await ensureMainWorld(db);
+    await db.delete(treasuryPolicy).where(eq(treasuryPolicy.worldId, mainId));
+    const statement = readFileSync(path.resolve(__dirname, "../../../drizzle/0028_p5_stress.sql"), "utf8")
+      .split("--> statement-breakpoint")
+      .find((part) => part.includes("INSERT INTO"))!;
+    await db.execute(sql.raw(statement));
+    expect(await getTreasuryPolicy(db, mainId)).toEqual({ reserveFloorBps: 1500, concentrationBps: 5000, dailyBudgetBps: 10000 });
+    await setTreasuryPolicy(db, mainId, { concentrationBps: 4000 });
+    await db.execute(sql.raw(statement));
+    expect((await getTreasuryPolicy(db, mainId))!.concentrationBps).toBe(4000);
+    expect(await db.select().from(treasuryPolicy).where(eq(treasuryPolicy.worldId, worldId))).toHaveLength(0);
   });
 
   // -------------------------------------------------------------- loan gates

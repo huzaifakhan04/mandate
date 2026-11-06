@@ -96,6 +96,7 @@ export const treasuryOfficerInputSchema = z.object({
   loansReceivableCents: cents,
   openLoans: int.nonnegative(),
   notesPayableCents: cents,
+  /** The CECL loss allowance, gross of note-holder loss sharing. */
   allowanceCents: cents,
   dailyBudgetCents: cents.nullable(),
   budgetUsedCents: cents,

@@ -127,7 +127,7 @@ export function treasuryOfficerTemplate(input: TreasuryOfficerInput): TreasuryOf
     input.dailyBudgetCents === null
       ? `No lending budget set yet today; ${dollars(input.budgetUsedCents)} lent.`
       : `Lending budget ${dollars(input.budgetUsedCents)} of ${dollars(input.dailyBudgetCents)} used today.`,
-    `Loss allowance ${dollars(input.allowanceCents)}.`,
+    `Loss allowance ${dollars(input.allowanceCents)} (gross of note-holder loss sharing).`,
   ];
   const risks: string[] = [];
   if (input.queuedRedemptions > 0) {

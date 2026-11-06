@@ -73,6 +73,13 @@ export const worlds = pgTable("worlds", {
   botSeed: text("bot_seed"),
   /** P2 Task 6: the last simulated day (since the clock's anchor) the bots have acted on. */
   lastBotSimDay: integer("last_bot_sim_day"),
+  /**
+   * P5 Task 4: which bot generation the world was created with — 1 (P2:
+   * 2 lenders + 2 borrowers, random) or 2 (P5 bots v2: 4 lenders that react
+   * to the real rate, 6 borrowers with seeded good / late / defaulter
+   * archetypes). Existing worlds keep 1; new private worlds get 2.
+   */
+  botVersion: integer("bot_version").notNull().default(1),
   archivedAt: timestamp("archived_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()

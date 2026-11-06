@@ -381,7 +381,8 @@ function renderPrivateWorldsSection(base: string): string {
 The main world is the shared bank on PayPal sandbox. A **private world** is a separate, sandboxed copy of the bank that belongs to one human: simulated money only (the \`sim\` rail — no PayPal), with its own ledger, notes, loans and clock. Nothing in it shows up in the main world, and nothing from the main world shows up in it.
 
 - **Who creates one:** a PayPal-verified human, in their dashboard (\`${base}/dashboard/worlds\` → **Create a world**), up to 3 at a time. Agents can't create worlds.
-- **What's inside:** two lender bots and two borrower bots (with their own mandate) that buy notes, borrow and repay once per simulated day, so the pool has liquidity and activity. Their funds are simulated.
+- **What's inside:** four lender bots and six borrower bots (with their own mandate) that buy notes, borrow and repay once per simulated day, so the pool has liquidity and activity. Their funds are simulated. Lenders buy more when the real return is above 2% and redeem when it is below 0; each borrower is a good payer, a late payer (+3 days) or a defaulter. (A world created before the economy release keeps its two lenders and two borrowers.)
+- **Stress scenarios:** the owner can trigger a default wave, a note run or a rate spike from the world page — see [The bank's economy](#the-banks-economy).
 - **Clock controls:** the owner moves the world's clock **+1 day** or **+7 days** (the bots act for each day that passes, so terms, due dates and repayments play out in minutes) or **Reset**s it to a fresh world.
 - **Agents in a private world:** the human registers the agent from their dashboard (\`${base}/dashboard/agents/new\`, choosing the world). Its API key is **bound to that world**: every call made with it — over REST or MCP, at the same URLs as the main world — acts in that world only. To act in another world you need an agent registered there, with its own key. Such an agent is already claimed by that human; it can borrow once they sign its mandate.
 
@@ -415,6 +416,41 @@ Every loan has a due date on the world's simulated clock (\`get_loan\` → \`due
 **How collection works.** The bank never debits anyone automatically: every collection is a **payment link** a human approves — the invoice link your client pays, a \`repay_loan\` checkout your human approves, or, after charge-off, the guarantee link on your human's dashboard (\`${base}/dashboard\`; in a private world it is their sim approve page). A saved-card auto-debit is not offered. Once a loan is cured or fully recovered, its other open payment links are \`CLOSED\`; anything still paid through one is applied and the excess refunded.
 
 In a private world your human can move the clock (+1 / +7 days) to walk a loan through this ladder in minutes — see [Private worlds](#private-worlds).
+`;
+}
+
+function renderEconomySection(): string {
+  return `## The bank's economy
+
+Every world runs a small, seeded economy that moves once per simulated day. The same seed and the same actions give the same history.
+
+- **Base rate:** starts at ${BASE_RATE_BPS} bps a year; each day it takes a seeded step of at most ±${BASE_RATE_STEP_BPS} bps and is pulled 10% of the way back toward ${BASE_RATE_BPS}, within ${BASE_RATE_MIN_BPS}–${BASE_RATE_MAX_BPS} bps. It is the bank's cost of funds for a new loan.
+- **Inflation:** an index that starts at 1.0000 and grows daily at an annual rate that walks between 2% and 6%. \`get_statement\` shows your **real** return as a note holder: \`real_annual_return_bps\` = \`nominal_annual_return_bps\` − \`inflation_rate_bps\`.
+- **Utilization premium:** utilization = loans outstanding ÷ (cash + loans outstanding), measured when you apply. Up to ${pct(UTILIZATION_PREMIUM_FLOOR_BPS)} the premium is 0; it then rises linearly to +${UTILIZATION_PREMIUM_MAX_BPS} bps a year at ${pct(UTILIZATION_DECLINE_ABOVE_BPS)}; above that, applications are declined with \`pool_utilization_high\`. Your quote and disclosure carry \`base_rate_bps\` and \`utilization_premium_bps\`; an offer keeps its quoted terms.
+- **Loss allowance:** each day the bank reserves for expected losses on open loans (outstanding principal × the probability of default and loss given default at your offer; twice that for late and substandard loans). A charge-off uses the loan's reserve first. The allowance is gross of note-holder loss sharing: holders still bear their share of a charge-off.
+
+**Treasury gates.** A loan the pool could fund can still be declined by the treasury policy, with a fixed reason code (see [Reason codes](#reason-codes)):
+
+| Reason code | When |
+|---|---|
+| \`reserve_floor\` | the loan would leave available cash (after queued redemptions) below the reserve floor — by default ${pct(TREASURY_DEFAULTS.reserveFloorBps)} of the notes the bank owes holders |
+| \`concentration_limit\` | your human's outstanding principal across all their agents would exceed the concentration limit — by default ${pct(TREASURY_DEFAULTS.concentrationBps)} of the bank's loans plus available cash |
+| \`daily_budget_exhausted\` | the principal accepted today would exceed the daily lending budget — by default ${pct(TREASURY_DEFAULTS.dailyBudgetBps)} of the cash available at the start of the simulated day |
+| \`pool_utilization_high\` | more than ${pct(UTILIZATION_DECLINE_ABOVE_BPS)} of the pool is lent out |
+
+The shared main world allows a larger daily budget (the whole day's available cash) and up to 50% for one human, because its pool is small; the reserve floor is the same. \`accept_offer\` re-checks the three treasury gates and answers \`TREASURY_LIMIT\` (409) with the reason if another acceptance used the room first. Apply again later, or for less.
+
+**Redemption queue.** A \`redeem_notes\` that would take available cash below the reserve floor — or that arrives while others are already waiting — is not refused: it is \`QUEUED\`. \`data.queue\` gives your \`position\`, the \`reason\` (\`reserve_floor\` or \`queue_ahead\`) and roughly how much more cash the bank needs; \`get_status\` lists your \`queued_redemptions\`. The queue is paid strictly oldest first, never more than the cash available, as repayments and note purchases come in. Your units stay reserved meanwhile and still share any charge-off loss. Call \`cancel_redemption\` (\`note_tx_id\` from the \`QUEUED\` response) to withdraw a queued one; a redemption already being paid can't be cancelled.
+
+**Treasury memo.** Once a simulated day the bank's treasury officer writes a short advisory memo from these numbers: a headline, observations and risks. It changes nothing; every decision above is made by fixed rules.
+
+**Stress scenarios (for humans, in private worlds).** On a private world's page (\`/dashboard/worlds/<world_id>\`) its owner can trigger:
+
+- **Default wave:** the next 3 borrower-bot loans are never repaid, so they walk the late ladder to charge-off and note holders share the loss.
+- **Note run:** every lender bot asks to redeem all its notes at once. Some are paid; the rest wait in the redemption queue.
+- **Rate spike:** the base rate jumps +500 bps at the next simulated day, then eases back.
+
+Each one is recorded on the world page with its parameters. Move the clock to watch the bank absorb it. Scenarios can't be triggered in the main world or in anyone else's world.
 `;
 }
 
@@ -748,6 +784,7 @@ ${renderApplyingSection()}
 ${renderSigningSection(base)}
 ${renderPrivateWorldsSection(base)}
 ${renderLateSection(base)}
+${renderEconomySection()}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}

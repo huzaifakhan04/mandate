@@ -2,9 +2,10 @@ import { eq, lte } from "drizzle-orm";
 
 import { getSimDay } from "../clock/clock";
 import type { Db } from "../db/client";
-import { economyState, worlds } from "../db/schema";
+import { economyState, events, worlds } from "../db/schema";
 import { scoped } from "../db/scoped";
 import {
+  BASE_RATE_MAX_BPS,
   ECONOMY_DEFAULTS,
   reserveRatioBps,
   stepRates,
@@ -14,7 +15,7 @@ import {
 } from "../domain/economy";
 import { availableLiquidity } from "../domain/liquidity";
 import { getCodeBalance } from "../ledger/trialBalance";
-import { bookCecl } from "./cecl";
+import { allowanceBalance, bookCecl } from "./cecl";
 import { lockPoolSeries } from "./collections";
 
 /**
@@ -38,9 +39,16 @@ import { lockPoolSeries } from "./collections";
  *
  * P5 Task 2: each day's row is inserted in a transaction under the note
  * series lock together with that day's CECL allowance booking
- * (`services/cecl.ts`); `cecl_reserve_cents` is the target booked. A
- * catch-up books the whole delta on its first new day (the loans are as
- * they are now) and nothing on the rest.
+ * (`services/cecl.ts`); `cecl_reserve_cents` is the target booked.
+ *
+ * P5 Task 4 (carried M1/M2): a catch-up books CECL on the LAST day it
+ * inserts (the day the loans are actually as measured, so the journal's
+ * sim date is right); the back-filled days before it book nothing and
+ * record the allowance as it stood. A `rate_spike` stress scenario
+ * (`services/stress.ts`) adds its bump to the base rate of the day it
+ * names (the next economy step after it was triggered), clamped to the
+ * walk's ceiling; the walk's mean reversion then pulls it back. That
+ * day's row carries `scenario = 'rate_spike'`.
  */
 
 type EconomyRow = typeof economyState.$inferSelect;
@@ -131,9 +139,15 @@ export async function stepEconomy(db: Db, worldId: string, simDay: number): Prom
   );
 
   let day = previous ? previous.simDay + 1 : 0;
+  // Carried M1/M2: the last day this call inserts books the CECL delta.
+  const lastDay = Math.min(simDay, day + MAX_ECONOMY_CATCH_UP_DAYS - 1);
+  const spikes = await rateSpikesByDay(db, worldId);
   let stepped = 0;
   while (day <= simDay && stepped < MAX_ECONOMY_CATCH_UP_DAYS) {
-    const rates = previous ? stepRates(ratesOf(previous), seed, day) : ECONOMY_DEFAULTS;
+    const walked = previous ? stepRates(ratesOf(previous), seed, day) : ECONOMY_DEFAULTS;
+    const spikeBps = spikes.get(day) ?? 0;
+    const rates =
+      spikeBps > 0 ? { ...walked, baseRateBps: Math.min(BASE_RATE_MAX_BPS, walked.baseRateBps + spikeBps) } : walked;
     const stepDay = day;
     // P5 Task 2: the day's row and its CECL booking commit together, under
     // the note-series lock (serialised with charge-offs). A day whose row
@@ -150,18 +164,18 @@ export async function stepEconomy(db: Db, worldId: string, simDay: number): Prom
           utilizationBps: measured.utilizationBps,
           reserveRatioBps: measured.reserveRatioBps,
           dayStartLiquidityCents: measured.dayStartLiquidityCents,
+          scenario: spikeBps > 0 ? "rate_spike" : null,
         },
         [economyState.worldId, economyState.simDay],
       );
       if (!inserted) {
         return;
       }
-      const cecl = await bookCecl(tx, worldId, stepDay, new Date(anchorSim.getTime() + stepDay * DAY_MS));
-      await scoped(tx, worldId).update(
-        economyState,
-        { ceclReserveCents: cecl.targetCents },
-        eq(economyState.id, inserted.id),
-      );
+      const ceclReserveCents =
+        stepDay === lastDay
+          ? (await bookCecl(tx, worldId, stepDay, new Date(anchorSim.getTime() + stepDay * DAY_MS))).targetCents
+          : await allowanceBalance(tx, worldId);
+      await scoped(tx, worldId).update(economyState, { ceclReserveCents }, eq(economyState.id, inserted.id));
     });
     const stored = await rowForDay(db, worldId, day);
     if (!stored) {
@@ -172,6 +186,22 @@ export async function stepEconomy(db: Db, worldId: string, simDay: number): Prom
     stepped += 1;
   }
   return previous!;
+}
+
+/** The event type a `rate_spike` stress scenario is recorded as (`services/stress.ts`). */
+export const RATE_SPIKE_EVENT = "stress.rate_spike";
+
+/** The world's rate spikes: Σ bump bps by the sim day they apply to. */
+async function rateSpikesByDay(db: Db, worldId: string): Promise<Map<number, number>> {
+  const rows = await scoped(db, worldId).select(events, eq(events.type, RATE_SPIKE_EVENT));
+  const byDay = new Map<number, number>();
+  for (const row of rows) {
+    const params = ((row.payload ?? {}) as { params?: { apply_sim_day?: unknown; bump_bps?: unknown } }).params ?? {};
+    if (typeof params.apply_sim_day === "number" && typeof params.bump_bps === "number") {
+      byDay.set(params.apply_sim_day, (byDay.get(params.apply_sim_day) ?? 0) + params.bump_bps);
+    }
+  }
+  return byDay;
 }
 
 /** Steps the world's economy up to its current simulated day. */

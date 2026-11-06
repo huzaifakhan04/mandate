@@ -52,8 +52,9 @@ async function Worlds({ searchParams }: { searchParams: SearchParams }) {
             <div>
               <h1>Sandbox worlds</h1>
               <p className="sub">
-                A private bank of your own: simulated money only, never PayPal. Two lender bots fund the pool and two
-                borrower bots take invoice-backed loans as you move the clock.
+                A private bank of your own: simulated money only, never PayPal. Four lender bots fund the pool and six
+                borrower bots take invoice-backed loans as you move the clock; stress it with a default wave, a note run
+                or a rate spike.
               </p>
             </div>
           </div>
@@ -93,7 +94,7 @@ async function Worlds({ searchParams }: { searchParams: SearchParams }) {
 
           <section className="panel" aria-labelledby="create-h">
             <h2 id="create-h">Create a world</h2>
-            <p>Seeding takes a few seconds: the lender bots buy $200 and $150 of notes.</p>
+            <p>Seeding takes a few seconds: the lender bots buy $200, $150, $150 and $100 of notes.</p>
             <form method="post" action="/dashboard/worlds/create" style={{ display: "grid", gap: 12 }}>
               <div className="field">
                 <label htmlFor="w-name">World name</label>

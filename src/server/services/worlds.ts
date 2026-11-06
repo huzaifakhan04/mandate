@@ -2,7 +2,7 @@ import { and, eq } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
-import { clock, noteSeries, worlds } from "../db/schema";
+import { clock, noteSeries, treasuryPolicy, worlds } from "../db/schema";
 import { ensureChartOfAccounts } from "../ledger/accounts";
 import { postJournal } from "../ledger/postJournal";
 
@@ -16,7 +16,18 @@ export interface CreateWorldInput {
   botPrincipalId?: string | null;
   /** P2 Task 6: the bots' RNG seed (defaults to the world id). */
   botSeed?: string | null;
+  /** P5 Task 4: the bot generation (1 = P2 bots, 2 = bots v2); default 1. */
+  botVersion?: number;
 }
+
+/**
+ * Ruling P5-A: the main world's treasury policy. Judges share one small
+ * sandbox pool, so the daily lending budget is the whole day-start
+ * liquidity (10000 bps) and one principal may hold up to half the book
+ * (5000 bps); the reserve floor stays at the 15% default. Seeded by
+ * `ensureMainWorld` (and by migration 0028 for an existing main world).
+ */
+export const MAIN_WORLD_TREASURY_POLICY = { reserveFloorBps: 1500, concentrationBps: 5000, dailyBudgetBps: 10000 } as const;
 
 /**
  * The plan's single per-world note series name (plan: "one note series
@@ -237,6 +248,11 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
     await ensureChartOfAccounts(tx, world.id);
     await ensureNoteSeries(tx, world.id);
     await ensureBankSeedCapital(tx, world.id);
+    // Ruling P5-A: the main world always has its policy row (never replaced once there).
+    await tx
+      .insert(treasuryPolicy)
+      .values({ worldId: world.id, ...MAIN_WORLD_TREASURY_POLICY })
+      .onConflictDoNothing({ target: treasuryPolicy.worldId });
 
     return { worldId: world.id };
   });
@@ -325,6 +341,7 @@ export async function createWorldInTx(
       kind: input.kind ?? "main",
       botPrincipalId: input.botPrincipalId ?? null,
       botSeed: input.botSeed ?? null,
+      botVersion: input.botVersion ?? 1,
       lastBotSimDay: input.kind === "private" ? 0 : null,
     })
     .returning();

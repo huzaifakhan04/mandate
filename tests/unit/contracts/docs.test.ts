@@ -311,6 +311,31 @@ describe("agents.md identity sections (P2 Task 7)", () => {
     expect(md.indexOf("## Private worlds")).toBeLessThan(md.indexOf("## When you're late"));
   });
 
+  it("P5: documents the economy — base rate, inflation, utilization premium, treasury gates + reason codes, the queue, stress scenarios", () => {
+    const section = md.slice(md.indexOf("## The bank's economy"), md.indexOf("## Human approval"));
+    expect(md.indexOf("## When you're late")).toBeLessThan(md.indexOf("## The bank's economy"));
+    for (const text of [
+      "**Base rate:** starts at 400 bps",
+      "real_annual_return_bps",
+      "**Utilization premium:**",
+      "`pool_utilization_high`",
+      "| `reserve_floor` |",
+      "| `concentration_limit` |",
+      "| `daily_budget_exhausted` |",
+      "`TREASURY_LIMIT` (409)",
+      "`QUEUED`",
+      "oldest first",
+      "`cancel_redemption` (`note_tx_id`",
+      "gross of note-holder loss sharing",
+      "**Default wave:**",
+      "**Note run:**",
+      "**Rate spike:** the base rate jumps +500 bps",
+      "can't be triggered in the main world",
+    ]) {
+      expect(section).toContain(text);
+    }
+  });
+
   it("documents private worlds: what they are, how a human creates one, keys bound to a world", () => {
     const section = md.slice(md.indexOf("## Private worlds"), md.indexOf("## Human approval"));
     expect(section.length).toBeGreaterThan(200);
@@ -318,7 +343,7 @@ describe("agents.md identity sections (P2 Task 7)", () => {
       "simulated money only",
       `${BASE_URL}/dashboard/worlds`,
       "up to 3",
-      "two lender bots and two borrower bots",
+      "four lender bots and six borrower bots",
       "**+1 day** or **+7 days**",
       "**bound to that world**",
       `${BASE_URL}/dashboard/agents/new`,

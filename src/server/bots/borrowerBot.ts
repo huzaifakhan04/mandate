@@ -7,6 +7,7 @@ import { scoped } from "../db/scoped";
 import { isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { simApprove } from "../rail/simHandler";
 import { settleCheckoutByOrderId } from "../services/checkouts";
+import { markDefaultWaveLoan, skipsRepayment } from "../services/stress";
 import { botCall, dataOf, type BotAction } from "./act";
 import type { BotRef } from "./lenderBot";
 import { intBetween, pick, rngFor } from "./rng";
@@ -60,6 +61,10 @@ async function maybeClientPays(
   if (!isOwingStatus(loan.status) || !loan.disbursedSimAt) {
     return [];
   }
+  // P5 Task 4: a default-wave loan's client never pays.
+  if (await skipsRepayment(db, worldId, loan.id)) {
+    return [];
+  }
   const payDay = clientPayDay(seed, index, simDayIndex(anchorSim, loan.disbursedSimAt), simDayIndex(anchorSim, loan.dueSimAt));
   if (day < payDay) {
     return [];
@@ -77,7 +82,7 @@ async function maybeClientPays(
 }
 
 /** Applies for a seeded loan and accepts the offer. */
-async function applyAndAccept(db: Db, rng: () => number, bot: BotRef): Promise<BotAction[]> {
+async function applyAndAccept(db: Db, worldId: string, rng: () => number, bot: BotRef): Promise<BotAction[]> {
   // P3 (Ruling P3-A): a new borrower is grade D at best, which auto-approves
   // up to 5000 cents, and only with an invoice covering ≥ 1.5× (collateral
   // 20 points). So the bots borrow 2000–5000 against a 1.5×+ invoice.
@@ -109,6 +114,12 @@ async function applyAndAccept(db: Db, rng: () => number, bot: BotRef): Promise<B
     disclosure_hash: offer.disclosure_hash,
   });
   actions.push({ bot: bot.name, action: "accept_offer", amountCents, status: accepted.status });
+  // P5 Task 4: a pending default wave takes this loan (it will skip repayment).
+  const loanId = dataOf(accepted).loan_id;
+  const funded = accepted.status === "ACTIVE" || accepted.status === "DISBURSING";
+  if (funded && typeof loanId === "string" && (await markDefaultWaveLoan(db, worldId, loanId))) {
+    actions.push({ bot: bot.name, action: "default_wave_loan", amountCents, status: "MARKED" });
+  }
   return actions;
 }
 
@@ -136,7 +147,80 @@ export async function borrowerDay(
   }
   const rng = rngFor(seed, "borrower", index, day);
   if (rng() < 0.6) {
-    actions.push(...(await applyAndAccept(db, rng, bot)));
+    actions.push(...(await applyAndAccept(db, worldId, rng, bot)));
+  }
+  return actions;
+}
+
+// ---------------------------------------------------------------------
+// P5 bots v2: borrower archetypes
+// ---------------------------------------------------------------------
+
+export type BorrowerArchetype = "good" | "late" | "defaulter";
+
+/** A late payer repays this many days after the due day. */
+export const LATE_PAYER_DAYS = 3;
+
+/**
+ * Borrower bot number `index`'s archetype, seeded by the world: a
+ * `defaulter` (10%) never repays; a `late` payer (30%) repays everything
+ * owed `LATE_PAYER_DAYS` after the due day (late fee and penalty
+ * included) with `repay_loan`; a `good` payer's (60%) invoice client pays
+ * before the due day, as in P2.
+ */
+export function borrowerArchetype(seed: string, index: number): BorrowerArchetype {
+  const roll = rngFor(seed, "archetype", index)();
+  return roll < 0.1 ? "defaulter" : roll < 0.4 ? "late" : "good";
+}
+
+/** Repays everything owed now: `repay_loan` → sim approve → `confirm_checkout`. */
+async function repayInFull(db: Db, bot: BotRef, loanId: string): Promise<BotAction[]> {
+  const started = await botCall(db, bot.id, "repay_loan", { loan_id: loanId });
+  const data = dataOf(started);
+  const checkoutId = data.checkout_id;
+  const amountCents = typeof data.amount_cents === "number" ? data.amount_cents : undefined;
+  if (typeof checkoutId !== "string") {
+    return [{ bot: bot.name, action: "repay_loan", amountCents, status: started.status }];
+  }
+  await simApprove(db, checkoutId, { email: "borrower-bot@sim.mandate.bots", givenName: "Borrower", surname: "Bot" });
+  const confirmed = await botCall(db, bot.id, "confirm_checkout", { checkout_id: checkoutId });
+  return [{ bot: bot.name, action: "repay_loan", amountCents, status: confirmed.status }];
+}
+
+/**
+ * P5 bots v2: one simulated day for borrower bot number `index` by its
+ * archetype. A loan marked by a default wave is never repaid, whatever the
+ * archetype. With no open loan it applies (about three days in five) and
+ * accepts, as in P2.
+ */
+export async function borrowerDayV2(
+  db: Db,
+  worldId: string,
+  seed: string,
+  day: number,
+  index: number,
+  anchorSim: Date,
+  bot: BotRef,
+): Promise<BotAction[]> {
+  const actions: BotAction[] = [];
+  const archetype = borrowerArchetype(seed, index);
+  const loan = await openLoan(db, worldId, bot.id);
+  if (loan) {
+    if (archetype === "late" && isOwingStatus(loan.status) && loan.disbursedSimAt) {
+      const dueDay = simDayIndex(anchorSim, loan.dueSimAt);
+      if (day >= dueDay + LATE_PAYER_DAYS && !(await skipsRepayment(db, worldId, loan.id))) {
+        actions.push(...(await repayInFull(db, bot, loan.id)));
+      }
+    } else if (archetype === "good") {
+      actions.push(...(await maybeClientPays(db, worldId, seed, day, index, anchorSim, bot, loan)));
+    }
+    if (await openLoan(db, worldId, bot.id)) {
+      return actions;
+    }
+  }
+  const rng = rngFor(seed, "borrower", index, day);
+  if (rng() < 0.6) {
+    actions.push(...(await applyAndAccept(db, worldId, rng, bot)));
   }
   return actions;
 }
