@@ -20,6 +20,7 @@ import {
   loanLadderSteps,
   loans,
   principals,
+  repaymentLinks,
   repayments,
   scoreHistory,
 } from "@/server/db/schema";
@@ -29,6 +30,7 @@ import { runTick } from "@/server/jobs/tick";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
 import { processDue } from "@/server/services/collections";
+import { settleCheckoutByOrderId } from "@/server/services/checkouts";
 import { setAgentFrozen } from "@/server/services/owner";
 import { advancePrivateWorld } from "@/server/services/privateWorlds";
 import { createWorld, ensureMainWorld } from "@/server/services/worlds";
@@ -244,6 +246,9 @@ describe("the delinquency ladder (P4 Task 1)", () => {
     expect(loan.penaltyOutstandingCents).toBe(penaltyFor(25000n, 8));
     expect(await stepsFor(db, borrower.loanId)).toHaveLength(3);
     expect(await noticesFor(db, borrower.loanId)).toHaveLength(3);
+    // M5: the penalty notice states the actual days late (the ladder caught up at +8).
+    const penaltyNotice = (await noticesFor(db, borrower.loanId)).find((n) => n.kind === "penalty")!;
+    expect(penaltyNotice.body).toContain("is 8 days past due");
     const late = await db
       .select()
       .from(events)
@@ -449,6 +454,180 @@ describe("the delinquency ladder (P4 Task 1)", () => {
     expect((await loanRow(db, borrower.loanId)).status).toBe("substandard");
     expect(await agentStatus(db, borrower.agentId)).toBe("restricted");
     await expectBalanced(db, worldId);
+  });
+
+  /** Starts a full-payoff repay_loan (a quote) and returns its PayPal checkout id (not yet approved). */
+  async function quote(key: string, loanId: string) {
+    const started = await call(db, "repay_loan", key, { loan_id: loanId });
+    expect(started.envelope.status).toBe("AWAITING_APPROVAL");
+    return started.envelope.data as Data;
+  }
+
+  async function payQuote(key: string, checkoutId: string) {
+    await simApprove(db, checkoutId);
+    const confirmed = await call(db, "confirm_checkout", key, { checkout_id: checkoutId });
+    expect(confirmed.envelope.status).toBe("COMPLETED");
+    return confirmed.envelope.data as Data;
+  }
+
+  async function advanceTo(worldId: string, target: Date) {
+    const now = await getSimNow(db, worldId);
+    const days = Math.ceil((target.getTime() - now.getTime()) / DAY_MS);
+    if (days > 0) {
+      await advanceClock(db, worldId, days);
+    }
+    return getSimNow(db, worldId);
+  }
+
+  it("Ruling P4-C: a payoff quoted at +4 and captured a day later (penalty accrued meanwhile) → REPAID, post-quote penalty waived", async () => {
+    const worldId = (await createWorld(db, { name: "Quote", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await processDue(db, worldId, await advanceTo(worldId, at(due, 4)));
+    expect((await loanRow(db, borrower.loanId)).penaltyOutstandingCents).toBe(penaltyFor(25000n, 4));
+
+    const quoted = await quote(borrower.key, borrower.loanId);
+    expect(quoted.amount_cents).toBe(25333 + 500 + Number(penaltyFor(25000n, 4)));
+    const [link] = await db.select().from(repaymentLinks).where(eq(repaymentLinks.loanId, borrower.loanId));
+    expect(link!.quotedCents).toBe(BigInt(quoted.amount_cents as number));
+    expect(link!.quoteSimAt).not.toBeNull();
+
+    // A day passes and the ladder accrues one more day of penalty before the payer approves.
+    await advanceClock(db, worldId, 1);
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    expect((await loanRow(db, borrower.loanId)).penaltyOutstandingCents).toBe(penaltyFor(25000n, 5));
+
+    const paid = await payQuote(borrower.key, quoted.checkout_id as string);
+    expect(paid.loan_status).toBe("REPAID");
+    const loan = await loanRow(db, borrower.loanId);
+    expect(loan.status).toBe("repaid");
+    expect(loan.waivedCents).toBe(penaltyFor(25000n, 5) - penaltyFor(25000n, 4));
+    expect(loan.penaltyOutstandingCents).toBe(0n);
+    const waived = await db
+      .select()
+      .from(events)
+      .where(and(eq(events.aggregateId, borrower.loanId), eq(events.type, "loan.charges_waived")));
+    expect(waived).toHaveLength(1);
+    expect(await getAccountBalance(db, worldId, "penalty_income", null)).toBe(-penaltyFor(25000n, 4));
+    expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(0n);
+    await expectBalanced(db, worldId);
+  });
+
+  it("Ruling P4-C: a quote whose capture lands before the next ladder run accrues the penalty only to the quote time", async () => {
+    const worldId = (await createWorld(db, { name: "Quote2", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await processDue(db, worldId, await advanceTo(worldId, at(due, 4)));
+    const quoted = await quote(borrower.key, borrower.loanId);
+    await advanceClock(db, worldId, 2); // no processDue in between
+    const paid = await payQuote(borrower.key, quoted.checkout_id as string);
+    expect(paid).toMatchObject({ loan_status: "REPAID", applied_penalty_cents: Number(penaltyFor(25000n, 4)) });
+    expect((await loanRow(db, borrower.loanId)).waivedCents).toBe(0n);
+    await expectBalanced(db, worldId);
+  });
+
+  it("Ruling P4-C: quoted on the due day, approved after +1 (late fee assessed meanwhile) → REPAID with the late fee waived", async () => {
+    const worldId = (await createWorld(db, { name: "Quote3", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    const onDueDay = await advanceTo(worldId, due);
+    expect(daysLate(due, onDueDay)).toBe(0);
+    const quoted = await quote(borrower.key, borrower.loanId);
+    expect(quoted.amount_cents).toBe(25333);
+
+    await advanceClock(db, worldId, 1);
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    expect((await loanRow(db, borrower.loanId)).status).toBe("late");
+
+    const paid = await payQuote(borrower.key, quoted.checkout_id as string);
+    expect(paid).toMatchObject({ loan_status: "REPAID", applied_late_fee_cents: 0, applied_fee_cents: 333 });
+    const loan = await loanRow(db, borrower.loanId);
+    expect(loan.waivedCents).toBe(500n);
+    expect(loan.lateFeeOutstandingCents).toBe(0n);
+    expect(await agentStatus(db, borrower.agentId)).toBe("active");
+    expect(await getAccountBalance(db, worldId, "late_fee_income", null)).toBe(0n);
+    await expectBalanced(db, worldId);
+  });
+
+  it("Ruling P4-C: a partial repay_loan amount is not a quote (no waiver); invoice links accrue the penalty to the capture", async () => {
+    const worldId = (await createWorld(db, { name: "Invoice", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    // Invoice-backed: 40000 invoice, fee 270 at grade A with 1.6× collateral.
+    const borrower = await createTestAgent(db, worldId, "borrower@example.com");
+    const applied = await call(db, "apply_for_loan", borrower.key, {
+      amount_cents: 25000,
+      term_days: 14,
+      purpose: "Working capital",
+      invoice: { client_email: "client@example.com", amount_cents: 40000, due_in_days: 14, description: "Build" },
+    });
+    const offer = applied.envelope.data as Data;
+    const accepted = await call(db, "accept_offer", borrower.key, {
+      offer_id: offer.offer_id,
+      disclosure_hash: offer.disclosure_hash,
+    });
+    const loanId = (accepted.envelope.data as Data).loan_id as string;
+    const due = (await loanRow(db, loanId)).dueSimAt;
+    await processDue(db, worldId, await advanceTo(worldId, at(due, 3)));
+
+    // A partial direct repayment carries no quote.
+    const partial = await call(db, "repay_loan", borrower.key, { loan_id: loanId, amount_cents: 100 });
+    const [direct] = await db
+      .select()
+      .from(repaymentLinks)
+      .where(and(eq(repaymentLinks.loanId, loanId), eq(repaymentLinks.kind, "direct")));
+    expect(partial.envelope.status).toBe("AWAITING_APPROVAL");
+    expect(direct!.quotedCents).toBeNull();
+
+    // The client pays the invoice two days later: the penalty is accrued to the capture (5 days), nothing waived.
+    await advanceClock(db, worldId, 2);
+    const [invoice] = await db
+      .select()
+      .from(repaymentLinks)
+      .where(and(eq(repaymentLinks.loanId, loanId), eq(repaymentLinks.kind, "invoice")));
+    expect(invoice!.quotedCents).toBeNull();
+    await simApprove(db, invoice!.paypalOrderId!);
+    await settleCheckoutByOrderId(db, worldId, invoice!.paypalOrderId!);
+    const loan = await loanRow(db, loanId);
+    expect(loan.status).toBe("repaid");
+    expect(loan.waivedCents).toBe(0n);
+    const [paid] = await db.select().from(repayments).where(eq(repayments.loanId, loanId));
+    expect(paid!.appliedLateFeeCents).toBe(500n);
+    expect(paid!.appliedPenaltyCents).toBe(penaltyFor(25000n, 5));
+    await expectBalanced(db, worldId);
+  });
+
+  it("M1: an unfreeze racing the cure of the agent's last substandard loan ends active (agent row lock)", async () => {
+    const worldId = (await createWorld(db, { name: "Race2", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await processDue(db, worldId, await advanceTo(worldId, at(due, 7)));
+    expect(await agentStatus(db, borrower.agentId)).toBe("restricted");
+    expect(await setAgentFrozen(db, { principalId: borrower.principalId, agentId: borrower.agentId, frozen: true })).toBe("frozen");
+
+    // A frozen agent may still repay; the payer approves, then the capture and the unfreeze race.
+    const quoted = await quote(borrower.key, borrower.loanId);
+    await simApprove(db, quoted.checkout_id as string);
+    const [confirmed, unfrozen] = await Promise.all([
+      call(db, "confirm_checkout", borrower.key, { checkout_id: quoted.checkout_id }),
+      setAgentFrozen(db, { principalId: borrower.principalId, agentId: borrower.agentId, frozen: false }),
+    ]);
+    expect(confirmed.envelope.status).toBe("COMPLETED");
+    expect(unfrozen).toBe("unfrozen");
+    expect((await loanRow(db, borrower.loanId)).status).toBe("repaid");
+    expect(await agentStatus(db, borrower.agentId)).toBe("active");
+  });
+
+  it("M2: get_status reports 0 days late for a loan that isn't funded yet", async () => {
+    const worldId = (await createWorld(db, { name: "M2", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId);
+    await db.update(loans).set({ status: "disbursing", dueSimAt: new Date(0) }).where(eq(loans.id, borrower.loanId));
+    const status = (await call(db, "get_status", borrower.key, {})).envelope.data as Data;
+    expect((status.open_loan as Data).days_late).toBe(0);
   });
 
   it("Ruling P4-A: the main world's clock runs at speed 1", async () => {

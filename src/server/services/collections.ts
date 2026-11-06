@@ -166,6 +166,17 @@ export async function insertNotice(
   });
 }
 
+/**
+ * Fix round 1 (M1): locks the agent row. Every path that changes an
+ * agent's status because of its loans (substandard step, cure, recovery)
+ * takes it AFTER series → loan; `setAgentFrozen` takes it before reading
+ * the agent's loans — so an unfreeze and a cure/substandard step
+ * serialise on the agent row and the later one sees the other's result.
+ */
+export async function lockAgent(tx: Db, worldId: string, agentId: string): Promise<void> {
+  await scoped(tx, worldId).forUpdate(agents, eq(agents.id, agentId));
+}
+
 /** Locks the world's note series row then the loan row (the repayment capture's lock order). */
 async function lockSeriesThenLoan(tx: Db, worldId: string, loanId: string): Promise<LoanRow | undefined> {
   await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
@@ -298,7 +309,7 @@ async function applyPenaltyStep(
     loanId: loan.id,
     simAt: at,
     body:
-      `Loan ${loan.id} is 3 days past due: a rate penalty of 2% a year on the outstanding principal now ` +
+      `Loan ${loan.id} is ${fromZero.penaltyAccruedDays} days past due: a rate penalty of 2% a year on the outstanding principal now ` +
       `accrues daily (${dollars(fromZero.penaltyCents)} so far). At 7 days late the loan becomes substandard.`,
   });
   return { penalty_cents: Number(fromZero.penaltyCents) };
@@ -340,8 +351,9 @@ async function applySubstandardStep(tx: Db, worldId: string, loan: LoanRow, at: 
     simAt: at,
     payload: { total_due_cents: Number(totalDueCents(updated)) },
   });
-  // The agent is restricted (can repay, can't borrow — runTool's MONEY_IN_TOOLS).
+  // The agent is restricted (can repay, can't borrow — runTool's allowedWhileRestricted).
   // A frozen agent stays frozen (its owner's choice); unfreezing it lands on restricted.
+  await lockAgent(tx, worldId, loan.agentId);
   const restricted = await scoped(tx, worldId).update(
     agents,
     { status: "restricted" },
@@ -534,6 +546,9 @@ async function applyChargeOffStep(
     payerHint: owner[0]?.email ?? null,
     status: "pending",
     createOpId: operationId,
+    // Ruling P4-C: the guarantee is a quote of everything written off at the charge-off.
+    quoteSimAt: at,
+    quotedCents: total,
   });
 
   const detail = {
@@ -737,6 +752,8 @@ export async function onLoanCured(tx: Db, worldId: string, loan: LoanRow, simAt:
  * agent has no such loan left. Inside the cure / recovery transaction.
  */
 async function restoreAgentIfClear(tx: Db, worldId: string, loan: LoanRow, simAt: Date, reason: string): Promise<boolean> {
+  // M1: agent row locked (series → loan → agent) before reading its other loans.
+  await lockAgent(tx, worldId, loan.agentId);
   const stillDelinquent = await scoped(tx, worldId).selectFields(
     loans,
     { id: loans.id },

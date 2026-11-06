@@ -9,6 +9,7 @@ import { scoreAgent } from "../../services/credit";
 import { creditSchema, creditView } from "../credit";
 import { noticeSchema } from "../notices";
 import { daysLate } from "../../domain/delinquency";
+import { isOwingStatus } from "../../domain/loanMachine";
 import { noticeView, unreadNotices } from "../../services/collections";
 
 const outputSchema = z.object({
@@ -100,7 +101,8 @@ export const getStatusTool = defineTool({
             status: status.openLoan.status.toUpperCase(),
             outstanding_cents: Number(status.openLoan.outstandingCents),
             due_sim_at: status.openLoan.dueSimAt.toISOString(),
-            days_late: daysLate(status.openLoan.dueSimAt, ctx.simNow),
+            // M2: only a funded loan that still owes can be late (same gating as get_loan).
+            days_late: isOwingStatus(status.openLoan.status) ? daysLate(status.openLoan.dueSimAt, ctx.simNow) : 0,
             late_fee_cents: Number(status.openLoan.lateFeeOutstandingCents),
             penalty_cents: Number(status.openLoan.penaltyOutstandingCents),
             total_due_cents: Number(status.openLoan.totalDueCents),

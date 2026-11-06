@@ -534,6 +534,12 @@ export const loans = pgTable(
     chargeOffTotalCents: bigint("charge_off_total_cents", { mode: "bigint" }).notNull().default(sql`0`),
     holdersLossCents: bigint("holders_loss_cents", { mode: "bigint" }).notNull().default(sql`0`),
     recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    /**
+     * P4 fix round 1 (Ruling P4-C): late fees / penalty waived because a
+     * full-payoff quote was paid as quoted after they were assessed or
+     * accrued (memo balances, so no journal).
+     */
+    waivedCents: bigint("waived_cents", { mode: "bigint" }).notNull().default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -670,6 +676,16 @@ export const repaymentLinks = pgTable(
     payerHint: text("payer_hint"),
     status: text("status").notNull().default("pending"),
     createOpId: uuid("create_op_id").references(() => paypalOperations.id),
+    /**
+     * P4 fix round 1 (Ruling P4-C): a quoted link — `repay_loan` for the
+     * full total due, or the guarantee — records the sim time of the quote
+     * and the total due it quoted. Paying it as quoted settles the loan:
+     * the penalty accrues only up to `quote_sim_at`, and anything assessed
+     * or accrued after it is waived. Null for invoice links and partial
+     * `repay_loan` amounts.
+     */
+    quoteSimAt: timestamp("quote_sim_at", { withTimezone: true }),
+    quotedCents: bigint("quoted_cents", { mode: "bigint" }),
     approveUrl: text("approve_url"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()

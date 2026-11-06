@@ -367,26 +367,33 @@ export async function beginDirectRepayment(
   loanId: string,
   amountCents: bigint | null,
 ): Promise<BeginDirectRepaymentOutcome> {
-  const [loan] = await scoped(tx, worldId).forUpdate(loans, and(eq(loans.id, loanId), eq(loans.agentId, agentId))!);
-  if (!loan) {
+  const [lockedLoan] = await scoped(tx, worldId).forUpdate(loans, and(eq(loans.id, loanId), eq(loans.agentId, agentId))!);
+  if (!lockedLoan) {
     return { outcome: "not_found" };
   }
   // P4 Task 2: a charged-off loan can still be repaid (a recovery, up to what was written off).
-  if (!isOwingStatus(loan.status) && loan.status !== "charged_off") {
-    return { outcome: "invalid_transition", state: fromDbStatus(loan.status) };
+  if (!isOwingStatus(lockedLoan.status) && lockedLoan.status !== "charged_off") {
+    return { outcome: "invalid_transition", state: fromDbStatus(lockedLoan.status) };
   }
+  // P4: the quote includes the penalty up to now (accrued under the loan lock).
+  const quoteSimAt = await getSimNow(tx, worldId);
+  const loan = await accruePenaltyLocked(tx, worldId, lockedLoan, quoteSimAt);
   // P4: a late loan owes its late fees and penalty too (paid first).
   const due = totalDueCents(loan);
   const amount = amountCents ?? due;
   if (amount > due) {
     return { outcome: "amount_exceeds_outstanding", outstandingCents: due };
   }
+  // Ruling P4-C: a full payoff of an owing loan is a quote — paid as quoted,
+  // it settles the loan even if charges accrue before the capture lands.
+  const quoted = isOwingStatus(loan.status) && amount === due;
 
   const [link] = await scoped(tx, worldId).insert(repaymentLinks, {
     loanId: loan.id,
     kind: "direct",
     amountCents: amount,
     status: "pending",
+    ...(quoted ? { quoteSimAt, quotedCents: due } : {}),
   });
   if (!link) {
     throw new Error("Expected a repayment_links row to be inserted");
@@ -604,8 +611,13 @@ export async function applyRepaymentCapture(
     }
 
     // P4: the penalty is owed up to the cure date — accrue it to now first
-    // (under the loan lock, so it can't race processDue's accrual).
-    const loan = await accruePenaltyLocked(tx, worldId, lockedLoan, simNow);
+    // (under the loan lock, so it can't race processDue's accrual). Ruling
+    // P4-C: for a quoted link only up to the quote's sim time, and whatever
+    // was assessed or accrued after the quote is waived when it is paid as quoted.
+    const accrueTo =
+      link.quoteSimAt && link.quoteSimAt.getTime() < simNow.getTime() ? link.quoteSimAt : simNow;
+    const accrued = await accruePenaltyLocked(tx, worldId, lockedLoan, accrueTo);
+    const loan = await waivePostQuoteChargesLocked(tx, worldId, simNow, accrued, link, capturedCents);
     const owed = outstandingParts(loan);
     const split = waterfall({
       grossCents: capturedCents,
@@ -759,6 +771,64 @@ export async function applyRepaymentCapture(
     return { outcome: "failed", reason: "this repayment checkout was already paid" };
   }
   return appliedResult(db, worldId, settled);
+}
+
+/**
+ * Ruling P4-C (inside the capture transaction, loan row locked): a quoted
+ * full-payoff link (`quoted_cents` set, link amount = the quote) paid as
+ * quoted settles the loan. If the loan now owes more than the quote, the
+ * excess can only be late fees / penalty assessed or accrued after the
+ * quote (the base principal + fee never grows; other payments only lower
+ * it), so it is waived — penalty first, then late fees. Both are memo
+ * balances (fees are recognised on collection), so the waiver posts no
+ * journal: it is recorded in `loans.waived_cents` and a
+ * `loan.charges_waived` event. Invoice links and partial amounts carry no
+ * quote and are unaffected.
+ */
+async function waivePostQuoteChargesLocked(
+  tx: Db,
+  worldId: string,
+  simNow: Date,
+  loan: LoanRow,
+  link: LinkRow,
+  capturedCents: bigint,
+): Promise<LoanRow> {
+  if (link.quotedCents === null || link.quotedCents !== link.amountCents || capturedCents !== link.quotedCents) {
+    return loan;
+  }
+  const excess = totalDueCents(loan) - capturedCents;
+  if (excess <= 0n) {
+    return loan;
+  }
+  const waivedPenalty = excess < loan.penaltyOutstandingCents ? excess : loan.penaltyOutstandingCents;
+  const waivedLateFees = excess - waivedPenalty;
+  if (waivedLateFees > loan.lateFeeOutstandingCents) {
+    // Unreachable: base principal + fee never grows after a quote.
+    throw new Error(`loan ${loan.id} owes ${excess.toString()} more than quoted beyond its late fees and penalty`);
+  }
+  const [updated] = await scoped(tx, worldId).update(
+    loans,
+    {
+      penaltyOutstandingCents: loan.penaltyOutstandingCents - waivedPenalty,
+      lateFeeOutstandingCents: loan.lateFeeOutstandingCents - waivedLateFees,
+      waivedCents: loan.waivedCents + excess,
+    },
+    eq(loans.id, loan.id),
+  );
+  await appendEvent(tx, worldId, {
+    type: "loan.charges_waived",
+    aggregateId: loan.id,
+    simAt: simNow,
+    payload: {
+      link_id: link.id,
+      quote_sim_at: link.quoteSimAt?.toISOString() ?? null,
+      quoted_cents: Number(link.quotedCents),
+      waived_penalty_cents: Number(waivedPenalty),
+      waived_late_fee_cents: Number(waivedLateFees),
+      reason: "paid_as_quoted",
+    },
+  });
+  return updated!;
 }
 
 /**

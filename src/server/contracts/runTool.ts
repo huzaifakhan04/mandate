@@ -310,11 +310,18 @@ const MONEY_IN_STATUSES: ReadonlySet<string> = new Set(["frozen", "restricted"])
 
 /**
  * P4 Task 1: tools a frozen or restricted agent may also call because they
- * move no money and borrow nothing — acknowledging its delinquency notices.
+ * move no money and borrow nothing — acknowledging its delinquency notices
+ * (Ruling P4-B: allowed for frozen agents too).
  */
 export const HOUSEKEEPING_TOOLS: ReadonlySet<string> = new Set(["ack_notices"]);
 
-function mayBringMoneyIn(status: string, toolName: string): boolean {
+/**
+ * Whether a `frozen` / `restricted` agent may still call `toolName`: the
+ * money-in tools (`repay_loan`, `confirm_checkout` — a debt is never
+ * trapped) and the housekeeping tools (`ack_notices`). Everything else
+ * mutating gets 403 `AGENT_NOT_ACTIVE`.
+ */
+function allowedWhileRestricted(status: string, toolName: string): boolean {
   return MONEY_IN_STATUSES.has(status) && (MONEY_IN_TOOLS.has(toolName) || HOUSEKEEPING_TOOLS.has(toolName));
 }
 
@@ -407,7 +414,7 @@ export async function runTool(
       }
     }
 
-    if (tool.mutating && agent && agent.status !== "active" && !mayBringMoneyIn(agent.status, tool.name)) {
+    if (tool.mutating && agent && agent.status !== "active" && !allowedWhileRestricted(agent.status, tool.name)) {
       return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]), toolName);
     }
 
