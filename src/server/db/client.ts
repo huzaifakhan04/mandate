@@ -1,4 +1,5 @@
 import { neonConfig, Pool } from "@neondatabase/serverless";
+import { attachDatabasePool } from "@vercel/functions";
 import { drizzle, type NeonDatabase } from "drizzle-orm/neon-serverless";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 import ws from "ws";
@@ -32,6 +33,16 @@ function createDb(): NeonDatabase<typeof schema> {
   }
 
   const pool = new Pool({ connectionString });
+  // An idle pooled client can error (e.g. Neon closing an idle connection
+  // or a compute scaling to zero). Without a listener that `error` event
+  // is unhandled and crashes the process. Log the error's name/code/
+  // message only — never the connection string or query parameters.
+  pool.on("error", (err: Error & { code?: string }) => {
+    console.error(`[db] idle pool client error: ${err.name}${err.code ? ` (${err.code})` : ""}: ${err.message}`);
+  });
+  // Fluid compute: lets Vercel close idle pool clients before the instance
+  // is suspended, instead of leaking them until Neon times them out.
+  attachDatabasePool(pool);
   return drizzle(pool, { schema });
 }
 
@@ -62,16 +73,6 @@ declare global {
   var __mandateDevDb: Promise<Db> | undefined;
 }
 
-async function getDevDb(): Promise<Db> {
-  if (!globalThis.__mandateDevDb) {
-    // Imported lazily so `@electric-sql/pglite` is never pulled into a
-    // production bundle that always has `DATABASE_URL` set.
-    const { createTestDb } = await import("./testing");
-    globalThis.__mandateDevDb = createTestDb();
-  }
-  return globalThis.__mandateDevDb;
-}
-
 /**
  * Resolves the database client to use for a request:
  * - `DATABASE_URL` set → the Neon client above.
@@ -85,8 +86,16 @@ export async function getDb(): Promise<Db> {
     return db;
   }
 
+  // `process.env.NODE_ENV` is inlined at build time, so in a production
+  // build this whole branch — and with it the `./testing` import that pulls
+  // in `@electric-sql/pglite` (a devDependency) — is dead code the bundler
+  // drops. Keep the dynamic import INSIDE this literal NODE_ENV check.
   if (process.env.NODE_ENV !== "production") {
-    return getDevDb();
+    if (!globalThis.__mandateDevDb) {
+      const { createTestDb } = await import("./testing");
+      globalThis.__mandateDevDb = createTestDb();
+    }
+    return globalThis.__mandateDevDb;
   }
 
   throw new Error(
