@@ -1,8 +1,8 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import type { Db } from "@/server/db/client";
-import { postings, repayments } from "@/server/db/schema";
+import { paypalOperations, postings, repayments } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { availableLiquidity } from "@/server/domain/liquidity";
 import { CHART_OF_ACCOUNTS } from "@/server/ledger/accounts";
@@ -32,6 +32,9 @@ import {
  * capture / payout-success effect — so `cash_paypal` tracks the real
  * PayPal balance. Sim fees: 2.9% + 30¢ per capture, 25¢ per SUCCESS item.
  */
+
+/** Ruling W: every world opens with the bank's seed capital (default 10000). */
+const SEED = 10000n;
 
 async function cash(db: Db, worldId: string) {
   return getAccountBalance(db, worldId, "cash_paypal", null);
@@ -76,9 +79,9 @@ describe("PayPal fee journaling", () => {
     const lines = await postingsOf(db, fees[0]!.id);
     expect(lines.map((line) => line.amountCents).sort()).toEqual([-900n, 900n]);
 
-    expect(await cash(db, worldId)).toBe(29100n);
+    expect(await cash(db, worldId)).toBe(SEED + 29100n);
     expect(await feesExpense(db, worldId)).toBe(900n);
-    expect(await availableLiquidity(db, worldId)).toBe(29100n);
+    expect(await availableLiquidity(db, worldId)).toBe(SEED + 29100n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     // The lender's note balance is the full 30000 — fees are the bank's.
@@ -99,7 +102,7 @@ describe("PayPal fee journaling", () => {
     expect(payoutFees).toHaveLength(1);
     expect(payoutFees[0]!.idempotencyKey).toBe(`paypal_fee:payout:SIMBATCH-${borrower.sendOpId}`);
     // 30000 − 900 (capture fee) − 25000 (principal) − 25 (payout fee).
-    expect(await cash(db, worldId)).toBe(4075n);
+    expect(await cash(db, worldId)).toBe(SEED + 4075n);
 
     // The client pays the 40000 invoice: fee 1190 (2.9% = 1160 + 30), remainder 14250 paid out (fee 25).
     const link = await invoiceLink(db, borrower.loanId);
@@ -115,7 +118,7 @@ describe("PayPal fee journaling", () => {
     // Holders still get 600 of the 750 loan fee.
     expect(await getAccountBalance(db, worldId, "note_interest_expense", null)).toBe(600n);
     // 4075 + 40000 − 1190 − 14250 − 25.
-    expect(await cash(db, worldId)).toBe(28610n);
+    expect(await cash(db, worldId)).toBe(SEED + 28610n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     // Re-running reconcile never posts a fee twice.
@@ -143,8 +146,38 @@ describe("PayPal fee journaling", () => {
     await dispatchPayoutOutcome(db, borrower.sendOpId, { itemStatus: "SUCCESS", source: "webhook" });
     await runReconcile(db, { now: later(3 * 60 * 60_000) });
     expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:payout:")).toHaveLength(1);
-    expect(await cash(db, worldId)).toBe(30000n - 900n - 25000n - 25n);
+    expect(await cash(db, worldId)).toBe(SEED + 30000n - 900n - 25000n - 25n);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("a payout fee still unknown 72 h after the send is listed as payout_fee_unknown (not before)", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const borrower = await borrow(db, worldId, { invoice: false, receiver: "pending-borrower@example.com" });
+    await dispatchPayoutOutcome(db, borrower.sendOpId, { itemStatus: "SUCCESS", source: "webhook" });
+    expect((await getLoan(db, borrower.loanId)).status).toBe("active");
+
+    // Inside the window: no anomaly (the fee poll would still read it).
+    const young = await runReconcile(db, { now: later(), limit: 0 });
+    expect(young.anomalies.filter((a) => a.type === "payout_fee_unknown")).toEqual([]);
+
+    // PayPal never reported the fee within 72 h: listed, nothing journaled.
+    await db
+      .update(paypalOperations)
+      .set({ createdAt: sql`now() - interval '73 hours'` })
+      .where(eq(paypalOperations.id, borrower.sendOpId));
+    const report = await runReconcile(db, { now: later() });
+    expect(report.anomalies).toContainEqual({
+      type: "payout_fee_unknown",
+      worldId,
+      sourceId: borrower.loanId,
+      detail: {
+        kind: "loan_disbursement",
+        send_operation_id: borrower.sendOpId,
+        batch_id: `SIMBATCH-${borrower.sendOpId}`,
+      },
+    });
+    expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:payout:")).toHaveLength(0);
   });
 
   it("a note redemption's payout fee is journaled; a failed payout has none", async () => {
@@ -153,7 +186,7 @@ describe("PayPal fee journaling", () => {
     await call(db, "redeem_notes", lender.key, { amount_cents: 1000 });
     expect(await journalsWithKeyPrefix(db, worldId, "note_redemption:")).toHaveLength(1);
     expect(await journalsWithKeyPrefix(db, worldId, "paypal_fee:payout:")).toHaveLength(1);
-    expect(await cash(db, worldId)).toBe(30000n - 900n - 1000n - 25n);
+    expect(await cash(db, worldId)).toBe(SEED + 30000n - 900n - 1000n - 25n);
 
     const failing = await fundPool(db, worldId, 1000, "fail-lender@example.com");
     await call(db, "redeem_notes", failing.key, { amount_cents: 500 });

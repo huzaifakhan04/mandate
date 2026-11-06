@@ -619,7 +619,18 @@ async function claim(
   return row;
 }
 
-/** Task 10b (Ruling U): a write op is given up on after this many cumulative attempts… */
+/**
+ * Ruling V: the only kinds the retry cap applies to. `order.capture`,
+ * `payout.send` and `payout.cancel_item` are never capped — their outcome
+ * may be unknown and money may already have moved (a capture taken, a
+ * batch created, an item returned), so giving up would let the domain
+ * book a failure that didn't happen. They keep retrying with backoff
+ * (capped at 10 min) and surface as `operation_retrying` anomalies. Reads
+ * are never capped either (throttled, and they move no money).
+ */
+export const RETRY_CAPPED_KINDS: readonly OperationKind[] = ["order.create"];
+
+/** Task 10b (Ruling U): a capped op is given up on after this many cumulative attempts… */
 export const RETRY_CAP_ATTEMPTS = 20;
 /** …or once it was first enqueued (≈ first attempted) this long ago, in real time. */
 export const RETRY_CAP_AGE_MS = 24 * 60 * 60 * 1000;
@@ -627,19 +638,19 @@ export const RETRY_CAP_AGE_MS = 24 * 60 * 60 * 1000;
 export const RETRY_CAP_EXCEEDED = "retry_cap_exceeded";
 
 /**
- * Task 10b (Ruling U): a money-moving (non-read) operation whose outcome
- * would be `failed_retryable` becomes `failed_terminal` once it has made
+ * Task 10b (Rulings U, V): an operation of a `RETRY_CAPPED_KINDS` kind
+ * (only `order.create`) whose outcome would be `failed_retryable` becomes
+ * `failed_terminal` once it has made
  * ≥ `RETRY_CAP_ATTEMPTS` attempts (counting this run) or was enqueued
  * more than `RETRY_CAP_AGE_MS` ago — e.g. the sandbox's
  * `payouts-item/{id}/cancel` answering 500 forever. The stored error keeps
  * PayPal's `name`, sets `issue` = `retry_cap_exceeded`, and keeps the
  * original issue/details under `details`; `last_error` =
  * `retry_cap_exceeded` (the reconcile cron lists these as
- * `operation_retry_cap_exceeded`). Reads are never capped (they are
- * throttled instead and move no money).
+ * `operation_retry_cap_exceeded`). Every other kind is never capped.
  */
 function applyRetryCap(claimed: OperationRow, outcome: Outcome, counted: number): Outcome {
-  if (outcome.status !== "failed_retryable" || (READ_KINDS as readonly string[]).includes(claimed.kind)) {
+  if (outcome.status !== "failed_retryable" || !(RETRY_CAPPED_KINDS as readonly string[]).includes(claimed.kind)) {
     return outcome;
   }
   const attempts = claimed.attempts + counted;
@@ -969,20 +980,29 @@ export async function latestPayoutGetForSend(
 
 /**
  * Task 10b (reconcile, payout fees): succeeded `payout.send` operations
- * in `worldId` enqueued at or after `since`, oldest first, at most
+ * in `worldId` enqueued at or after `since` (and before `before`, when
+ * given), oldest first, at most
  * `limit` — candidates whose PayPal fee may still have to be read and
  * journaled after their source settled.
  */
 export async function listRecentSucceededPayoutSends(
   db: Db,
   worldId: string,
-  { since, limit = 200 }: { since: Date; limit?: number },
+  { since, before, limit = 200 }: { since: Date; before?: Date; limit?: number },
 ): Promise<string[]> {
   const t = paypalOperations;
   const rows = await db
     .select({ id: t.id })
     .from(t)
-    .where(and(eq(t.worldId, worldId), eq(t.kind, "payout.send"), eq(t.status, "succeeded"), gte(t.createdAt, since)))
+    .where(
+      and(
+        eq(t.worldId, worldId),
+        eq(t.kind, "payout.send"),
+        eq(t.status, "succeeded"),
+        gte(t.createdAt, since),
+        before ? lt(t.createdAt, before) : undefined,
+      ),
+    )
     .orderBy(t.createdAt, t.id)
     .limit(limit);
   return rows.map((row) => row.id);
@@ -1054,10 +1074,10 @@ export interface ExecuteOperationOptions {
  *    fails. An unparseable 2xx `payout.send` is `failed_retryable` (the
  *    same request id replays the same batch); for other kinds it is
  *    `failed_terminal`. An unexpected exception is `failed_retryable`.
- *    Every failed run counts as ≥ 1 attempt for backoff. Task 10b: a
- *    money-moving (non-read) kind that would be `failed_retryable` is
+ *    Every failed run counts as ≥ 1 attempt for backoff. Task 10b /
+ *    Ruling V: an `order.create` that would be `failed_retryable` is
  *    `failed_terminal` (`retry_cap_exceeded`) once it reached 20 attempts
- *    or was enqueued > 24 h ago (`applyRetryCap`).
+ *    or was enqueued > 24 h ago (`applyRetryCap`); no other kind is capped.
  * 4. **Return** `toOperationResult(row)` — identical on replay.
  */
 export async function executeOperation(

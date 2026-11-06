@@ -98,7 +98,7 @@ describe("getAgentStatus (service)", () => {
     expect(status.balances.payableToYouCents).toBe(0n);
     expect(status.openLoan).toBeNull();
     expect(status.limits.maxPrincipalCents).toBe(50000);
-    expect(status.limits.availableLiquidityCents).toBe(0n);
+    expect(status.limits.availableLiquidityCents).toBe(10000n); // Ruling W: the bank's seed capital
 
     delete process.env.API_KEY_PEPPER;
   });
@@ -191,7 +191,7 @@ describe("register_agent / get_status tools (via runTool)", () => {
     expect((data.balances as Record<string, unknown>).payable_to_you_cents).toBe(0);
     expect(data.open_loan).toBeNull();
     expect((data.limits as Record<string, unknown>).max_principal_cents).toBe(50000);
-    expect((data.limits as Record<string, unknown>).available_liquidity_cents).toBe(0);
+    expect((data.limits as Record<string, unknown>).available_liquidity_cents).toBe(10000); // Ruling W seed
     expect(typeof data.sim_now).toBe("string");
     expect(result.envelope.next_actions.map((a) => a.tool)).toEqual([
       "buy_notes",

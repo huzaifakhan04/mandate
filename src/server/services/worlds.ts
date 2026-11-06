@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { clock, noteSeries, worlds } from "../db/schema";
 import { ensureChartOfAccounts } from "../ledger/accounts";
+import { postJournal } from "../ledger/postJournal";
 
 export interface CreateWorldInput {
   name: string;
@@ -39,6 +40,55 @@ async function ensureNoteSeries(db: Db, worldId: string): Promise<void> {
       poolType: MANDATE_POOL_A_TYPE,
     })
     .onConflictDoNothing({ target: [noteSeries.worldId, noteSeries.name] });
+}
+
+/** Ruling W: the default opening capital when `BANK_SEED_CAPITAL_CENTS` is unset. */
+export const DEFAULT_BANK_SEED_CAPITAL_CENTS = 10000n;
+
+/** `BANK_SEED_CAPITAL_CENTS` (a non-negative integer number of cents), or the default. */
+export function bankSeedCapitalCents(): bigint {
+  const raw = process.env.BANK_SEED_CAPITAL_CENTS?.trim();
+  if (!raw) {
+    return DEFAULT_BANK_SEED_CAPITAL_CENTS;
+  }
+  if (!/^\d+$/.test(raw)) {
+    throw new Error(`BANK_SEED_CAPITAL_CENTS must be a non-negative integer number of cents, got ${JSON.stringify(raw)}`);
+  }
+  return BigInt(raw);
+}
+
+/**
+ * Ruling W: the bank's opening capital — Dr `cash_paypal` / Cr
+ * `bank_equity`, `BANK_SEED_CAPITAL_CENTS` (default 10000), posted once
+ * per world (idempotency key `bank_capital:seed:<worldId>`, so repeated
+ * ensures are no-ops; a later change of the env var doesn't re-seed).
+ * PayPal's fees are the bank's expense, paid from `cash_paypal`; without
+ * capital a pool funded only by note purchases would hold less cash than
+ * it owes holders. Available liquidity includes it (it is cash).
+ *
+ * For a `sim` world it is simulated money. For the main world on the real
+ * PayPal rail it represents real sandbox funds already sitting in the
+ * bank's PayPal (sandbox business) account before any agent traded — set
+ * `BANK_SEED_CAPITAL_CENTS` to no more than that account's balance so
+ * `cash_paypal` never claims money PayPal doesn't hold.
+ */
+async function ensureBankSeedCapital(db: Db, worldId: string): Promise<void> {
+  const cents = bankSeedCapitalCents();
+  if (cents === 0n) {
+    return;
+  }
+  await postJournal(db, {
+    worldId,
+    memo: "Bank opening capital",
+    sourceType: "worlds",
+    sourceId: worldId,
+    simAt: new Date(),
+    idempotencyKey: `bank_capital:seed:${worldId}`,
+    postings: [
+      { accountCode: "cash_paypal", amountCents: cents },
+      { accountCode: "bank_equity", amountCents: -cents },
+    ],
+  });
 }
 
 /**
@@ -127,6 +177,7 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
 
     await ensureChartOfAccounts(tx, world.id);
     await ensureNoteSeries(tx, world.id);
+    await ensureBankSeedCapital(tx, world.id);
 
     return { worldId: world.id };
   });
@@ -219,6 +270,7 @@ export async function createWorld(
 
     await ensureChartOfAccounts(tx, world.id);
     await ensureNoteSeries(tx, world.id);
+    await ensureBankSeedCapital(tx, world.id);
 
     return { worldId: world.id, slug: world.slug };
   });

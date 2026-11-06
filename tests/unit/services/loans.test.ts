@@ -64,7 +64,7 @@ async function call(
   });
 }
 
-import { addBankCapital, SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/bankCapital";
+import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
 
 /** Funds the world's pool by `amountCents` via a lender's sim note purchase. */
 async function fundPool(db: Db, worldId: string, amountCents: number) {
@@ -74,10 +74,15 @@ async function fundPool(db: Db, worldId: string, amountCents: number) {
   await simApprove(db, checkoutId);
   const confirmed = await call(db, "confirm_checkout", lender.key, { checkout_id: checkoutId });
   expect(confirmed.envelope.status).toBe("COMPLETED");
-  // Task 10b: the bank's own capital covers the PayPal capture fee, so the
-  // pool's liquidity is exactly `amountCents` (fees are tested in paypalFees.test.ts).
-  await addBankCapital(db, worldId, simCaptureFee(amountCents));
   return lender;
+}
+
+/** Ruling W: every world opens with 10000 of the bank's seed capital. */
+const SEED = 10000n;
+
+/** Liquidity right after `fundPool(amountCents)`: seed + notes − the (simulated) capture fee (Task 10b). */
+function pooled(amountCents: number): bigint {
+  return SEED + BigInt(amountCents) - simCaptureFee(amountCents);
 }
 
 async function applyFor(db: Db, key: string, amountCents: number, termDays: number, extra: Data = {}) {
@@ -107,6 +112,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
   afterEach(() => {
     delete process.env.API_KEY_PEPPER;
+    delete process.env.BANK_SEED_CAPITAL_CENTS;
     __resetLoanActivatedHooksForTests();
     // Keep the production hook (Task 7's invoice link) registered: the
     // reset only exists to drop the per-test fixture hooks.
@@ -122,8 +128,9 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const data = result.envelope.data as Data;
     expect(data.eligible).toBe(false);
     expect(data.reasons).toEqual(["insufficient_liquidity"]);
-    expect(data.max_principal_cents).toBe(0);
-    expect(data.available_liquidity_cents).toBe(0);
+    // Only the bank's seed capital (Ruling W) — not enough for 25000.
+    expect(data.max_principal_cents).toBe(Number(SEED));
+    expect(data.available_liquidity_cents).toBe(Number(SEED));
     expect(data.quote).toEqual({ fee_cents: 750, apr_bps: 7821, total_cents: 25750 });
   });
 
@@ -135,7 +142,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     const ok = await call(db, "check_eligibility", key, { amount_cents: 25000, term_days: 14 });
     expect((ok.envelope.data as Data).eligible).toBe(true);
     expect((ok.envelope.data as Data).reasons).toEqual([]);
-    expect((ok.envelope.data as Data).max_principal_cents).toBe(30000);
+    expect((ok.envelope.data as Data).max_principal_cents).toBe(Number(pooled(30000)));
     expect(ok.envelope.next_actions[0]).toEqual({
       tool: "apply_for_loan",
       args: { amount_cents: 25000, term_days: 14, purpose: "<describe what the money is for>" },
@@ -233,9 +240,9 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     expect(await loansReceivable(db, worldId)).toBe(25000n);
     // Task 10b: less the (simulated) 25¢ PayPal payout fee — the bank's expense.
-    expect(await cashBalance(db, worldId)).toBe(5000n - SIM_PAYOUT_FEE);
+    expect(await cashBalance(db, worldId)).toBe(pooled(30000) - 25000n - SIM_PAYOUT_FEE);
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
-    expect(await availableLiquidity(db, worldId)).toBe(5000n - SIM_PAYOUT_FEE);
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000) - 25000n - SIM_PAYOUT_FEE);
 
     const [loan] = await db.select().from(loans).where(eq(loans.worldId, worldId));
     expect(loan?.agentId).toBe(agentId);
@@ -300,9 +307,9 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(offer?.status).toBe("expired");
   });
 
-  it("Review Focus 4: two agents concurrently accept 20000 each against a 30000 pool → exactly one loan", async () => {
+  it("Review Focus 4: two agents concurrently accept 20000 each against a 34245 pool → exactly one loan", async () => {
     const worldId = await createSimWorld(db);
-    await fundPool(db, worldId, 30000);
+    await fundPool(db, worldId, 25000); // + seed − fee = 34245 < 2 × 20000
     const a = await createTestAgent(db, worldId, "a@example.com");
     const b = await createTestAgent(db, worldId, "b@example.com");
 
@@ -323,7 +330,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
     expect(await loansReceivable(db, worldId)).toBe(20000n);
-    expect(await cashBalance(db, worldId)).toBe(10000n - SIM_PAYOUT_FEE);
+    expect(await cashBalance(db, worldId)).toBe(pooled(25000) - 20000n - SIM_PAYOUT_FEE);
   });
 
   it("Review Focus 4: accept_offer holds a FOR UPDATE lock on the note series row (Ruling N)", async () => {
@@ -356,7 +363,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
   it("Review Focus 4: a DISBURSING loan's principal is reserved against the next accept", async () => {
     const worldId = await createSimWorld(db);
-    await fundPool(db, worldId, 30000);
+    await fundPool(db, worldId, 25000); // + seed − fee = 34245 < 2 × 20000
     const a = await createTestAgent(db, worldId, "a@example.com");
     const b = await createTestAgent(db, worldId, "b@example.com");
     const offerA = (await applyFor(db, a.key, 20000, 14)).envelope.data as Data;
@@ -370,7 +377,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     );
     expect(first.outcome).toBe("disbursing");
 
-    expect(await availableLiquidity(db, worldId)).toBe(10000n);
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(25000) - 20000n);
     const second = await call(db, "accept_offer", b.key, {
       offer_id: offerB.offer_id,
       disclosure_hash: offerB.disclosure_hash,
@@ -396,8 +403,8 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(await loansReceivable(db, worldId)).toBe(0n);
     const [failedLoan] = await db.select().from(loans).where(eq(loans.worldId, worldId));
     expect(failedLoan?.outstandingCents).toBe(0n);
-    expect(await cashBalance(db, worldId)).toBe(30000n);
-    expect(await availableLiquidity(db, worldId)).toBe(30000n);
+    expect(await cashBalance(db, worldId)).toBe(pooled(30000));
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000));
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
 
     const got = await call(db, "get_loan", key, { loan_id: (result.envelope.data as Data).loan_id });
@@ -430,7 +437,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect((disbursing.envelope.data as Data).status).toBe("DISBURSING");
     expect((disbursing.envelope.data as Data).outstanding_cents).toBe(0);
     expect(await loansReceivable(db, worldId)).toBe(0n);
-    expect(await availableLiquidity(db, worldId)).toBe(5000n); // principal reserved
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000) - 25000n); // principal reserved
 
     const [loan] = await db.select().from(loans).where(eq(loans.id, loanId));
     await pollPayoutStatus(db, loan!.disbursementOpId!);
@@ -476,7 +483,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(failed?.status).toBe("disbursement_failed");
     expect(failed?.outstandingCents).toBe(0n);
     expect(await loansReceivable(db, worldId)).toBe(0n);
-    expect(await availableLiquidity(db, worldId)).toBe(30000n);
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000));
 
     const got = await call(db, "get_loan", key, { loan_id: loanId });
     expect(got.envelope.reason_codes).toEqual(["payout_failed"]);
@@ -505,7 +512,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(cancels[0]?.purpose).toBe("payout_cancel");
 
     expect(await loansReceivable(db, worldId)).toBe(0n);
-    expect(await availableLiquidity(db, worldId)).toBe(30000n);
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000));
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 
@@ -530,7 +537,7 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     await applyPayoutOutcome(db, begun.payoutOperationId);
     expect((await db.select().from(loans).where(eq(loans.id, begun.loanId)))[0]?.status).toBe("disbursing");
-    expect(await availableLiquidity(db, worldId)).toBe(5000n); // still reserved
+    expect(await availableLiquidity(db, worldId)).toBe(pooled(30000) - 25000n); // still reserved
 
     await pollPayoutStatus(db, begun.payoutOperationId);
     expect((await db.select().from(loans).where(eq(loans.id, begun.loanId)))[0]?.status).toBe("active");
@@ -538,14 +545,16 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
   });
 
   it("M2: max_principal_cents is 0 when liquidity is below the 1000-cent minimum", async () => {
+    // A world without the bank's seed capital (Ruling W), so liquidity can sit below 1000.
+    process.env.BANK_SEED_CAPITAL_CENTS = "0";
     const worldId = await createSimWorld(db);
     const { key } = await createTestAgent(db, worldId);
-    // Fund 1000, then reserve 500 of it as a pending redemption → 500 left.
+    // Fund 1000 (941 after the capture fee), then reserve 500 as a pending redemption → 441 left.
     const lender = await fundPool(db, worldId, 1000);
     const { beginNoteRedemption } = await import("@/server/services/notes");
     await db.transaction((tx) => beginNoteRedemption(tx, worldId, lender.agentId, 500n));
     const result = await call(db, "check_eligibility", key, { amount_cents: 1000, term_days: 7 });
-    expect((result.envelope.data as Data).available_liquidity_cents).toBe(500);
+    expect((result.envelope.data as Data).available_liquidity_cents).toBe(1000 - Number(simCaptureFee(1000)) - 500);
     expect((result.envelope.data as Data).max_principal_cents).toBe(0);
   });
 

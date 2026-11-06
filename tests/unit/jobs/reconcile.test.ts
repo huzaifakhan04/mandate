@@ -20,6 +20,7 @@ import { runReconcile } from "@/server/jobs/reconcile";
 import { runTick } from "@/server/jobs/tick";
 import {
   buildCancelPayoutItemRequest,
+  buildCreateOrderRequest,
   buildGetPayoutRequest,
   deriveOperationId,
   enqueueOperation,
@@ -369,7 +370,21 @@ describe("reconcile cron", () => {
       });
     const { operationId } = await cancelOp("ITEM-RETRYING");
     const { operationId: fewId } = await cancelOp("ITEM-FEW");
-    const { operationId: cappedId } = await cancelOp("ITEM-CAPPED");
+    // Ruling V: only order.create is ever capped.
+    const { operationId: cappedId } = await enqueueOperation(db, {
+      worldId,
+      rail: "sim",
+      kind: "order.create",
+      purpose: "note_purchase",
+      sourceId: "00000000-0000-4000-8000-00000000cafe",
+      request: buildCreateOrderRequest({
+        amountCents: 1000n,
+        description: "x",
+        customId: "c",
+        returnUrl: "https://e.com/r",
+        cancelUrl: "https://e.com/c",
+      }),
+    });
     const { operationId: readId } = await enqueueReadOperation(db, {
       worldId,
       rail: "sim",
@@ -409,7 +424,12 @@ describe("reconcile cron", () => {
         type: "operation_retry_cap_exceeded",
         worldId,
         sourceId: cappedId,
-        detail: expect.objectContaining({ kind: "payout.cancel_item", source: "ITEM-CAPPED", attempts: 20 }),
+        detail: expect.objectContaining({
+          kind: "order.create",
+          source: "00000000-0000-4000-8000-00000000cafe",
+          attempts: 20,
+          last_error: "retry_cap_exceeded",
+        }),
       }),
     );
   });

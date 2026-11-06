@@ -120,7 +120,7 @@ describe("ensureMainWorld", () => {
 });
 
 describe("createWorld", () => {
-  it("seeds the chart of accounts, so trialBalance lists 0 accounts with non-zero balances", async () => {
+  it("seeds the chart of accounts; the only non-zero balances are the bank's seed capital (Ruling W)", async () => {
     const db = await createTestDb();
     const { worldId, slug } = await createWorld(db, {
       name: "Test World",
@@ -134,7 +134,10 @@ describe("createWorld", () => {
     const { accounts, totalCents } = await trialBalance(db, worldId);
     expect(accounts.length).toBeGreaterThan(0);
     const nonZero = accounts.filter((a) => a.balanceCents !== 0n);
-    expect(nonZero).toHaveLength(0);
+    expect(nonZero.map((a) => [a.code, a.balanceCents]).sort()).toEqual([
+      ["bank_equity", -10000n],
+      ["cash_paypal", 10000n],
+    ]);
     expect(totalCents).toBe(0n);
   });
 

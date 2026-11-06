@@ -18,7 +18,12 @@ import {
   type PayoutSendResult,
 } from "../paypal/operations";
 import { settleCheckoutByOrderId } from "../services/checkouts";
-import { dispatchPayoutOutcome, PAYOUT_FEE_POLL_WINDOW_MS, pollPayoutStatus } from "../services/payoutPolling";
+import {
+  dispatchPayoutOutcome,
+  PAYOUT_FEE_POLL_WINDOW_MS,
+  pollPayoutStatus,
+  unknownPayoutFee,
+} from "../services/payoutPolling";
 import { isPollDue } from "../services/pollThrottle";
 import {
   loanIdFromInvoiceSourceId,
@@ -57,7 +62,9 @@ import { errorMessage, previousAnomalyCount, recordJobRun } from "./jobRuns";
  *    reserved), failed/held remainder payouts (still owed in
  *    `payable_to_borrower`), money-moving operations still retrying after
  *    ≥ 5 attempts (`operation_retrying`) and ones given up on by the retry
- *    cap (`operation_retry_cap_exceeded`, Task 10b). One auto-fix: a failed
+ *    cap (`operation_retry_cap_exceeded`, Task 10b — only `order.create`
+ *    is capped, Ruling V), and settled payouts whose PayPal fee was never
+ *    reported 72 h–30 d after the send (`payout_fee_unknown`). One auto-fix: a failed
  *    invoice link on an ACTIVE loan is re-issued (`reissueInvoiceLink`);
  *    once its issues are used up it is listed instead.
  *
@@ -80,7 +87,8 @@ export type AnomalyType =
   | "remainder_unpaid"
   | "invoice_link_failed"
   | "operation_retrying"
-  | "operation_retry_cap_exceeded";
+  | "operation_retry_cap_exceeded"
+  | "payout_fee_unknown";
 
 export interface Anomaly {
   type: AnomalyType;
@@ -522,6 +530,25 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
     anomalies.push({ type: "operation_retry_cap_exceeded", worldId, sourceId: op.operationId, detail: troubledDetail(op) });
   }
 
+  // Payouts whose PayPal fee was never reported within the fee-poll window
+  // (the cron stopped reading for it): cash_paypal may be high by that fee.
+  const feeWindowEnd = new Date(run.now.getTime() - PAYOUT_FEE_POLL_WINDOW_MS);
+  const feeListSince = new Date(run.now.getTime() - FEE_UNKNOWN_LIST_WINDOW_MS);
+  for (const sendOperationId of await listRecentSucceededPayoutSends(db, worldId, {
+    since: feeListSince,
+    before: feeWindowEnd,
+  })) {
+    const unknown = await unknownPayoutFee(db, sendOperationId);
+    if (unknown) {
+      anomalies.push({
+        type: "payout_fee_unknown",
+        worldId,
+        sourceId: unknown.sourceId,
+        detail: { kind: unknown.purpose, send_operation_id: unknown.sendOperationId, batch_id: unknown.batchId },
+      });
+    }
+  }
+
   for (const source of await pendingPayoutSources(db, worldId)) {
     const itemId = await unclaimedItemWithFailedCancel(db, worldId, source.sendOperationId);
     if (itemId) {
@@ -534,6 +561,13 @@ async function listAnomalies(run: Run, worldId: string): Promise<void> {
     }
   }
 }
+
+/**
+ * Task 10b: `payout_fee_unknown` looks back this far (sends older than the
+ * 72 h fee-poll window but younger than this) — bounded so an old,
+ * never-reported fee doesn't cost queries every minute forever.
+ */
+const FEE_UNKNOWN_LIST_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** Task 10b: a write operation still `failed_retryable` after this many attempts is listed. */
 const RETRYING_ANOMALY_ATTEMPTS = 5;

@@ -16,7 +16,7 @@ import {
 import { applyPayoutOutcome } from "./loans";
 import { applyRedemptionPayoutOutcome } from "./notes";
 import type { ObservedPayoutStatus } from "./payoutStatus";
-import { knownPayoutFee, payoutFeeJournalKey, postPayoutFee } from "./paypalFees";
+import { knownPayoutFee, payoutFeeJournalKey, postPayoutFee, type KnownPayoutFee } from "./paypalFees";
 import { isPollDue, pollIntervalMs } from "./pollThrottle";
 import { applyRemainderPayoutOutcome, refreshRepaymentLink, remainderPayoutNeedsPolling } from "./repayments";
 import { railForWorld } from "./worlds";
@@ -90,19 +90,11 @@ export type PayoutFeeState =
  * transaction). Never call inside a transaction.
  */
 export async function postPayoutFeeIfKnown(db: Db, sendOperationId: string): Promise<PayoutFeeState> {
-  const record = await getOperation(db, sendOperationId);
-  const sourceType = record?.purpose ? FEE_SOURCE_TYPE[record.purpose] : undefined;
-  if (!record || record.kind !== "payout.send" || record.status !== "succeeded" || !record.sourceId || !sourceType) {
-    return "not_applicable";
+  const inspected = await inspectPayoutFee(db, sendOperationId);
+  if (inspected.state !== "known") {
+    return inspected.state;
   }
-  const { worldId, sourceId } = record;
-  if (!(await sourceSucceeded(db, worldId, record.purpose!, sourceId))) {
-    return "not_applicable";
-  }
-  const fee = knownPayoutFee(record.body as PayoutSendResult, await latestPayoutGetForSend(db, sendOperationId));
-  if (!fee) {
-    return "unknown";
-  }
+  const { worldId, sourceId, sourceType, fee } = inspected;
   const journaled = await scoped(db, worldId).findOne(
     journalEntries,
     eq(journalEntries.idempotencyKey, payoutFeeJournalKey(fee.batchId)),
@@ -112,6 +104,52 @@ export async function postPayoutFeeIfKnown(db: Db, sendOperationId: string): Pro
     await db.transaction((tx) => postPayoutFee(tx, { worldId, simAt, sourceType, sourceId }, fee));
   }
   return "known";
+}
+
+type InspectedPayoutFee =
+  | { state: "not_applicable" }
+  | { state: "unknown"; worldId: string; purpose: string; sourceId: string; batchId: string }
+  | { state: "known"; worldId: string; sourceId: string; sourceType: string; fee: KnownPayoutFee };
+
+/** Read-only: whether a succeeded payout's batch fee is known yet (see `PayoutFeeState`). */
+async function inspectPayoutFee(db: Db, sendOperationId: string): Promise<InspectedPayoutFee> {
+  const record = await getOperation(db, sendOperationId);
+  const sourceType = record?.purpose ? FEE_SOURCE_TYPE[record.purpose] : undefined;
+  if (!record || record.kind !== "payout.send" || record.status !== "succeeded" || !record.sourceId || !sourceType) {
+    return { state: "not_applicable" };
+  }
+  const { worldId, sourceId } = record;
+  const purpose = record.purpose!;
+  if (!(await sourceSucceeded(db, worldId, purpose, sourceId))) {
+    return { state: "not_applicable" };
+  }
+  const send = record.body as PayoutSendResult;
+  const fee = knownPayoutFee(send, await latestPayoutGetForSend(db, sendOperationId));
+  if (!fee) {
+    return { state: "unknown", worldId, purpose, sourceId, batchId: send.batchId };
+  }
+  return { state: "known", worldId, sourceId, sourceType, fee };
+}
+
+/** A settled payout whose PayPal fee was never reported (reconcile's `payout_fee_unknown`). */
+export interface UnknownPayoutFee {
+  purpose: string;
+  sourceId: string;
+  sendOperationId: string;
+  batchId: string;
+}
+
+/**
+ * Task 10b (controller item 3): read-only — the payout's details when its
+ * source succeeded but no read ever reported the batch's fee, else `null`.
+ * The reconcile cron lists these once they are older than
+ * `PAYOUT_FEE_POLL_WINDOW_MS` (it stops polling for the fee then).
+ */
+export async function unknownPayoutFee(db: Db, sendOperationId: string): Promise<UnknownPayoutFee | null> {
+  const inspected = await inspectPayoutFee(db, sendOperationId);
+  return inspected.state === "unknown"
+    ? { purpose: inspected.purpose, sourceId: inspected.sourceId, sendOperationId, batchId: inspected.batchId }
+    : null;
 }
 
 /** Task 10b: how long after a send the cron keeps reading a settled batch for its (still unknown) fee. */
