@@ -22,7 +22,8 @@ import { errorMessage } from "./jobRuns";
  * 2. An event id already stored verified AND processed → 200 no-op.
  * 3. Verifies the delivery with PayPal (`verifyWebhookSignature`). Could
  *    not ask PayPal → 503 (PayPal redelivers). Unverified → stored with
- *    `verified = false`, 400, no effect.
+ *    `verified = false` (ids only, no body — M4), 400, no effect. A
+ *    verified body is stored through `redact()`.
  * 4. Resolves the world from the operation that owns the PayPal resource
  *    (a payout batch's `payout.send`, an order's `order.create`), stores
  *    the event with that world (null when no world knows it — stored,

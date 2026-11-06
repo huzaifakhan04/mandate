@@ -6,6 +6,7 @@ import type { Db } from "../db/client";
 import { webhookEvents } from "../db/schema";
 import { PayPalConfigError } from "./config";
 import { PayPalNetworkError, paypalFetch } from "./fetch";
+import { redact } from "./redact";
 
 /**
  * Task 8: PayPal webhook signature verification and the `webhook_events`
@@ -108,6 +109,20 @@ export interface RecordWebhookEventInput {
 }
 
 /**
+ * M4 (final review): what is persisted as `webhook_events.payload`.
+ * An UNVERIFIED delivery is attacker-controlled input — anyone can POST to
+ * the endpoint — so only its identifiers are kept, never its body. A
+ * verified payload is stored through `redact()` (the same masking applied
+ * to PayPal bodies in `paypal_operations`: emails, tokens, secrets).
+ */
+export function storedWebhookPayload(input: Pick<RecordWebhookEventInput, "paypalEventId" | "type" | "verified" | "payload">): object {
+  if (!input.verified) {
+    return { event_type: input.type, paypal_event_id: input.paypalEventId, verified: false };
+  }
+  return redact(input.payload) as object;
+}
+
+/**
  * Stores a delivery, keyed by PayPal's event id (unique), and returns the
  * row to act on plus whether this call should process it:
  * - new id → inserted; `process` = `verified`;
@@ -122,13 +137,14 @@ export async function recordWebhookEvent(
   db: Db,
   input: RecordWebhookEventInput,
 ): Promise<{ row: WebhookEventRow; process: boolean; duplicate: boolean }> {
+  const payload = storedWebhookPayload(input);
   const [inserted] = await db
     .insert(webhookEvents)
     .values({
       paypalEventId: input.paypalEventId,
       type: input.type,
       verified: input.verified,
-      payload: input.payload as object,
+      payload,
       worldId: input.worldId,
     })
     .onConflictDoNothing({ target: webhookEvents.paypalEventId })
@@ -140,7 +156,7 @@ export async function recordWebhookEvent(
   if (input.verified) {
     const [upgraded] = await db
       .update(webhookEvents)
-      .set({ verified: true, type: input.type, payload: input.payload as object, worldId: input.worldId })
+      .set({ verified: true, type: input.type, payload, worldId: input.worldId })
       .where(eq(webhookEvents.paypalEventId, input.paypalEventId))
       .returning();
     if (!upgraded) {

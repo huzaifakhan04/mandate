@@ -146,6 +146,8 @@ describe("PayPal webhooks (verified)", () => {
     const row = await storedEvent(db, evt.id);
     expect(row?.verified).toBe(false);
     expect(row?.processedAt).toBeNull();
+    // M4: an unverified (attacker-controllable) body is never stored — only its ids.
+    expect(row?.payload).toEqual({ event_type: evt.event_type, paypal_event_id: evt.id, verified: false });
     expect((await getLoan(db, loanId)).status).toBe("disbursing");
     expect(await journalsWithKeyPrefix(db, worldId, "loan_disbursement:")).toHaveLength(0);
   });
@@ -172,7 +174,27 @@ describe("PayPal webhooks (verified)", () => {
     verificationStatus = "SUCCESS";
     expect((await POST(webhookRequest(JSON.stringify(evt)))).status).toBe(200);
     expect((await getLoan(db, loanId)).status).toBe("active");
-    expect((await storedEvent(db, evt.id))?.verified).toBe(true);
+    const upgraded = await storedEvent(db, evt.id);
+    expect(upgraded?.verified).toBe(true);
+    expect(upgraded?.payload).toMatchObject({ id: evt.id, event_type: evt.event_type }); // the verified body replaces the stub
+  });
+
+  it("M4: a verified payload is stored redacted (emails masked, token-like keys removed)", async () => {
+    const evt = event("SOMETHING.ELSE", {
+      id: "nothing",
+      payer: { email_address: "client.person@example.com" },
+      access_token: "should-not-be-stored",
+    });
+    expect((await POST(webhookRequest(JSON.stringify(evt)))).status).toBe(200);
+    const row = await storedEvent(db, evt.id);
+    expect(row?.verified).toBe(true);
+    const stored = JSON.stringify(row?.payload);
+    expect(stored).not.toContain("client.person@example.com");
+    expect(stored).not.toContain("should-not-be-stored");
+    expect(row?.payload).toMatchObject({
+      id: evt.id,
+      resource: { payer: { email_address: "cl***********@example.com" }, access_token: "[REDACTED]" },
+    });
   });
 
   it("the verify call failing (PayPal 5xx) → 503 so PayPal retries; nothing applied", async () => {
