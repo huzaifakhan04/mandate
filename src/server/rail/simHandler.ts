@@ -67,7 +67,25 @@ interface SimOrderState {
    * PENDING captures that later complete or are denied.
    */
   captureStatus?: string;
+  /** Who approved the order (set by `simApprove`); shown on the order from then on, like PayPal's `payer`. */
+  payer?: SimPayer;
 }
+
+/** The sim payer `simApprove` records — Verify with PayPal reads it back via `order.get`. */
+export interface SimPayer {
+  payerId: string;
+  email: string;
+  givenName: string;
+  surname: string;
+}
+
+/** `simApprove`'s payer when the caller doesn't name one. */
+export const DEFAULT_SIM_PAYER: SimPayer = {
+  payerId: "SIMPAYER00001",
+  email: "sim-payer@example.com",
+  givenName: "Sim",
+  surname: "Payer",
+};
 
 type SimItemStatus = "SUCCESS" | "FAILED" | "UNCLAIMED" | "RETURNED";
 
@@ -177,6 +195,15 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
     id: state.orderId,
     intent: "CAPTURE",
     status: state.status,
+    ...(state.payer && state.status !== "PAYER_ACTION_REQUIRED"
+      ? {
+          payer: {
+            payer_id: state.payer.payerId,
+            email_address: state.payer.email,
+            name: { given_name: state.payer.givenName, surname: state.payer.surname },
+          },
+        }
+      : {}),
     purchase_units: [
       {
         amount,
@@ -451,9 +478,10 @@ export async function simSetCaptureStatus(db: Db, orderId: string, captureStatus
  * unique) and must never be reachable from an agent/tool call.
  * Re-approving throws a PayPal-shaped `ORDER_ALREADY_APPROVED` /
  * `ORDER_ALREADY_CAPTURED`, so approve → capture → approve can't reopen
- * a captured order.
+ * a captured order. `payer` (P2) is who approved it — any field left out
+ * comes from `DEFAULT_SIM_PAYER`; `order.get` shows it as PayPal's `payer`.
  */
-export async function simApprove(db: Db, orderId: string): Promise<void> {
+export async function simApprove(db: Db, orderId: string, payer: Partial<SimPayer> = {}): Promise<void> {
   const order = await findOrder(db, orderId, null);
   if (!order) {
     throw new SimRailError(`Unknown sim order ${orderId}`);
@@ -461,7 +489,13 @@ export async function simApprove(db: Db, orderId: string): Promise<void> {
 
   const [updated] = await db
     .update(t)
-    .set({ simState: { ...order.state, status: "APPROVED" } satisfies SimOrderState })
+    .set({
+      simState: {
+        ...order.state,
+        status: "APPROVED",
+        payer: { ...DEFAULT_SIM_PAYER, ...payer },
+      } satisfies SimOrderState,
+    })
     .where(and(eq(t.id, order.id), sql`${t.simState}->>'status' = 'PAYER_ACTION_REQUIRED'`))
     .returning();
   if (updated) {

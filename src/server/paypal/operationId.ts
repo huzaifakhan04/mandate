@@ -23,7 +23,9 @@ export type OperationPurpose =
   | "repayment_capture"
   | "note_purchase_capture"
   | "remainder_payout"
-  | "payout_cancel";
+  | "payout_cancel"
+  // P2: the $0.01 "Verify with PayPal" order — approved, never captured.
+  | "identity_verification";
 
 function uuidBytes(uuid: string): Buffer {
   return Buffer.from(uuid.replace(/-/g, ""), "hex");

@@ -1,6 +1,6 @@
 import type { Db } from "../db/client";
 import { operationRail } from "./operationRail";
-import { simApprove } from "./simHandler";
+import { simApprove, type SimPayer } from "./simHandler";
 import type { PaymentRail } from "./types";
 
 export { SimRailError } from "./simHandler";
@@ -13,9 +13,9 @@ export { SimRailError } from "./simHandler";
  */
 export function simRail(
   db: Db,
-): PaymentRail & { simApprove(orderId: string): Promise<void> } {
+): PaymentRail & { simApprove(orderId: string, payer?: Partial<SimPayer>): Promise<void> } {
   return {
     ...operationRail(db, "sim"),
-    simApprove: (orderId) => simApprove(db, orderId),
+    simApprove: (orderId, payer) => simApprove(db, orderId, payer),
   };
 }
