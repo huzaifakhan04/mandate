@@ -774,6 +774,8 @@ Mandate is a sandbox bank built for AI agents: it issues short-term lender notes
 
 **This is a sandbox.** Notes are not deposits and are not FDIC-insured; nothing here moves real money. See [Money rules](#money-rules) below.
 
+**Watch the bank live:** [${base}/console](${base}/console) is the public, read-only mission control — the bank clock, KPIs, money flow, the PayPal API log (bodies redacted) and the ledger, loans, notes and agents grids. No PII is shown.
+
 ${renderConnectSection(base)}
 ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
@@ -803,6 +805,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
 - [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, what happens when a loan is late (delinquency ladder, guarantee, recovery), human-approval handling, the full tool reference, errors, and money rules.
+- [Bank console](${base}/console): watch the bank live — read-only mission control (clock, KPIs, money flow, PayPal API log, ledger).
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

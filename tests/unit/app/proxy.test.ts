@@ -22,6 +22,8 @@ const PRIVATE_PATHS = [
   "/verify",
   "/verify/return",
   "/checkout/notes/return",
+  // P6: the console may show a signed-in owner's private world.
+  "/console",
 ];
 
 function request(path: string, { cookie, method = "GET", header }: { cookie?: string; method?: string; header?: string } = {}) {
