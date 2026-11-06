@@ -94,11 +94,21 @@ export const aiRuns = pgTable("ai_runs", {
     .references(() => worlds.id),
   role: text("role").notNull(),
   model: text("model").notNull(),
+  /** sha256 of the role's system prompt + output schema (the prompt version). */
   promptHash: text("prompt_hash").notNull(),
+  /** Legacy P0 column; P3 uses `subject`. */
   inputRef: text("input_ref"),
+  /** sha256 of the redacted, allowlisted input actually sent (P3 Task 3). */
+  inputHash: text("input_hash"),
+  /** What the run is about: an application id or a KYA document id. */
+  subject: text("subject"),
   output: jsonb("output"),
   latencyMs: integer("latency_ms"),
+  tokensIn: integer("tokens_in"),
+  tokensOut: integer("tokens_out"),
   fallbackUsed: boolean("fallback_used").notNull().default(false),
+  /** Why the template was used: disabled, timeout, http_<status>, request_failed, invalid_json, schema_violation, policy_violation. */
+  errorCode: text("error_code"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
