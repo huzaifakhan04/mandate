@@ -10,3 +10,18 @@ test("landing page shows heading and light theme background", async ({ page }) =
   );
   expect(backgroundColor).toBe("rgb(255, 255, 255)");
 });
+
+test("I3: checkout return/cancel landing pages render; unknown kinds 404", async ({ page, request }) => {
+  await page.goto("/checkout/notes/return?token=SIMORDER-UNKNOWN");
+  await expect(page.getByRole("heading", { name: "Payment approved" })).toBeVisible();
+  await expect(page.getByText("your agent will see it settle within a minute or two")).toBeVisible();
+
+  await page.goto("/checkout/invoice/return");
+  await expect(page.getByText("Thanks — your payment to Mandate is being processed.")).toBeVisible();
+
+  await page.goto("/checkout/repay/cancel");
+  await expect(page.getByText("Payment cancelled. Nothing was charged.")).toBeVisible();
+
+  expect((await request.get("/checkout/loans/return")).status()).toBe(404);
+  expect((await request.get("/checkout/notes/finished")).status()).toBe(404);
+});

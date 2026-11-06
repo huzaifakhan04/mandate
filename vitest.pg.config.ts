@@ -18,7 +18,7 @@ export default defineConfig({
     // migration dry run) plus the WHOLE unit suite re-run on real Postgres
     // — a superset of the money suites (loans, notes, repayments,
     // checkouts, reconcile, runTool idempotency/finalize, ledger).
-    include: ["tests/pg/**/*.test.ts", "tests/unit/**/*.test.ts"],
+    include: ["tests/pg/**/*.test.ts", "tests/unit/**/*.test.ts", "tests/unit/**/*.test.tsx"],
     testTimeout: 30_000,
     hookTimeout: 60_000,
     maxWorkers: 4,
