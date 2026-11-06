@@ -592,7 +592,6 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
               <Pill tone={doc.reviewStatus === "approved" ? "ok" : doc.reviewStatus === "rejected" ? "risk" : "warn"}>
                 {doc.reviewStatus}
               </Pill>
-
               <form method="post" action={`/dashboard/agents/${agent.id}/documents/${doc.id}`}>
                 <button type="submit" className="btn sm" aria-label={`Delete ${doc.fileName ?? "document"}`}>
                   Delete

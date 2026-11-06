@@ -12,7 +12,8 @@ const inputSchema = z.object({
 
 const outputSchema = z.object({
   application_id: z.string(),
-  status: z.string(),
+  /** An application is decided in the same transaction that records it, so it is only ever one of these. */
+  status: z.enum(["OFFERED", "DECLINED"]),
   decision: z.enum(["approved", "declined"]).nullable(),
   reasons: z.array(z.object({ code: z.string(), text: z.string() })),
   adverse_action: adverseActionSchema.nullable(),
@@ -26,7 +27,9 @@ export const getApplicationTool = defineTool({
   name: "get_application",
   title: "Get Application",
   description:
-    "Returns one of the calling agent's loan applications: its status (OFFERED or DECLINED), the " +
+    "Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; " +
+    "the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / " +
+    "get_status for what happened next) or DECLINED (see adverse_action) — the " +
     "decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your " +
     "statement of specific reasons), the latest explanation (the loan officer's text, or its template " +
     "when the AI was unavailable), the offer_id of an offered application, and an echo of the " +
@@ -45,7 +48,7 @@ export const getApplicationTool = defineTool({
       return fail("NOT_FOUND", "No such application.", ["application_not_found"]);
     }
     const { application, offerId } = view;
-    const status = application.status.toUpperCase();
+    const status = application.status.toUpperCase() === "OFFERED" ? "OFFERED" : "DECLINED";
     const narrative = application.narrative as { explanation?: unknown } | null;
     const adverse = application.adverseAction as { explanation?: unknown } | null;
     const explanation = narrative?.explanation ?? adverse?.explanation ?? null;

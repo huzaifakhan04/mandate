@@ -142,6 +142,25 @@ describe("KYA desk after a document upload", () => {
     }
   });
 
+  it("the after() task never rejects, even when getDb fails once the response is sent", async () => {
+    let calls = 0;
+    handlers = createDocumentHandlers({
+      getDb: async () => {
+        calls += 1;
+        if (calls > 1) {
+          throw new Error("db unavailable");
+        }
+        return db;
+      },
+      afterResponse: (task) => void pending.push(task),
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    expect((await upload()).status).toBe(201);
+    await expect(runPending()).resolves.toBeUndefined();
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("[kya-desk] review failed"));
+    errors.mockRestore();
+  });
+
   it("a failed upload schedules nothing", async () => {
     const form = new FormData();
     form.set("kind", "operator_registration");

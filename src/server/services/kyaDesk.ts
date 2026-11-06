@@ -11,15 +11,22 @@ import { loadAgentKya } from "./kya";
  * The KYA desk (P3 Task 4) — an AFTER-COMMIT module (listed in
  * `AI_CALLERS`, tests/unit/ai/noTransactionCalls.test.ts). The dashboard
  * upload route schedules it with `after()`, once the response is sent; it
- * takes a plain `db` and never opens a transaction.
+ * takes a plain `db` (or a getter, resolved inside its guard) and never
+ * opens a transaction. It never rejects.
  *
  * Advisory only: it stores the LLM's verdict and findings on the document
  * (`ai_verdict`, `ai_findings`); the P2 auto-review (`review_status`) stays
  * authoritative. Findings can echo agent-controlled strings (file name,
  * agent name), so URLs are stripped and each is capped at 200 chars.
  */
-export async function reviewKyaDocument(db: Db, worldId: string, documentId: string): Promise<void> {
+export async function reviewKyaDocument(
+  dbOrGetDb: Db | (() => Promise<Db>),
+  worldId: string,
+  documentId: string,
+): Promise<void> {
   try {
+    // Resolved inside the guard so a failing `getDb` never rejects the after() task.
+    const db = typeof dbOrGetDb === "function" ? await dbOrGetDb() : dbOrGetDb;
     const world = scoped(db, worldId);
     const [doc] = await world.selectFields(
       kyaDocuments,
