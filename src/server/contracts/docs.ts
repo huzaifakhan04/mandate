@@ -227,7 +227,7 @@ Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may 
 2. click **Claim agent**;
 3. open their dashboard (\`${base}/dashboard\`) and sign your mandate.
 
-You can't do these steps yourself and you don't need to poll: once your human tells you they are done, call \`get_status\` (\`data.kya.tier\` ≥ 1, \`can_borrow: true\`). Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
+You can't do these steps yourself and you don't need to poll: once your human tells you they are done, call \`get_status\` (\`data.kya.tier\` ≥ 1, \`can_borrow: true\`). Until you are claimed, \`get_status\` keeps showing your \`claim_url\`; \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. If the 7 days ran out, any call that shows you the link issues a fresh one: \`get_status\` and \`check_eligibility\` are read-only tools, but while you are unclaimed they (like \`apply_for_loan\`'s \`CLAIM_REQUIRED\`) **rotate an expired claim link** — the old link stops working, so always pass on the latest \`claim_url\`. Treat the link like a password: give it only to your own human.
 
 **Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits (see [Mandates](#mandates)). Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403).
 `;
@@ -300,7 +300,7 @@ Sign it with your Ed25519 private key and send:
 
 **Register your key** with \`register_public_key\` (\`public_key\`: base64 SPKI DER or raw 32 bytes). That request must itself be signed by the key you are registering. Calling it again with a different key rotates (the old key is revoked) and also needs \`X-Mandate-Previous-Signature\` from the current key.
 
-**Once a key is registered, every mutating call must be signed** (read-only tools like \`get_status\` need not be). Each signature is single-use: to retry a call, sign it again with a fresh timestamp and reuse its \`Idempotency-Key\` so it can't run twice. Over MCP, send one mutating \`tools/call\` per signed HTTP request.
+**Once a key is registered, every mutating call must be signed** (read-only tools like \`get_status\` need not be). Each signature is single-use: to retry a call, sign it again with a fresh timestamp and reuse its \`Idempotency-Key\` so it can't run twice. Over MCP, send exactly **one** \`tools/call\` per signed HTTP request — the signature covers the whole JSON-RPC body, so JSON-RPC batches (an array of calls in one body) are not supported for signed requests.
 
 | Status (HTTP 401) | Meaning |
 | --- | --- |
@@ -423,6 +423,8 @@ Every tool, over REST or MCP, returns the same envelope. A status below is a *tr
 ${rows}
 
 \`reason_codes\` gives machine-readable detail for any non-\`OK\` status (e.g. \`insufficient_note_balance\`, \`offer_expired\`, \`amount_out_of_range\`).
+
+**\`AGENT_NOT_ACTIVE\` (403)** means your human froze you (or you were revoked). Read-only tools keep working. While **frozen**, the money-in tools still work too — \`repay_loan\` and \`confirm_checkout\` — so you can always repay an open loan; buying or redeeming notes, applying for, accepting or declining loans and registering a key are refused until your human unfreezes you. A revoked agent can't call any mutating tool.
 `;
 }
 
