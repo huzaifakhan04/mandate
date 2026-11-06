@@ -155,3 +155,47 @@ test("tools/call with invalid args returns runTool's INVALID_REQUEST envelope wi
   expect(body.result?.structuredContent?.reason_codes.length).toBeGreaterThan(0);
   expect(raw).not.toMatch(/at \S+ \(.*:\d+:\d+\)/);
 });
+
+async function mcpCall(
+  request: import("@playwright/test").APIRequestContext,
+  id: number,
+  name: string,
+  args: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<Envelope> {
+  const res = await request.post(MCP_URL, {
+    headers: { ...MCP_HEADERS, ...headers },
+    data: { jsonrpc: "2.0", id, method: "tools/call", params: { name, arguments: args } },
+  });
+  expect(res.status()).toBe(200);
+  const body = await readJsonRpc(res);
+  return body.result!.structuredContent!;
+}
+
+test("M1: MCP tools/call honours the Idempotency-Key header (replay + header/argument mismatch)", async ({
+  request,
+}) => {
+  const registered = await mcpCall(request, 30, "register_agent", {
+    name: "Idem E2E",
+    payout_email: "idem-e2e@example.com",
+  });
+  expect(registered.status).toBe("OK");
+  const apiKey = (registered.data as { api_key: string }).api_key;
+  const auth = { authorization: `Bearer ${apiKey}` };
+  const apply = { amount_cents: 1000, term_days: 7, purpose: "E2E idempotency check" };
+
+  const first = await mcpCall(request, 31, "apply_for_loan", apply, { ...auth, "Idempotency-Key": "e2e-idem-1" });
+  const replay = await mcpCall(request, 32, "apply_for_loan", apply, { ...auth, "Idempotency-Key": "e2e-idem-1" });
+  expect(first.status).not.toBe("INTERNAL_ERROR");
+  expect(replay).toEqual(first);
+
+  const mismatch = await mcpCall(
+    request,
+    33,
+    "apply_for_loan",
+    { ...apply, idempotency_key: "something-else" },
+    { ...auth, "Idempotency-Key": "e2e-idem-2" },
+  );
+  expect(mismatch.status).toBe("INVALID_REQUEST");
+  expect(mismatch.reason_codes).toContain("idempotency_key_mismatch");
+});

@@ -22,6 +22,9 @@ export default defineConfig({
         Object.entries(process.env).filter(([, v]) => v !== undefined),
       ),
       DATABASE_URL: "",
+      // Tools that create/verify API keys need a pepper; .env.local may not
+      // carry one for local runs. Test-only value; never a real secret.
+      API_KEY_PEPPER: process.env.API_KEY_PEPPER || "e2e-test-pepper",
     },
   },
 });

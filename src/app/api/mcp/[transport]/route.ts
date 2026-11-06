@@ -28,6 +28,19 @@ import { getDb } from "@/server/db/client";
  * args — goes through `runTool(findTool(name), name, args ?? {}, deps)`,
  * and that envelope is the only thing ever sent back over MCP.
  */
+/**
+ * The HTTP headers `runTool` reads, same as the REST route: the API key and
+ * (M1) the `Idempotency-Key` header — an agent may pass the key either as
+ * this header or as the `idempotency_key` argument; if both are present they
+ * must agree (`runTool` answers `idempotency_key_mismatch` otherwise).
+ */
+function headerDeps(headers: Headers | undefined): { authorization: string | null; idempotencyKey: string | null } {
+  return {
+    authorization: headers?.get("authorization") ?? null,
+    idempotencyKey: headers?.get("idempotency-key") ?? null,
+  };
+}
+
 const mcpHandler = createMcpHandler(
   (server) => {
     for (const tool of registry) {
@@ -43,11 +56,10 @@ const mcpHandler = createMcpHandler(
         // (and its input validation) ever runs. Kept as a safe fallback.
         async (input, ctx) => {
           const requestId = randomUUID();
-          const authorization = ctx.http?.req?.headers.get("authorization") ?? null;
           const { httpStatus, envelope } = await runTool(tool, tool.name, input, {
             getDb,
             requestId,
-            authorization,
+            ...headerDeps(ctx.http?.req?.headers),
           });
 
           return {
@@ -67,11 +79,10 @@ const mcpHandler = createMcpHandler(
       const name = request.params.name;
       const args = request.params.arguments ?? {};
       const requestId = randomUUID();
-      const authorization = ctx.http?.req?.headers.get("authorization") ?? null;
       const { httpStatus, envelope } = await runTool(findTool(name), name, args, {
         getDb,
         requestId,
-        authorization,
+        ...headerDeps(ctx.http?.req?.headers),
       });
 
       const result = {
