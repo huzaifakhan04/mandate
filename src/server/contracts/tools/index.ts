@@ -13,6 +13,7 @@ import "../../services/repayments"; // registers the repayment_link/repayment_di
 import "./buyNotes";
 import "./confirmCheckout";
 import "./redeemNotes";
+import "./cancelRedemption";
 import "./checkEligibility";
 import "./applyForLoan";
 import "./acceptOffer";

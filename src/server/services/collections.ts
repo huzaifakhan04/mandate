@@ -11,11 +11,13 @@ import {
   noteSeries,
   notePositions,
   noteTransactions,
+  offers,
   principals,
   repaymentLinks,
   scoreHistory,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { ceclLoanCents, chargeOffRelease, expectedLossBpsAtOffer, isCeclDelinquentStatus } from "../domain/cecl";
 import {
   LATE_SCORE_DELTA,
   daysLate,
@@ -36,7 +38,9 @@ import {
   toDbStatus,
   transition,
 } from "../domain/loanMachine";
+import { OPEN_REDEMPTION_STATUSES } from "../domain/treasury";
 import { postJournal } from "../ledger/postJournal";
+import { getCodeBalance } from "../ledger/trialBalance";
 import { buildCreateOrderRequest, enqueueOperation } from "../paypal/operations";
 import { scoreAgent } from "./credit";
 import { checkoutUrl, refreshGuaranteeLink } from "./paymentLinks";
@@ -177,9 +181,18 @@ export async function lockAgent(tx: Db, worldId: string, agentId: string): Promi
   await scoped(tx, worldId).forUpdate(agents, eq(agents.id, agentId));
 }
 
+/**
+ * Locks the world's note series row (Mandate Pool A) — the first lock of
+ * every path that moves money in the pool. P5's daily CECL booking takes it
+ * too, so it serialises with charge-offs (which release the allowance).
+ */
+export async function lockPoolSeries(tx: Db, worldId: string): Promise<void> {
+  await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
+}
+
 /** Locks the world's note series row then the loan row (the repayment capture's lock order). */
 async function lockSeriesThenLoan(tx: Db, worldId: string, loanId: string): Promise<LoanRow | undefined> {
-  await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
+  await lockPoolSeries(tx, worldId);
   const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, loanId));
   return loan;
 }
@@ -392,8 +405,14 @@ async function applySubstandardStep(tx: Db, worldId: string, loan: LoanRow, at: 
  * - SUBSTANDARD → CHARGED_OFF; the base outstanding, late fees and penalty
  *   are written off (buckets → 0) and recorded on the loan
  *   (`charge_off_principal_cents`, `charge_off_total_cents`);
- * - journal: Dr `provision_expense` / Cr `allowance_for_losses` (P), then
- *   Dr `allowance_for_losses` / Cr `loans_receivable` (P). The base fee,
+ * - journal: Dr `provision_expense` / Cr `allowance_for_losses` (P − R),
+ *   then Dr `allowance_for_losses` / Cr `loans_receivable` (P). R (P5
+ *   Task 2) is the loan's CECL reserve the allowance already holds —
+ *   min(the loan's reserve at this moment, the allowance balance, P) — so
+ *   the charge-off provisions only the shortfall: the allowance stays ≥ 0
+ *   and the provision expense over the loan's life (daily CECL + this) is
+ *   P before the holders' share. Any gap between R and what the daily runs
+ *   booked is trued up by the next day's CECL run. The base fee,
  *   late fees and penalty were never journaled (fee income on collection,
  *   P1/Task 1) — writing them off posts nothing;
  * - note holders bear the principal loss pro rata by their FULL units at
@@ -438,7 +457,8 @@ async function applyChargeOffStep(
             positions.map((position) => position.id),
           ),
           eq(noteTransactions.kind, "redeem"),
-          eq(noteTransactions.status, "pending"),
+          // P5 Task 3: a queued redemption reserves its units too.
+          inArray(noteTransactions.status, [...OPEN_REDEMPTION_STATUSES]),
         )!,
       )
     : [];
@@ -483,7 +503,19 @@ async function applyChargeOffStep(
     throw new Error(`loan ${loan.id} changed under its row lock (charge-off step)`);
   }
 
-  if (parts.principalCents > 0n) {
+  // P5 Task 2: the allowance already holds this loan's CECL reserve (booked
+  // daily under this same series lock). Release it — never more than the
+  // allowance holds or the principal — and provision only the shortfall.
+  const [offer] = await scoped(tx, worldId).select(offers, eq(offers.id, loan.offerId));
+  const loanReserve = ceclLoanCents({
+    outstandingPrincipalCents: parts.principalCents,
+    expectedLossBps: expectedLossBpsAtOffer(offer?.disclosure),
+    delinquent: isCeclDelinquentStatus(loan.status),
+  });
+  const allowanceCents = -(await getCodeBalance(tx, worldId, "allowance_for_losses"));
+  const releasedCents = chargeOffRelease(loanReserve, allowanceCents, parts.principalCents);
+  const provisionCents = parts.principalCents - releasedCents;
+  if (provisionCents > 0n) {
     await postJournal(tx, {
       worldId,
       memo: "Loan charged off: provision",
@@ -492,10 +524,12 @@ async function applyChargeOffStep(
       simAt: at,
       idempotencyKey: `charge_off:${loan.id}:provision`,
       postings: [
-        { accountCode: "provision_expense", amountCents: parts.principalCents },
-        { accountCode: "allowance_for_losses", amountCents: -parts.principalCents },
+        { accountCode: "provision_expense", amountCents: provisionCents },
+        { accountCode: "allowance_for_losses", amountCents: -provisionCents },
       ],
     });
+  }
+  if (parts.principalCents > 0n) {
     await postJournal(tx, {
       worldId,
       memo: "Loan charged off: written off",
@@ -585,6 +619,8 @@ async function applyChargeOffStep(
     holders_loss_cents: Number(holdersLoss),
     holders_deferred_cents: Number(holdersDeferred),
     bank_loss_cents: Number(parts.principalCents - holdersLoss),
+    allowance_released_cents: Number(releasedCents),
+    provision_cents: Number(provisionCents),
     holders: shares.map((share) => ({
       agent_id: share.agentId,
       loss_cents: Number(share.cents),

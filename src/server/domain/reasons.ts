@@ -42,6 +42,12 @@ export const REASON_PRIORITY = [
   // 8. capacity: one open loan, pool liquidity
   "open_loan_exists",
   "insufficient_liquidity",
+  // P5: the pool is more than 90% lent out
+  "pool_utilization_high",
+  // P5 Task 3: treasury policy (reserve floor, concentration, daily lending budget)
+  "reserve_floor",
+  "concentration_limit",
+  "daily_budget_exhausted",
 ] as const;
 
 export type ReasonCode = (typeof REASON_PRIORITY)[number];
@@ -68,6 +74,17 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   declaration_missing: "Required application declarations were not provided.",
   open_loan_exists: "You already have an open loan with us.",
   insufficient_liquidity: "The lending pool cannot fund this amount right now.",
+  pool_utilization_high:
+    "The lending pool is more than 90% lent out; we are not making new loans until repayments or new note purchases come in.",
+  // M2 (final review): no hardcoded default percentages — this world's actual
+  // caps ride along in the DECLINED response's `data.treasury` (not named
+  // here: a dotted "data.treasury"-shaped token is stripped as a fake link
+  // by the narrative sanitizer, `ai/sanitize.ts`).
+  reserve_floor:
+    "This loan would take the bank's cash below this world's reserve floor (a share of the notes it owes holders), after any queued redemptions; the exact floor is in this response's data.",
+  concentration_limit:
+    "Your human's loans across all their agents would exceed this world's concentration limit; the exact cap is in this response's data.",
+  daily_budget_exhausted: "This world's lending budget for today is used up; the exact budget is in this response's data.",
 };
 
 export const MAX_SHOWN_REASONS = 4;

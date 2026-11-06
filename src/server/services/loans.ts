@@ -35,6 +35,9 @@ import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } fr
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
+import { currentEconomy, liveUtilization } from "./economy";
+import { loanTreasuryFacts } from "./treasury";
+import { loanTreasuryReasons, type LoanTreasuryFacts } from "../domain/treasury";
 import { borrowGate, loadAgentKya } from "./kya";
 import type { BorrowBlocker } from "../domain/kya";
 import {
@@ -199,6 +202,8 @@ interface Underwriting {
   availableLiquidityCents: bigint;
   /** Invoice face ÷ principal in bps; `null` without an invoice. */
   coverageBps: number | null;
+  /** M2 (final review): the treasury facts gathered for the gates, so a decline can quote this world's actual caps. */
+  treasury: LoanTreasuryFacts | null;
 }
 
 /**
@@ -226,6 +231,11 @@ async function underwrite(
   });
   const credit = computeScore(facts);
   const availableLiquidityCents = await availableLiquidity(db, worldId);
+  // P5: the base rate is the latest daily economy_state's; utilization is
+  // measured live (the pool can move a lot within a day — not the snapshot).
+  const economy = await currentEconomy(db, worldId);
+  const utilization = await liveUtilization(db, worldId);
+  const treasuryFacts = await loanTreasuryFacts(db, worldId, agent, availableLiquidityCents);
 
   const decision = evaluateApplication({
     amountCents: request.amountCents,
@@ -244,8 +254,21 @@ async function underwrite(
     delinquentPrincipal: await principalHasDelinquentLoan(db, worldId, agent.principalId),
     openLoanExists: await hasOpenLoan(db, worldId, agentId),
     availableLiquidityCents,
+    baseRateBps: economy.baseRateBps,
+    utilizationBps: utilization.utilizationBps,
+    // P5 Task 3: reserve floor, concentration, daily budget (under the series lock for apply).
+    treasury: treasuryFacts ?? undefined,
   });
-  return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents, coverageBps };
+  return {
+    decision,
+    credit,
+    mandate,
+    exposureCents,
+    tier: tier.tier,
+    availableLiquidityCents,
+    coverageBps,
+    treasury: treasuryFacts,
+  };
 }
 
 /** The disclosure's rate components (bps of the principal for the term). */
@@ -282,6 +305,9 @@ export interface Quote {
   rateComponents: RateComponents;
   /** `APR_FLAG_TEXT` when the APR is above 36%, else `null`. */
   aprFlag: string | null;
+  /** P5: the annual base rate and utilization premium (bps) in the cost of funds. */
+  baseRateBps: number;
+  utilizationPremiumBps: number;
 }
 
 export interface Eligibility {
@@ -369,6 +395,8 @@ export async function checkEligibility(
           score: credit.score,
           rateComponents: rateComponents(price),
           aprFlag: price.aprFlag ? APR_FLAG_TEXT : null,
+          baseRateBps: price.baseRateBps,
+          utilizationPremiumBps: price.utilizationPremiumBps,
         }
       : null,
     mandate: mandate ? mandateSummary(mandate, exposureCents, tier) : null,
@@ -448,6 +476,10 @@ export interface Disclosure {
   credit_grade: Grade;
   /** P3 Task 2: the fee's risk-based components (bps of the principal for the term). */
   rate_components: RateComponents;
+  /** P5 (disclosure v2): the annual base rate (bps) in the cost of funds that day. */
+  base_rate_bps: number;
+  /** P5 (disclosure v2): the annual utilization premium (bps) in the cost of funds at offer time. */
+  utilization_premium_bps: number;
   /** Present when the APR is above 36%. */
   apr_flag?: typeof APR_FLAG_TEXT;
   right_to_statement: typeof RIGHT_TO_STATEMENT_TEXT;
@@ -476,6 +508,8 @@ export type CreateLoanOfferOutcome =
       /** P3 Task 4: the notice (with the template explanation), also stored on the application. */
       adverseAction: AdverseAction;
       narrative: NarrativeInputs;
+      /** M2 (final review): this world's actual treasury facts, for a treasury-gate decline's `data.treasury`. */
+      treasury: LoanTreasuryFacts | null;
     }
   | {
       outcome: "offered";
@@ -522,6 +556,8 @@ function buildDisclosure(
     credit_score: credit.score,
     credit_grade: credit.grade,
     rate_components: rateComponents(price),
+    base_rate_bps: price.baseRateBps,
+    utilization_premium_bps: price.utilizationPremiumBps,
     right_to_statement: RIGHT_TO_STATEMENT_TEXT,
   };
   if (price.aprFlag) {
@@ -544,7 +580,7 @@ function buildDisclosure(
  * most one live offer.
  *
  * The offer's terms are fixed here: `accept_offer` re-checks the mandate,
- * tier, open loan and liquidity, not the grade.
+ * tier, open loan, liquidity and (P5 Task 3) the treasury gates, not the grade.
  *
  * Ruling P: the loan is due `term_days` after the funds are sent (the
  * borrower always gets the full term). The disclosure says so in
@@ -564,7 +600,7 @@ export async function createLoanOffer(
   // superseded underneath a concurrent acceptance of it.
   await lockNoteSeries(tx, worldId);
 
-  const { decision, credit, mandate, coverageBps } = await underwrite(tx, worldId, agentId, simNow, {
+  const { decision, credit, mandate, coverageBps, treasury } = await underwrite(tx, worldId, agentId, simNow, {
     amountCents: input.amountCents,
     termDays: input.termDays,
     purpose: input.purpose,
@@ -652,6 +688,7 @@ export async function createLoanOffer(
       credit,
       adverseAction,
       narrative,
+      treasury,
     };
   }
   const price = decision.price;
@@ -790,6 +827,12 @@ export type AcceptOfferOutcome =
   | { outcome: "mandate_limit"; reasons: Array<MandateReason | TierReason>; mandate: MandateSummary; retry: EligibilityArgs }
   /** P4: a loan of the principal's is substandard — the mandate is frozen for new loans. */
   | { outcome: "delinquent_principal" }
+  /**
+   * P5 Task 3 (Review Focus 2): the treasury policy, re-checked under the
+   * series lock, no longer allows this loan (another acceptance used the
+   * budget, the floor or the principal's concentration headroom).
+   */
+  | { outcome: "treasury_limit"; reasons: ReasonCode[]; facts: LoanTreasuryFacts }
   | { outcome: "disbursing"; loanId: string; payoutOperationId: string };
 
 /**
@@ -889,6 +932,17 @@ export async function beginAcceptOffer(
   const availableLiquidityCents = await availableLiquidity(tx, worldId);
   if (offer.principalCents > availableLiquidityCents) {
     return { outcome: "insufficient_liquidity", availableLiquidityCents };
+  }
+
+  // P5 Task 3 (Review Focus 2): the treasury gates again, under the series
+  // lock every acceptance takes first — so the second of two concurrent
+  // acceptances sees the first one's DISBURSING principal in liquidity,
+  // the principal's exposure and today's budget use, and the two can
+  // never jointly breach the floor, the concentration limit or the budget.
+  const treasury = await loanTreasuryFacts(tx, worldId, kyaAgent, availableLiquidityCents);
+  const treasuryReasons = treasury ? loanTreasuryReasons(treasury, offer.principalCents) : [];
+  if (treasury && treasuryReasons.length > 0) {
+    return { outcome: "treasury_limit", reasons: treasuryReasons, facts: treasury };
   }
 
   const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, agentId));

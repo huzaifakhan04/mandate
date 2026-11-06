@@ -1,9 +1,10 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, isNotNull } from "drizzle-orm";
 
 import { advanceClock, getSimDay, simDayIndex } from "../clock/clock";
-import { insertBots, runBotsCatchUp, seedBots } from "../bots/runner";
+import type { BorrowerArchetype } from "../bots/borrowerBot";
+import { borrowerArchetypes, CURRENT_BOT_VERSION, insertBots, runBotsCatchUp, seedBots } from "../bots/runner";
 import type { Db } from "../db/client";
-import { agents, events, loans, notePositions, principals, worlds } from "../db/schema";
+import { agents, economyState, events, loans, notePositions, principals, worlds } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { LADDER, daysLate, type LadderStep } from "../domain/delinquency";
 import { availableLiquidity } from "../domain/liquidity";
@@ -11,6 +12,10 @@ import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
 import { failWorldOperations } from "../paypal/operations";
 import { processDue, totalDueCents } from "./collections";
+import { stepEconomyToNow } from "./economy";
+import { processRedemptionQueue } from "./notes";
+import { recentStressEvents, type StressEventView } from "./stress";
+import { treasuryMemoInput, writeDailyTreasuryMemo, type StoredTreasuryMemo } from "./treasuryMemo";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -20,7 +25,7 @@ export { ownedPrivateWorld, resolveDashboardWorld } from "./privateWorldAccess";
  * P2 Task 6: private sandbox worlds. A verified principal may run up to
  * three at once. Each is sim-rail only (no PayPal, ever — Review Focus 5),
  * opens with 2 lender bots that fund the pool (20000 + 15000) and 2
- * borrower bots claimed by the world's system "bot principal" under a
+ * borrower bots (P5 Task 4, bots v2: 4 lenders and 6 borrowers) claimed by the world's system "bot principal" under a
  * signed mandate, and has a frozen clock the owner moves with +1 / +7
  * days — the bots act once per simulated day. "Reset" archives the world
  * and opens a fresh one with the same name.
@@ -106,8 +111,10 @@ async function createWorldWithBots(tx: Db, ownerId: string, name: string, seed: 
     kind: "private",
     botPrincipalId: botPrincipal!.id,
     botSeed: seed,
+    // P5 Task 4: every new private world gets bots v2.
+    botVersion: CURRENT_BOT_VERSION,
   });
-  await insertBots(tx, worldId, botPrincipal!.id, now);
+  await insertBots(tx, worldId, botPrincipal!.id, now, CURRENT_BOT_VERSION);
   return worldId;
 }
 
@@ -155,9 +162,15 @@ export async function advancePrivateWorld(
   }
   for (let i = 0; i < days; i += 1) {
     const simNow = await advanceClock(db, world.id, 1);
+    // P5: the day's economy (base rate, inflation, utilization) before the ladder and the bots.
+    await stepEconomyToNow(db, world.id);
     // P4: the delinquency ladder for the day that just passed, before the bots act.
     await processDue(db, world.id, simNow);
+    // P5 Task 3: queued redemptions the day's cash now allows (FIFO).
+    await processRedemptionQueue(db, world.id);
     await runBotsCatchUp(db, world.id, { maxDays: MAX_ADVANCE_DAYS });
+    // P5 Task 4: the day's treasury memo (a template in a private world; once per sim day).
+    await writeDailyTreasuryMemo(db, world.id);
   }
   const { simNow, day } = await getSimDay(db, world.id);
   return { outcome: "advanced", simDay: day, simNow };
@@ -203,6 +216,8 @@ export interface BotView {
   id: string;
   name: string;
   role: "lender" | "borrower";
+  /** P5 bots v2: a borrower's seeded archetype (`null` for lenders and v1 worlds). */
+  archetype: BorrowerArchetype | null;
   notesCents: bigint;
   openLoan: { status: string; principalCents: bigint; outstandingCents: bigint; dueSimAt: Date } | null;
   loansRepaid: number;
@@ -261,9 +276,68 @@ export interface PrivateWorldView {
   ownerLoans: OwnerLoanView[];
   /** Σ of every posting in the world: always 0 for a balanced ledger. */
   trialBalanceCents: bigint;
+  /** P5 Task 4: the world's economy and treasury today (`null` before its first economy day). */
+  economy: WorldEconomyView | null;
+  /** P5 Task 4: the stress scenarios triggered here, newest first. */
+  stressEvents: StressEventView[];
+}
+
+/** P5 Task 4: the economy panel of the world page. */
+export interface WorldEconomyView {
+  simDay: number;
+  baseRateBps: number;
+  inflationRateBps: number;
+  inflationIndexBp: number;
+  utilizationBps: number;
+  utilizationPremiumBps: number;
+  reserveRatioBps: number;
+  reserveFloorCents: number;
+  /** The CECL allowance — gross of note-holder loss sharing. */
+  allowanceCents: number;
+  cashCents: number;
+  dailyBudgetCents: number | null;
+  budgetUsedCents: number;
+  queuedRedemptions: number;
+  queuedRedemptionCents: number;
+  /** Whether that day's base rate carries a rate spike. */
+  rateSpike: boolean;
+  /** The latest treasury memo written. */
+  memo: StoredTreasuryMemo | null;
+}
+
+async function worldEconomyView(db: Db, worldId: string): Promise<WorldEconomyView | null> {
+  const w = scoped(db, worldId);
+  const latest = await w.findLatest(economyState, eq(economyState.worldId, worldId), economyState.simDay);
+  if (!latest) {
+    return null;
+  }
+  const input = await treasuryMemoInput(db, worldId, latest.simDay);
+  if (!input) {
+    return null;
+  }
+  const withMemo = (await w.select(economyState, isNotNull(economyState.treasuryMemo))).sort((a, b) => b.simDay - a.simDay)[0];
+  return {
+    simDay: latest.simDay,
+    baseRateBps: input.baseRateBps,
+    inflationRateBps: input.inflationRateBps,
+    inflationIndexBp: input.inflationIndexBp,
+    utilizationBps: input.utilizationBps,
+    utilizationPremiumBps: input.utilizationPremiumBps,
+    reserveRatioBps: input.reserveRatioBps,
+    reserveFloorCents: input.reserveFloorCents,
+    allowanceCents: input.allowanceCents,
+    cashCents: input.cashCents,
+    dailyBudgetCents: input.dailyBudgetCents,
+    budgetUsedCents: input.budgetUsedCents,
+    queuedRedemptions: input.queuedRedemptions,
+    queuedRedemptionCents: input.queuedRedemptionCents,
+    rateSpike: latest.scenario === "rate_spike",
+    memo: (withMemo?.treasuryMemo as StoredTreasuryMemo | null | undefined) ?? null,
+  };
 }
 
 export const RECENT_BOT_DAYS = 8;
+export const RECENT_STRESS_EVENTS = 6;
 
 export async function privateWorldView(db: Db, principalId: string, worldId: string): Promise<PrivateWorldView | null> {
   const world = await ownedPrivateWorld(db, principalId, worldId);
@@ -277,6 +351,7 @@ export async function privateWorldView(db: Db, principalId: string, worldId: str
   const loanRows = await w.select(loans);
   const open = loanRows.filter((loan) => (OPEN_LOAN_DB_STATUSES as readonly string[]).includes(loan.status));
   const botIds = new Set(botRows.map((bot) => bot.id));
+  const archetypes = await borrowerArchetypes(db, world.id);
 
   const bots: BotView[] = botRows
     .map((bot) => {
@@ -285,6 +360,7 @@ export async function privateWorldView(db: Db, principalId: string, worldId: str
         id: bot.id,
         name: bot.name,
         role: bot.principalId ? ("borrower" as const) : ("lender" as const),
+        archetype: archetypes.get(bot.id) ?? null,
         notesCents: positions.filter((p) => p.agentId === bot.id).reduce((sum, p) => sum + p.units, 0n),
         openLoan: openLoan
           ? {
@@ -343,5 +419,7 @@ export async function privateWorldView(db: Db, principalId: string, worldId: str
     recentDays,
     ownerLoans,
     trialBalanceCents: (await trialBalance(db, world.id)).totalCents,
+    economy: await worldEconomyView(db, world.id),
+    stressEvents: await recentStressEvents(db, world.id, RECENT_STRESS_EVENTS),
   };
 }

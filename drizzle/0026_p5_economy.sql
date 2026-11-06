@@ -1,0 +1,2 @@
+ALTER TABLE "economy_state" ADD COLUMN "inflation_rate_bps" integer DEFAULT 300 NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "economy_state_world_day_idx" ON "economy_state" USING btree ("world_id","sim_day");

@@ -59,6 +59,10 @@ const outputSchema = z.object({
         total_bps: z.number(),
       }),
       apr_flag: z.string().nullable(),
+      /** P5: the annual base rate (bps) in the cost of funds — the bank's daily rate. */
+      base_rate_bps: z.number(),
+      /** P5: the annual utilization premium (bps): 0 up to 50% of the pool lent, up to 600 at 90%. */
+      utilization_premium_bps: z.number(),
     })
     .nullable(),
   tier: z.number(),
@@ -179,6 +183,8 @@ export const checkEligibilityTool = defineTool({
               score: quote.score,
               rate_components: quote.rateComponents,
               apr_flag: quote.aprFlag,
+              base_rate_bps: quote.baseRateBps,
+              utilization_premium_bps: quote.utilizationPremiumBps,
             }
           : null,
         tier: gate.tier.tier,

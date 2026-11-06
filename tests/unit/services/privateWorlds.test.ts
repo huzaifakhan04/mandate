@@ -122,33 +122,38 @@ describe("private worlds (P2 Task 6)", () => {
       .sort();
   }
 
-  it("creates a private sim world seeded with 2 lender bots (20000 + 15000 of notes) and 2 claimed borrower bots", async () => {
+  it("creates a private sim world seeded with 4 lender bots (20000 + 15000 + 15000 + 10000 of notes) and 6 claimed borrower bots (P5 bots v2)", async () => {
     const worldId = await create("Judges' bank");
     const [world] = await db.select().from(worlds).where(eq(worlds.id, worldId));
     expect(world).toMatchObject({ kind: "private", railMode: "sim", ownerPrincipalId: owner, name: "Judges' bank", status: "active" });
     expect(world!.botPrincipalId).toBeTruthy();
     expect(world!.lastBotSimDay).toBe(0);
+    expect(world!.botVersion).toBe(2);
     expect(await railForWorld(db, worldId)).toBe("sim");
 
     const bots = await botsOf(worldId);
-    expect(bots).toHaveLength(4);
+    expect(bots).toHaveLength(10);
     for (const bot of bots) {
       expect(bot).toMatchObject({ operator: "Mandate bots", model: "simulated", status: "active", isBot: true });
     }
     const lenders = bots.filter((b) => b.name.startsWith("Lender bot"));
     const borrowers = bots.filter((b) => b.name.startsWith("Borrower bot"));
-    expect(lenders).toHaveLength(2);
-    expect(borrowers).toHaveLength(2);
+    expect(lenders).toHaveLength(4);
+    expect(borrowers).toHaveLength(6);
+    // Bots v2: each borrower bot is claimed by its own system principal.
+    expect(new Set(borrowers.map((b) => b.principalId)).size).toBe(6);
     for (const borrower of borrowers) {
-      expect(borrower.principalId).toBe(world!.botPrincipalId);
+      expect(borrower.principalId).not.toBe(owner);
       expect(borrower.claimedAt).toBeTruthy();
+      const [principal] = await db.select().from(principals).where(eq(principals.id, borrower.principalId!));
+      expect(principal).toMatchObject({ entityType: "system" });
     }
 
     const positions = await db
       .select()
       .from(notePositions)
       .where(inArray(notePositions.agentId, lenders.map((l) => l.id)));
-    expect(positions.map((p) => p.costCents).sort()).toEqual([15000n, 20000n]);
+    expect(positions.map((p) => p.costCents).sort()).toEqual([10000n, 15000n, 15000n, 20000n]);
 
     // The bot principal is a system principal — never the owner.
     const [botPrincipal] = await db.select().from(principals).where(eq(principals.id, world!.botPrincipalId!));
@@ -400,8 +405,13 @@ describe("private worlds (P2 Task 6)", () => {
     const view = await privateWorldView(db, owner, worldId);
     expect(view).not.toBeNull();
     expect(view!.simDay).toBe(3);
-    expect(view!.bots).toHaveLength(4);
-    expect(view!.bots.filter((b) => b.role === "lender")).toHaveLength(2);
+    expect(view!.bots).toHaveLength(10);
+    expect(view!.bots.filter((b) => b.role === "lender")).toHaveLength(4);
+    expect(view!.bots.filter((b) => b.role === "borrower").every((b) => b.archetype !== null)).toBe(true);
+    // P5 Task 4: the economy panel (the advance stepped days 1–3 and wrote template memos).
+    expect(view!.economy).toMatchObject({ simDay: 3 });
+    expect(view!.economy!.memo).toMatchObject({ sim_day: 3, source: "template" });
+    expect(view!.stressEvents).toEqual([]);
     expect(view!.notesOutstandingCents).toBeGreaterThan(0n);
     expect(view!.recentDays.length).toBeGreaterThan(0);
     expect(view!.trialBalanceCents).toBe(0n);

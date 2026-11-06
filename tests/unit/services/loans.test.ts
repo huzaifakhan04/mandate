@@ -146,6 +146,8 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
       score: 80,
       rate_components: { cost_of_funds_bps: 15, expected_loss_bps: 60, ops_bps: 50, capital_bps: 8, total_bps: 133 },
       apr_flag: null,
+      base_rate_bps: 400,
+      utilization_premium_bps: 0,
     });
     expect(data.effective_cap_cents).toBe(25000); // min(A 50000, tier T1 25000, mandate 50000)
   });

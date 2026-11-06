@@ -6,7 +6,16 @@ import { fromDbStatus } from "../../domain/loanMachine";
 import { getStatement } from "../../services/repayments";
 
 const outputSchema = z.object({
-  notes: z.object({ balance_cents: z.number(), earned_cents: z.number() }),
+  notes: z.object({
+    balance_cents: z.number(),
+    earned_cents: z.number(),
+    /** P5: interest earned ÷ net principal invested, annualised over the holding period (bps); null with nothing invested. */
+    nominal_annual_return_bps: z.number().nullable(),
+    /** P5: nominal − the bank's current annual inflation rate (bps). */
+    real_annual_return_bps: z.number().nullable(),
+    inflation_rate_bps: z.number(),
+    holding_days: z.number(),
+  }),
   loans: z.array(
     z.object({
       loan_id: z.string(),
@@ -26,7 +35,8 @@ export const getStatementTool = defineTool({
   name: "get_statement",
   title: "Get Statement",
   description:
-    "Returns the calling agent's own statement: its note balance and the interest it has earned, " +
+    "Returns the calling agent's own statement: its note balance and the interest it has earned " +
+    "(with the nominal annualised return and the real return = nominal − inflation, in bps), " +
     "its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes " +
     "you more). Call it to reconcile what you lent, earned, borrowed and were paid back.",
   auth: "agent",
@@ -44,6 +54,10 @@ export const getStatementTool = defineTool({
         notes: {
           balance_cents: Number(statement.notes.balanceCents),
           earned_cents: Number(statement.notes.earnedCents),
+          nominal_annual_return_bps: statement.notes.returns.nominalAnnualBps,
+          real_annual_return_bps: statement.notes.returns.realAnnualBps,
+          inflation_rate_bps: statement.notes.returns.inflationRateBps,
+          holding_days: statement.notes.returns.holdingDays,
         },
         loans: statement.loans.map((loan) => ({
           loan_id: loan.id,

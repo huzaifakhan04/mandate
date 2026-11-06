@@ -36,8 +36,9 @@ for (const width of [1280, 390]) {
 
     await expect(page.getByTestId("world-name")).toHaveText(`Judges ${width}`);
     await expect(page.getByTestId("sim-date")).toContainText("Day 0");
-    await expect(page.getByTestId("bot-card")).toHaveCount(4);
-    await expect(page.getByTestId("stat-notes")).toContainText("$350.00");
+    // P5 bots v2: 4 lenders ($200 + $150 + $150 + $100) and 6 borrowers.
+    await expect(page.getByTestId("bot-card")).toHaveCount(10);
+    await expect(page.getByTestId("stat-notes")).toContainText("$600.00");
     await expect(page.getByText("Sandbox model · simulated money")).toBeAttached();
 
     await page.getByRole("button", { name: "+7 days" }).click();
@@ -46,6 +47,16 @@ for (const width of [1280, 390]) {
     await expect(page.getByTestId("sim-date")).toContainText("Day 8");
     await expect(page.getByTestId("day-log")).toContainText("Day 8");
     await expect(page.getByTestId("trial-balance")).toHaveText("$0.00");
+    // P5 Task 4: the economy panel and a stress scenario.
+    await expect(page.getByTestId("economy-panel")).toContainText("Economy · day 8");
+    await expect(page.getByTestId("economy-panel")).toContainText("gross of note-holder loss sharing");
+    await expect(page.getByTestId("treasury-memo")).toContainText("Treasury memo · day 8");
+    await page.getByTestId("stress-rate_spike").click();
+    await expect(page.getByRole("status")).toContainText("Rate spike triggered");
+    await expect(page.getByTestId("stress-log")).toContainText("Rate spike · day 8");
+    await page.getByRole("button", { name: "+1 day" }).click();
+    await expect(page.getByTestId("sim-date")).toContainText("Day 9");
+    await expect(page.getByTestId("econ-base-rate")).toContainText("(rate spike)");
     await page.waitForLoadState("networkidle");
     await expect(page.getByTestId("world-name")).toBeVisible();
     await page.screenshot({ path: join(SCREENSHOTS, `p2-world-${width}.png`), fullPage: true });

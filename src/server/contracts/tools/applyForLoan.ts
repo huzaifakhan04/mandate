@@ -7,9 +7,11 @@ import type { Explanation } from "../../services/adverseAction";
 import { createLoanOffer, type NarrativeInputs } from "../../services/loans";
 import { narrateApplication } from "../../services/underwritingNarrative";
 import { fail, ok, type Envelope, type NextAction } from "../envelope";
-import { invoiceBackedCheckArgs } from "../sampleArgs";
+import { halvedCheckArgs, invoiceBackedCheckArgs } from "../sampleArgs";
 import { PURPOSE_PLACEHOLDER } from "./checkEligibility";
 import { defineTool } from "../registry";
+import { loanTreasuryLimits, type LoanTreasuryFacts } from "../../domain/treasury";
+import type { ReasonCode } from "../../domain/reasons";
 
 const invoiceSchema = z.object({
   client_email: z.email(),
@@ -76,6 +78,9 @@ const disclosureSchema = z.object({
     total_bps: z.number(),
   }),
   apr_flag: z.string().optional(),
+  /** P5 (disclosure v2): the annual base rate and utilization premium (bps) in the cost of funds. */
+  base_rate_bps: z.number(),
+  utilization_premium_bps: z.number(),
   right_to_statement: z.string(),
 });
 
@@ -110,6 +115,15 @@ const outputSchema = z.union([
     reasons: z.array(z.string()),
     adverse_action: adverseActionSchema,
     explanation: explanationSchema,
+    /** M2 (final review): this world's actual caps, only for a treasury-gate decline. */
+    treasury: z
+      .object({
+        reserve_floor_cents: z.number().optional(),
+        concentration_cap_cents: z.number().optional(),
+        daily_budget_cents: z.number().nullable().optional(),
+        daily_budget_used_cents: z.number().optional(),
+      })
+      .optional(),
   }),
 ]);
 
@@ -129,12 +143,26 @@ function onlyDeclarationMissing(reasons: readonly string[]): boolean {
   return reasons.length > 0 && reasons.every((reason) => reason === "declaration_missing");
 }
 
+/** M1 (final review): the treasury/capacity gates where the bank, not the request, is the constraint. */
+const TREASURY_GATE_REASONS = [
+  "reserve_floor",
+  "concentration_limit",
+  "daily_budget_exhausted",
+  "pool_utilization_high",
+] as const;
+
 /**
- * What a DECLINED agent should do next (P3 final review I2/I5):
+ * What a DECLINED agent should do next (P3 final review I2/I5; M1 final
+ * review for the treasury gates):
  * - grade E (no or bad history) → check an invoice-backed newcomer loan
  *   (≤ 5000 cents, invoice ≥ 1.5×) instead of the same request again;
  * - only `declaration_missing` → the same application with section E and
  *   H filled in (the summary says to send them only if they are true);
+ * - reserve_floor / concentration_limit / daily_budget_exhausted /
+ *   pool_utilization_high → the bank's capacity is the constraint, not
+ *   anything about this application: get_status (to watch it recover),
+ *   plus check_eligibility for half the amount (min 1000 cents) in case a
+ *   smaller request clears the same gate — not the same check again;
  * - anything else → check eligibility for the same amount and term.
  */
 function declinedNextActions(input: ApplyInput, reasons: readonly string[]): NextAction[] {
@@ -155,7 +183,38 @@ function declinedNextActions(input: ApplyInput, reasons: readonly string[]): Nex
       },
     ];
   }
+  if (TREASURY_GATE_REASONS.some((reason) => reasons.includes(reason))) {
+    return [
+      { tool: "get_status", args: {} },
+      { tool: "check_eligibility", args: halvedCheckArgs(input.amount_cents, input.term_days) },
+    ];
+  }
   return [{ tool: "check_eligibility", args: { amount_cents: input.amount_cents, term_days: input.term_days } }];
+}
+
+/**
+ * M2 (final review): this world's actual treasury caps, for a DECLINED
+ * response whose reasons include a treasury gate — `data.treasury` carries
+ * only the fields relevant to the reasons that actually fired, so the
+ * fixed reason text ("see data.treasury") always points at real numbers.
+ */
+function treasuryGateData(reasons: readonly ReasonCode[], facts: LoanTreasuryFacts | null): Record<string, unknown> | null {
+  if (!facts || !TREASURY_GATE_REASONS.some((reason) => reasons.includes(reason))) {
+    return null;
+  }
+  const limits = loanTreasuryLimits(facts);
+  const treasury: Record<string, unknown> = {};
+  if (reasons.includes("reserve_floor")) {
+    treasury.reserve_floor_cents = Number(limits.reserveFloorCents);
+  }
+  if (reasons.includes("concentration_limit")) {
+    treasury.concentration_cap_cents = Number(limits.concentrationCapCents);
+  }
+  if (reasons.includes("daily_budget_exhausted")) {
+    treasury.daily_budget_cents = limits.dailyBudgetCents === null ? null : Number(limits.dailyBudgetCents);
+    treasury.daily_budget_used_cents = Number(facts.budgetUsedCents);
+  }
+  return Object.keys(treasury).length > 0 ? { treasury } : null;
 }
 
 /** I5: the declined summary's extra instruction when only the declarations were missing. */
@@ -279,12 +338,14 @@ export const applyForLoanTool = defineTool({
     } satisfies ApplyFinalizeState);
 
     if (result.outcome === "declined") {
+      const treasuryData = treasuryGateData(result.reasons, result.treasury);
       return ok(
         {
           application_id: result.applicationId,
           reasons: result.reasons,
           adverse_action: result.adverseAction,
           explanation: result.adverseAction.explanation,
+          ...treasuryData,
         },
         {
           status: "DECLINED",

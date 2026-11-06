@@ -1,5 +1,11 @@
+import { and, eq, inArray } from "drizzle-orm";
+
 import type { Db } from "../db/client";
+import { notePositions, noteTransactions } from "../db/schema";
+import { scoped } from "../db/scoped";
+import { OPEN_REDEMPTION_STATUSES } from "../domain/treasury";
 import { simApprove } from "../rail/simHandler";
+import { currentEconomy, liveUtilization } from "../services/economy";
 import { botCall, dataOf, type BotAction } from "./act";
 import { intBetween, rngFor } from "./rng";
 
@@ -42,6 +48,89 @@ export async function lenderDay(db: Db, seed: string, day: number, index: number
     const amountCents = intBetween(rng, 10, 30) * 100;
     const redeemed = await botCall(db, bot.id, "redeem_notes", { amount_cents: amountCents });
     return [{ bot: bot.name, action: "redeem_notes", amountCents, status: redeemed.status }];
+  }
+  return [];
+}
+
+/** The bot's notes it could still ask to redeem: units − its pending and queued redemptions. */
+export async function redeemableUnits(db: Db, worldId: string, agentId: string): Promise<bigint> {
+  const positions = await scoped(db, worldId).select(notePositions, eq(notePositions.agentId, agentId));
+  if (positions.length === 0) {
+    return 0n;
+  }
+  const open = await scoped(db, worldId).select(
+    noteTransactions,
+    and(
+      inArray(
+        noteTransactions.positionId,
+        positions.map((position) => position.id),
+      ),
+      eq(noteTransactions.kind, "redeem"),
+      inArray(noteTransactions.status, [...OPEN_REDEMPTION_STATUSES]),
+    )!,
+  );
+  const units = positions.reduce((sum, position) => sum + position.units, 0n);
+  return units - open.reduce((sum, row) => sum + row.amountCents, 0n);
+}
+
+/** P5 bots v2: a lender buys more above this real return (annual bps)… */
+export const LENDER_BUY_ABOVE_REAL_BPS = 200;
+/** …and redeems below this one. */
+export const LENDER_REDEEM_BELOW_REAL_BPS = 0;
+
+/**
+ * The real return a v2 lender bot reacts to: what the pool charges for
+ * money today — the base rate plus the live utilization premium — minus
+ * the world's annual inflation rate (annual bps). A rate spike or a busy
+ * pool raises it; inflation above the rate makes it negative.
+ */
+export async function lenderRealReturnBps(db: Db, worldId: string): Promise<number> {
+  const economy = await currentEconomy(db, worldId);
+  const live = await liveUtilization(db, worldId);
+  return economy.baseRateBps + live.premiumBps - economy.inflationRateBps;
+}
+
+async function redeemSome(db: Db, worldId: string, bot: BotRef, wantedCents: number): Promise<BotAction[]> {
+  const redeemable = await redeemableUnits(db, worldId, bot.id);
+  const amountCents = Math.min(wantedCents, Number(redeemable));
+  if (amountCents <= 0) {
+    return [];
+  }
+  const redeemed = await botCall(db, bot.id, "redeem_notes", { amount_cents: amountCents });
+  return [{ bot: bot.name, action: "redeem_notes", amountCents, status: redeemed.status }];
+}
+
+/**
+ * P5 bots v2: one simulated day for lender bot number `index`, reacting to
+ * the real return (`lenderRealReturnBps`): above 2% it buys 1000–5000 on
+ * about one day in three; below 0 it redeems 1000–3000 (never more than it
+ * can) on about one day in three; in between it trades lightly (buys about
+ * one day in seven, redeems about one in ten). Seeded per world, bot and day.
+ */
+export async function lenderDayV2(
+  db: Db,
+  worldId: string,
+  seed: string,
+  day: number,
+  index: number,
+  bot: BotRef,
+): Promise<BotAction[]> {
+  const realBps = await lenderRealReturnBps(db, worldId);
+  const rng = rngFor(seed, "lender-v2", index, day);
+  const roll = rng();
+  const buyCents = intBetween(rng, 10, 50) * 100;
+  const redeemCents = intBetween(rng, 10, 30) * 100;
+  if (realBps > LENDER_BUY_ABOVE_REAL_BPS) {
+    return roll < 0.35 ? [await lenderBuy(db, bot, buyCents)] : [];
+  }
+  if (realBps < LENDER_REDEEM_BELOW_REAL_BPS) {
+    return roll < 0.35 ? redeemSome(db, worldId, bot, redeemCents) : [];
+  }
+  if (roll < 0.15) {
+    return [await lenderBuy(db, bot, buyCents)];
+  }
+  if (roll < 0.25) {
+    return redeemSome(db, worldId, bot, redeemCents);
   }
   return [];
 }

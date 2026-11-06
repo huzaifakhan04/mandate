@@ -1,8 +1,10 @@
+import { utilizationPremiumBps, utilizationTooHigh } from "./economy";
 import { checkMandate, type MandateCollateral, type MandateLimits } from "./mandate";
 import { rangeReasons } from "./pricing";
 import { priceLoan, type LoanPrice } from "./pricingV2";
 import type { ReasonCode } from "./reasons";
 import { GRADE_LIMIT_CENTS, type Grade, type ScoreResult } from "./scorecard";
+import { loanTreasuryReasons, type LoanTreasuryFacts } from "./treasury";
 
 /**
  * The deterministic underwriting rules pipeline (P3 Global Constraints,
@@ -22,7 +24,9 @@ import { GRADE_LIMIT_CENTS, type Grade, type ScoreResult } from "./scorecard";
  *   5. amount vs cap       amount_exceeds_limit; grade D above 5000 → manual_review_declined
  *   6. collateral          insufficient_collateral (invoice given, coverage < 1.1×)
  *   7. declarations        declaration_missing (empty purpose, no "no other debt" declaration, or no attestation)
- *   8. capacity            open_loan_exists, insufficient_liquidity
+ *   8. capacity            open_loan_exists, insufficient_liquidity, pool_utilization_high (P5: > 90%);
+ *                          P5 Task 3 treasury policy: reserve_floor, concentration_limit,
+ *                          daily_budget_exhausted (`domain/treasury.ts`; only when the pool can fund it)
  *
  * Effective per-loan cap = min(grade limit, tier cap, mandate max_per_loan).
  * The tier and mandate parts already have their own codes (steps 1 and 2),
@@ -78,6 +82,16 @@ export interface ApplicationFacts {
   availableLiquidityCents: bigint;
   /** Pricing base rate (default 400 bps). */
   baseRateBps?: number;
+  /**
+   * P5: the pool's utilization (bps) measured live at offer time; prices
+   * the utilization premium and declines above 90%. Absent = 0.
+   */
+  utilizationBps?: number;
+  /**
+   * P5 Task 3: the treasury policy's facts, gathered under the note series
+   * lock. Absent = no treasury gates (pure tests of the other rules).
+   */
+  treasury?: LoanTreasuryFacts;
 }
 
 export interface ApplicationDecision {
@@ -138,6 +152,7 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
   const reasons: ReasonCode[] = [];
   const gradeLimitCents = BigInt(GRADE_LIMIT_CENTS[credit.grade]);
   const effectiveCapCents = mandate ? minBig(gradeLimitCents, facts.tierCapCents, mandate.maxPerLoanCents) : 0n;
+  const utilization = facts.utilizationBps ?? 0;
 
   const price =
     credit.grade === "E" || amountCents <= 0n || termDays <= 0
@@ -148,6 +163,7 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
           grade: credit.grade,
           coverageBps: facts.invoiceCoverageBps,
           ...(facts.baseRateBps !== undefined ? { baseRateBps: facts.baseRateBps } : {}),
+          utilizationPremiumBps: utilizationPremiumBps(utilization),
         });
 
   // 0. Product range.
@@ -206,6 +222,12 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
   }
   if (amountCents > facts.availableLiquidityCents) {
     reasons.push("insufficient_liquidity");
+  }
+  if (utilizationTooHigh(utilization)) {
+    reasons.push("pool_utilization_high");
+  }
+  if (facts.treasury) {
+    reasons.push(...loanTreasuryReasons(facts.treasury, amountCents));
   }
 
   const primary = reasons[0] ?? null;

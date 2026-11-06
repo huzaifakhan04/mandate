@@ -101,3 +101,17 @@ export async function getAccountBalance(
 
   return sum?.total ? BigInt(sum.total) : 0n;
 }
+
+/**
+ * P5 Task 1: the balance of every account with `code` in the world, summed
+ * across all owners (`notes_payable[holder]` sub-accounts included).
+ * `0n` when there are none. Signed like `getAccountBalance` (debit positive).
+ */
+export async function getCodeBalance(db: Db, worldId: string, code: AccountCode): Promise<bigint> {
+  const [sum] = await db
+    .select({ total: sql<string>`sum(${postings.amountCents})` })
+    .from(postings)
+    .innerJoin(ledgerAccounts, eq(ledgerAccounts.id, postings.accountId))
+    .where(and(eq(postings.worldId, worldId), eq(ledgerAccounts.worldId, worldId), eq(ledgerAccounts.code, code)));
+  return sum?.total ? BigInt(sum.total) : 0n;
+}

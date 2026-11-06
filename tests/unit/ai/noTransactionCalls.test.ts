@@ -32,6 +32,8 @@ const AI_CALLERS: string[] = [
   "src/server/services/underwritingNarrative.ts",
   // P3 Task 4: the dashboard upload route's `after()` (KYA desk).
   "src/server/services/kyaDesk.ts",
+  // P5 Task 3: the tick's daily treasury memo (after each world's work committed).
+  "src/server/services/treasuryMemo.ts",
 ];
 
 const AI_NETWORK_IMPORT_RE = /import\s+(?!type\b)[^;]*?from\s+["'][^"']*\/ai\/(run|client)["']/g;

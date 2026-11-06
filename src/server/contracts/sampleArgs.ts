@@ -44,6 +44,17 @@ export const SAMPLE_INVOICE_BACKED_CHECK_ARGS = invoiceBackedCheckArgs(
   SAMPLE_CHECK_ELIGIBILITY_ARGS.term_days,
 );
 
+/**
+ * M1 (final review): a `check_eligibility` for half the requested amount
+ * (floor, minimum 1000 cents — the smallest the bank prices), for a
+ * treasury-gate decline where a smaller request could clear the same gate
+ * (reserve_floor, concentration_limit, daily_budget_exhausted,
+ * pool_utilization_high all shrink or vanish with a smaller principal).
+ */
+export function halvedCheckArgs(amountCents: number, termDays: number) {
+  return { amount_cents: Math.max(1000, Math.floor(amountCents / 2)), term_days: termDays };
+}
+
 /** Placeholders for an invoice in an `apply_for_loan` next action (the agent replaces them with its real client and work). */
 export const SAMPLE_INVOICE_PLACEHOLDERS = {
   client_email: "your-client@example.com",
