@@ -1,15 +1,16 @@
 import { and, count, eq } from "drizzle-orm";
 
-import { advanceClock, getSimDay } from "../clock/clock";
+import { advanceClock, getSimDay, simDayIndex } from "../clock/clock";
 import { insertBots, runBotsCatchUp, seedBots } from "../bots/runner";
 import type { Db } from "../db/client";
 import { agents, events, loans, notePositions, principals, worlds } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { LADDER, daysLate, type LadderStep } from "../domain/delinquency";
 import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
 import { failWorldOperations } from "../paypal/operations";
-import { processDue } from "./collections";
+import { processDue, totalDueCents } from "./collections";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -213,6 +214,38 @@ export interface BotDayView {
   actions: Array<{ bot: string; action: string; amountCents?: number; status: string }>;
 }
 
+/**
+ * P4 Task 4: one of the owner's own (non-bot) agents' loans on the world
+ * page — its due day on the world clock and where it is on the
+ * delinquency ladder, so +1 / +7 can walk it down the ladder on purpose.
+ */
+export interface OwnerLoanView {
+  agentId: string;
+  agentName: string;
+  loanId: string;
+  status: string;
+  principalCents: bigint;
+  /** Settles the loan now (recoverable once charged off). */
+  dueNowCents: bigint;
+  /** The world day (0 = the day it opened) the loan is due. */
+  dueDay: number;
+  daysLate: number;
+  /** The last ladder step applied, `null` before late. */
+  step: LadderStep | null;
+  /** The next ladder step and the world day it lands on, `null` when none is ahead. */
+  next: { step: LadderStep; day: number } | null;
+}
+
+/** Pure: the next ladder step for a loan at `step` that is due on `dueDay`, or `null`. */
+export function nextLadderStep(status: string, step: LadderStep | null, dueDay: number): { step: LadderStep; day: number } | null {
+  if (!["active", "late", "substandard"].includes(status)) {
+    return null;
+  }
+  const done = step ? LADDER.findIndex((entry) => entry.step === step) : -1;
+  const next = LADDER[done + 1];
+  return next ? { step: next.step, day: dueDay + next.day } : null;
+}
+
 export interface PrivateWorldView {
   world: Pick<WorldRow, "id" | "name" | "slug" | "createdAt">;
   simNow: Date;
@@ -224,6 +257,8 @@ export interface PrivateWorldView {
   repaidLoans: number;
   bots: BotView[];
   recentDays: BotDayView[];
+  /** P4 Task 4: the owner's own agents' loans here (newest first). */
+  ownerLoans: OwnerLoanView[];
   /** Σ of every posting in the world: always 0 for a balanced ledger. */
   trialBalanceCents: bigint;
 }
@@ -272,6 +307,29 @@ export async function privateWorldView(db: Db, principalId: string, worldId: str
     return { day: payload.day ?? 0, occurredSimAt: event.occurredSimAt, actions: payload.actions ?? [] };
   });
 
+  const { anchorSim } = await getSimDay(db, world.id);
+  const ownAgents = await w.select(agents, and(eq(agents.isBot, false), eq(agents.principalId, principalId))!);
+  const ownNames = new Map(ownAgents.map((agent) => [agent.id, agent.name]));
+  const ownerLoans: OwnerLoanView[] = loanRows
+    .filter((loan) => ownNames.has(loan.agentId) && loan.disbursedSimAt !== null)
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map((loan) => {
+      const dueDay = simDayIndex(anchorSim, loan.dueSimAt);
+      const step = (loan.delinquencyStep as LadderStep | null) ?? null;
+      return {
+        agentId: loan.agentId,
+        agentName: ownNames.get(loan.agentId)!,
+        loanId: loan.id,
+        status: loan.status,
+        principalCents: loan.principalCents,
+        dueNowCents: totalDueCents(loan),
+        dueDay,
+        daysLate: ["active", "late", "substandard", "charged_off"].includes(loan.status) ? daysLate(loan.dueSimAt, simNow) : 0,
+        step,
+        next: nextLadderStep(loan.status, step, dueDay),
+      };
+    });
+
   return {
     world: { id: world.id, name: world.name, slug: world.slug, createdAt: world.createdAt },
     simNow,
@@ -283,6 +341,7 @@ export async function privateWorldView(db: Db, principalId: string, worldId: str
     repaidLoans: loanRows.filter((loan) => loan.status === "repaid").length,
     bots: bots.filter((bot) => botIds.has(bot.id)),
     recentDays,
+    ownerLoans,
     trialBalanceCents: (await trialBalance(db, world.id)).totalCents,
   };
 }

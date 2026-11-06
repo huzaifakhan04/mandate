@@ -169,6 +169,13 @@
       "when": 1793965553067,
       "tag": "0023_p4_deferred_holder_loss",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1793966207440,
+      "tag": "0024_p4_owner_notice_read",
+      "breakpoints": true
     }
   ]
 }

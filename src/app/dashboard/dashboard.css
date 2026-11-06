@@ -54,6 +54,9 @@
 .dash .who .id b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; }
 .dash .who small { display: block; color: var(--faint); font-size: 11px; line-height: 1.2; }
 .dash .who .av { width: 32px; height: 32px; border-radius: 50%; background: #dce5fb; color: var(--accent); display: grid; place-items: center; font-weight: 700; font-size: 12px; flex: none; }
+.dash .bell { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; white-space: nowrap; }
+.dash a.bell:hover { text-decoration: none; color: var(--ink); background: var(--surface); }
+.dash .bell .count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--risk); color: #fff; font-size: 11px; display: inline-grid; place-items: center; box-sizing: border-box; }
 .dash .logout { border: 1px solid var(--line); background: #fff; border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 600; color: var(--muted); }
 .dash .logout:hover { color: var(--ink); background: var(--surface); }
 
@@ -92,6 +95,7 @@
 .dash .pill.risk { color: var(--risk-ink); background: var(--risk-soft); }
 .dash .pill.blue { color: var(--accent); background: var(--accent-soft); }
 .dash .pill.plain { color: var(--muted); background: var(--surface); }
+.dash .pill.dark { color: #fff; background: var(--risk-ink); }
 .dash .card-h .pill { margin-left: auto; }
 .dash .score { display: flex; align-items: center; gap: 14px; }
 .dash .tier-ring { width: 58px; height: 58px; flex: none; }
@@ -213,6 +217,27 @@
 .dash .secret { display: block; padding: 12px 14px; border-radius: 10px; background: #0f172a; color: #e2e8f0; font-size: 13px; overflow-wrap: anywhere; user-select: all; }
 .dash pre.snippet { margin: 6px 0 0; padding: 12px 14px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); overflow-x: auto; font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dash .snipgroup + .snipgroup { margin-top: 14px; }
+/* P4 Task 4: collections — guarantee card, notices panel, delinquency rows */
+.dash .guarantee { border: 1px solid #f2c7c3; background: var(--risk-soft); border-radius: var(--radius); padding: 16px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.dash .guarantee > div { flex: 1 1 260px; min-width: 0; }
+.dash .guarantee h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--risk-ink); }
+.dash .guarantee p { margin: 4px 0 0; font-size: 13px; color: var(--ink); }
+.dash .guarantee .btn.primary { background: var(--risk-ink); border-color: var(--risk-ink); }
+.dash .notices { margin-top: 20px; }
+.dash .notices .nh { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 10px; }
+.dash .notices .nh h2 { margin: 0; flex: 1; }
+.dash .notices .nh form { margin: 0; }
+.dash .nlist { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dash .nlist li { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; min-width: 0; }
+.dash .nlist li.unread { border-color: #cfdcfb; background: #f8faff; }
+.dash .nlist li > div { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.dash .nlist li small { display: block; color: var(--faint); font-size: 11px; margin-top: 2px; }
+.dash .nlist form { margin: 0; flex: none; }
+.dash .loanline .late { color: var(--risk-ink); font-weight: 600; }
+.dash .ladder { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.dash .ladder li { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
+.dash .ladder li > div { flex: 1 1 220px; min-width: 0; }
+.dash .ladder small { display: block; color: var(--faint); font-size: 12px; }
 .dash .crumb { display: inline-block; margin-bottom: 14px; font-size: 13px; }
 
 @media (max-width: 1100px) {
@@ -221,10 +246,18 @@
   .dash .dh { position: static; border-radius: var(--radius) var(--radius) 0 0; }
 }
 @media (max-width: 640px) {
-  .dash .top { gap: 12px; padding: 0 16px; }
+  .dash .top { gap: 8px; padding: 0 16px; }
   .dash .nav { display: none; }
-  .dash .worldswitch select { max-width: 130px; }
+  .dash .worldswitch select { max-width: 96px; }
+  .dash .who { gap: 6px; }
   .dash .who .id { display: none; }
+  .dash .bell { padding: 4px 7px; gap: 4px; }
+  .dash .bell .bl { display: none; }
+  .dash .nlist li { flex-wrap: wrap; }
+  .dash .nlist li > div { flex: 1 1 100%; order: 3; }
+  .dash .nlist form { margin-left: auto; }
+  .dash .logout { padding: 5px 8px; white-space: nowrap; }
+  .dash .brand { font-size: 0; gap: 0; }
   .dash .page { padding: 20px 16px 24px; }
   .dash .head { flex-direction: column; align-items: flex-start; }
   .dash .stats { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }

@@ -140,39 +140,56 @@ export async function claimAndSignMandateAsHuman(options: OwnerStepsOptions): Pr
     timingsMs.claimed = Date.now() - started;
 
     // 4. The dashboard drawer → the mandate form.
-    await page.goto(`${options.base}/dashboard?agent=${encodeURIComponent(options.agentId)}`, {
-      waitUntil: "domcontentloaded",
-      timeout: 60_000,
-    });
-    const drawer = page.getByTestId("agent-drawer");
-    await drawer.waitFor({ state: "visible", timeout: 30_000 });
-    const perLoan = drawer.getByLabel("Max per loan");
-    if (!(await perLoan.isVisible().catch(() => false))) {
-      await drawer.getByTestId("edit-mandate").click();
-    }
-    await perLoan.fill(options.mandate.maxPerLoanUsd);
-    await drawer.getByLabel("Max total owed").fill(options.mandate.maxTotalOwedUsd);
-    await drawer.getByLabel("Max fee").fill(options.mandate.maxFeePct);
-    await drawer.getByLabel("Max term").fill(options.mandate.maxTermDays);
-    for (const kind of ["invoice_link", "none"] as const) {
-      const box = drawer.locator(`input[name="eligible_collateral"][value="${kind}"]`);
-      await box.setChecked(options.mandate.collateral.includes(kind));
-    }
-    await drawer.getByLabel("Type your full name to sign").fill(options.signerName);
-    await drawer.getByLabel("I agree to the mandate above.").check();
-    await drawer.getByRole("button", { name: /^Sign (mandate|version \d+)$/ }).click();
-    const notice = drawer.getByTestId("drawer-notice");
-    await notice.waitFor({ state: "visible", timeout: 30_000 });
-    const noticeText = (await notice.textContent())?.trim() ?? "";
-    if (!noticeText.includes("Mandate signed")) {
-      return await fail(`mandate form: ${noticeText}`);
+    const signed = await signMandateInDrawer(page, options.base, options.agentId, options.mandate, options.signerName);
+    if (!signed.ok) {
+      return await fail(`mandate form: ${signed.notice}`);
     }
     timingsMs.mandateSigned = Date.now() - started;
-    const tier = (await drawer.getByTestId("drawer-tier").textContent())?.trim() ?? null;
+    const tier = signed.tier;
     return { ok: true, blocked: false, errorText: null, screenshotPath: null, tier, timingsMs, verifyAttempts, ms: Date.now() - started };
   } catch (err) {
     return await fail(err instanceof Error ? err.message.split("\n")[0]! : String(err));
   } finally {
     await browser.close();
   }
+}
+
+/**
+ * The owner's mandate form in the dashboard drawer (the signed-in `page`):
+ * open `/dashboard?agent=<id>`, fill the limits, type the name, agree and
+ * sign. Returns the drawer's notice text and the tier it then shows.
+ */
+export async function signMandateInDrawer(
+  page: Page,
+  base: string,
+  agentId: string,
+  mandate: MandateFormValues,
+  signerName: string,
+): Promise<{ ok: boolean; notice: string; tier: string | null }> {
+  await page.goto(`${base}/dashboard?agent=${encodeURIComponent(agentId)}`, {
+    waitUntil: "domcontentloaded",
+    timeout: 60_000,
+  });
+  const drawer = page.getByTestId("agent-drawer");
+  await drawer.waitFor({ state: "visible", timeout: 30_000 });
+  const perLoan = drawer.getByLabel("Max per loan");
+  if (!(await perLoan.isVisible().catch(() => false))) {
+    await drawer.getByTestId("edit-mandate").click();
+  }
+  await perLoan.fill(mandate.maxPerLoanUsd);
+  await drawer.getByLabel("Max total owed").fill(mandate.maxTotalOwedUsd);
+  await drawer.getByLabel("Max fee").fill(mandate.maxFeePct);
+  await drawer.getByLabel("Max term").fill(mandate.maxTermDays);
+  for (const kind of ["invoice_link", "none"] as const) {
+    const box = drawer.locator(`input[name="eligible_collateral"][value="${kind}"]`);
+    await box.setChecked(mandate.collateral.includes(kind));
+  }
+  await drawer.getByLabel("Type your full name to sign").fill(signerName);
+  await drawer.getByLabel("I agree to the mandate above.").check();
+  await drawer.getByRole("button", { name: /^Sign (mandate|version \d+)$/ }).click();
+  const notice = drawer.getByTestId("drawer-notice");
+  await notice.waitFor({ state: "visible", timeout: 30_000 });
+  const text = (await notice.textContent())?.trim() ?? "";
+  const tier = (await drawer.getByTestId("drawer-tier").textContent())?.trim() ?? null;
+  return { ok: text.includes("Mandate signed"), notice: text, tier };
 }

@@ -356,6 +356,33 @@ Use a private world to rehearse (buy notes, borrow, let the term pass, repay) wi
 `;
 }
 
+function renderLateSection(base: string): string {
+  return `## When you're late
+
+Every loan has a due date on the world's simulated clock (\`get_loan\` → \`due_sim_at\`). If it isn't repaid by then, the bank walks it down a **delinquency ladder**, by how many simulated days it is past due. Each step happens exactly once, and each one writes a **notice** to you and to your human.
+
+| Days past due | Step | What happens |
+|---|---|---|
+| +1 | \`late\` | Status \`LATE\`. A late fee of \`min(500, max(100, 5% × outstanding principal))\` cents is added. Your credit score takes a −15 entry. |
+| +3 | \`penalty\` | A rate penalty of 2% a year on the outstanding principal accrues **daily**, counted from the due date: \`ceil(outstanding principal × 200 × days_late / (10000 × 365))\` cents in total. It stops growing at +10. |
+| +7 | \`substandard\` | Status \`SUBSTANDARD\`. You become \`restricted\`: you can't apply for or accept loans, but you **can still repay** (\`repay_loan\`, \`confirm_checkout\`) and acknowledge notices. Your human's mandate is **frozen** for new loans across all their agents: \`check_eligibility\` / \`apply_for_loan\` give \`delinquent_principal\`, and \`accept_offer\` returns \`MANDATE_FROZEN\` (409). |
+| +10 | \`charged_off\` | Status \`CHARGED_OFF\`. The bank writes the loan off: principal + fee + late fees + penalty at that moment. Note holders bear the principal loss pro rata to their notes. **Your human's guarantee is invoked:** the bank sends them a payment link (on their dashboard) for the full written-off amount. You stay restricted and the mandate stays frozen until it is recovered. |
+| any time after | \`recovered\` | Any payment after charge-off — the guarantee, the invoice link, or \`repay_loan\` — is a **recovery**. Note holders are made whole first. Once the full written-off amount is back, the status is \`RECOVERED\`, your restriction lifts and the freeze ends. Anything paid beyond it is refunded to your payout receiver. |
+
+**Where you see it.** \`get_status\` → \`data.open_loan\` carries \`status\`, \`days_late\`, \`late_fee_cents\`, \`penalty_cents\` and \`total_due_cents\` (what settles the loan now; once charged off, what is still recoverable, plus the \`guarantee_link\`). \`data.notices\` lists your **unread notices** — \`{notice_id, kind, loan_id, sim_at, body}\`, with \`kind\` one of \`late\`, \`penalty\`, \`substandard\`, \`charged_off\`, \`recovery\`, \`recovered\`, \`cured\`. \`get_loan\` shows the same fields for one loan, its notices, and \`charge_off\` (\`written_off_cents\`, \`recovered_cents\`, \`guarantee_link\`). Check \`get_status\` whenever you resume work.
+
+**What to do with a notice.** Read it, **tell your human what it means for them** — what is owed now, what the next step is and when, and that at +10 their guarantee is invoked — then call \`ack_notices\` (all unread, or \`notice_ids\`) so it stops being listed. \`ack_notices\` changes nothing about the loan; your human's dashboard keeps its own read state.
+
+**Waterfall.** Every payment on a late loan is applied in this order: **late fees → rate penalty → fee → principal → remainder** (anything left over is refunded to your payout receiver).
+
+**Quotes (pay exactly what you were quoted).** \`repay_loan\` without \`amount_cents\` quotes the full payoff (\`total_due_cents\`) at that moment. If your human pays that checkout for exactly the quoted amount, the loan is **cured** (\`REPAID\`) even if a late fee or more penalty landed between the quote and the capture: those post-quote charges are **waived**. A partial \`amount_cents\` (or the invoice link) carries no quote: it is applied through the waterfall and the penalty accrues up to when it is captured. The same rule holds after charge-off: a quoted payoff paid as quoted fully recovers the loan. **Cure:** paying everything owed before +10 returns the loan to \`REPAID\`, and you go back to \`active\` once you have no other substandard or charged-off loan.
+
+**How collection works.** The bank never debits anyone automatically: every collection is a **payment link** a human approves — the invoice link your client pays, a \`repay_loan\` checkout your human approves, or, after charge-off, the guarantee link on your human's dashboard (\`${base}/dashboard\`; in a private world it is their sim approve page). A saved-card auto-debit is not offered.
+
+In a private world your human can move the clock (+1 / +7 days) to walk a loan through this ladder in minutes — see [Private worlds](#private-worlds).
+`;
+}
+
 function renderHumanApprovalSection(): string {
   return `## Human approval
 
@@ -506,6 +533,7 @@ ${renderMandatesSection()}
 ${renderApplyingSection()}
 ${renderSigningSection(base)}
 ${renderPrivateWorldsSection(base)}
+${renderLateSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}
@@ -523,7 +551,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, what happens when a loan is late (delinquency ladder, guarantee, recovery), human-approval handling, the full tool reference, errors, and money rules.
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

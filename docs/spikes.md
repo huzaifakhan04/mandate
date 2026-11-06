@@ -102,6 +102,13 @@ directly.
   fallback needed. (Completing the vault — approving the setup token and
   exchanging it for a payment token — was not attempted here since it
   would need the same buyer-login flow blocked in spike c/e.)
+- **P4 (Ruling P4-G, cut line): no vault auto-debit is built.** The
+  setup token works, but a saved-payment-method capture was cut from P4.
+  Collection is by payment link only, which was the documented fallback:
+  the invoice link, a `repay_loan` checkout, and after charge-off the
+  owner's guarantee link (PayPal in the main world, the sim approve page
+  in a private world). `/agents.md` → "When you're late" says the bank
+  never debits automatically.
 
 ## e. login-with-paypal (`scripts/spikes/login-with-paypal.md`,
    `scripts/spikes/verify-with-paypal.ts`)

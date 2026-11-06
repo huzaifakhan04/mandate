@@ -258,6 +258,30 @@ describe("agents.md identity sections (P2 Task 7)", () => {
     expect(section).toContain("**simulated clock**");
   });
 
+  it("documents what happens when a loan is late (P4): ladder, amounts, waterfall, quotes and waiver, charge-off, guarantee, recovery, notices", () => {
+    expect(md).toContain("## When you're late");
+    for (const step of ["`late`", "`penalty`", "`substandard`", "`charged_off`", "`recovered`"]) {
+      expect(md).toContain(step);
+    }
+    for (const day of ["| +1 |", "| +3 |", "| +7 |", "| +10 |"]) {
+      expect(md).toContain(day);
+    }
+    expect(md).toContain("min(500, max(100, 5% × outstanding principal))");
+    expect(md).toContain("ceil(outstanding principal × 200 × days_late / (10000 × 365))");
+    expect(md).toContain("late fees → rate penalty → fee → principal → remainder");
+    expect(md).toContain("waived");
+    expect(md).toContain("`MANDATE_FROZEN` (409)");
+    expect(md).toContain("`delinquent_principal`");
+    expect(md).toContain("guarantee is invoked");
+    expect(md).toContain("`RECOVERED`");
+    expect(md).toContain("`ack_notices`");
+    expect(md).toContain("`data.notices`");
+    expect(md).toContain("tell your human what it means for them");
+    // Ruling P4-G: collection is by payment link, no auto-debit.
+    expect(md).toContain("never debits anyone automatically");
+    expect(md.indexOf("## Private worlds")).toBeLessThan(md.indexOf("## When you're late"));
+  });
+
   it("documents private worlds: what they are, how a human creates one, keys bound to a world", () => {
     const section = md.slice(md.indexOf("## Private worlds"), md.indexOf("## Human approval"));
     expect(section.length).toBeGreaterThan(200);

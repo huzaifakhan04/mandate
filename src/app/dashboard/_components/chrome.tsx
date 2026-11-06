@@ -3,13 +3,14 @@ import Link from "next/link";
 import { getDb } from "@/server/db/client";
 import { maskPayoutEmail } from "@/server/services/agents";
 import { listOwnedPrivateWorlds } from "@/server/services/privateWorldAccess";
+import { ownerNotices } from "@/server/services/dashboard";
 import { getPrincipal } from "@/server/services/principals";
 
 import { initials } from "./format";
 
 export const LEGAL = "Sandbox model · simulated money · notes are not deposits and not FDIC-insured";
 
-export type Tone = "ok" | "warn" | "risk" | "blue" | "plain";
+export type Tone = "ok" | "warn" | "risk" | "dark" | "blue" | "plain";
 
 export function Pill({ tone, children, label }: { tone: Tone; children: React.ReactNode; label?: string }) {
   return (
@@ -39,6 +40,8 @@ export async function TopBar({
   const privateWorlds = await listOwnedPrivateWorlds(db, principalId);
   const selected = privateWorlds.some((world) => world.id === worldId) ? worldId : "";
   const name = principal?.name ?? "Signed in";
+  // P4 Task 4: the owner's unread notices in this view (badge → the notices panel).
+  const { unread } = await ownerNotices(db, principalId, { worldId: selected || undefined, limit: 0 });
   return (
     <header className="top">
       <Link className="brand" href="/dashboard" aria-label="Mandate — your agents">
@@ -71,6 +74,23 @@ export async function TopBar({
         </form>
       ) : null}
       <div className="who">
+        <Link
+          className="bell"
+          href={`/dashboard${selected ? `?world=${selected}` : ""}#notices`}
+          data-testid="notices-badge"
+          aria-label={unread > 0 ? `Notices: ${unread} unread` : "Notices: none unread"}
+        >
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" fill="none" stroke="currentColor" strokeWidth="1.6">
+            <path d="M4 11V7a4 4 0 0 1 8 0v4l1.2 1.5H2.8L4 11Z" strokeLinejoin="round" />
+            <path d="M6.5 14a1.6 1.6 0 0 0 3 0" strokeLinecap="round" />
+          </svg>
+          <span className="bl">Notices</span>
+          {unread > 0 ? (
+            <span className="count num" aria-hidden="true">
+              {unread > 99 ? "99+" : unread}
+            </span>
+          ) : null}
+        </Link>
         <div className="id">
           <b data-testid="principal-name">{name}</b>
           <small data-testid="principal-email">

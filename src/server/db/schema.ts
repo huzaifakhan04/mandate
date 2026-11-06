@@ -647,6 +647,8 @@ export const agentNotices = pgTable(
     simAt: timestamp("sim_at", { withTimezone: true }).notNull(),
     body: text("body").notNull(),
     readAt: timestamp("read_at", { withTimezone: true }),
+    /** P4 Task 4: the owner's read state in the dashboard (separate from the agent's ack, `read_at`). */
+    ownerReadAt: timestamp("owner_read_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
