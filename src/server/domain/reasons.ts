@@ -76,11 +76,15 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   insufficient_liquidity: "The lending pool cannot fund this amount right now.",
   pool_utilization_high:
     "The lending pool is more than 90% lent out; we are not making new loans until repayments or new note purchases come in.",
+  // M2 (final review): no hardcoded default percentages — this world's actual
+  // caps ride along in the DECLINED response's `data.treasury` (not named
+  // here: a dotted "data.treasury"-shaped token is stripped as a fake link
+  // by the narrative sanitizer, `ai/sanitize.ts`).
   reserve_floor:
-    "This loan would take the bank's cash below its reserve floor (15% of the notes it owes holders by default), after any queued redemptions.",
+    "This loan would take the bank's cash below this world's reserve floor (a share of the notes it owes holders), after any queued redemptions; the exact floor is in this response's data.",
   concentration_limit:
-    "Your human's loans across all their agents would exceed the bank's limit for one human (30% of its lending capacity by default).",
-  daily_budget_exhausted: "The bank's lending budget for today is used up (40% of the pool's available cash at the start of the simulated day, by default).",
+    "Your human's loans across all their agents would exceed this world's concentration limit; the exact cap is in this response's data.",
+  daily_budget_exhausted: "This world's lending budget for today is used up; the exact budget is in this response's data.",
 };
 
 export const MAX_SHOWN_REASONS = 4;

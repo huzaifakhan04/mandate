@@ -34,7 +34,7 @@ import { processDue } from "@/server/services/collections";
 import { stepEconomyToNow } from "@/server/services/economy";
 import { applyRedemptionPayoutOutcome, processRedemptionQueue, queuedRedemptionsFor } from "@/server/services/notes";
 import { getTreasuryPolicy, setTreasuryPolicy, treasuryDefaultsDisabled } from "@/server/services/treasury";
-import { ensureMainWorld } from "@/server/services/worlds";
+import { createWorld, ensureMainWorld } from "@/server/services/worlds";
 
 import { call, createSimWorld, createTestAgent, fundPool, type Data } from "../../helpers/world";
 
@@ -326,6 +326,49 @@ describe("treasury policy (P5 Task 3)", () => {
     expect(await units(l2.agentId)).toBeGreaterThanOrEqual(4000n);
     expect(await units(l1.agentId)).toBeGreaterThanOrEqual(30000n - available);
     await expectInvariants();
+  });
+
+  it("final review I1: a frozen private world's tick still pays a queued redemption once cash arrives, with the ladder skipped", async () => {
+    const { worldId: privateWorldId } = await createWorld(db, {
+      name: "Frozen Private",
+      ownerPrincipalId: null,
+      railMode: "sim",
+      kind: "private",
+    });
+    await setTreasuryPolicy(db, privateWorldId, ONLY_FLOOR);
+
+    const lender = await fundPool(db, privateWorldId, 30000, "frozen-lender@example.com");
+    const borrower = await createTestAgent(db, privateWorldId, "frozen-borrower@example.com");
+    const offered = await call(db, "apply_for_loan", borrower.key, {
+      amount_cents: 25000,
+      term_days: 14,
+      purpose: "Working capital",
+    });
+    expect(offered.envelope.status).toBe("OFFERED");
+    const accepted = await call(db, "accept_offer", borrower.key, {
+      offer_id: (offered.envelope.data as Data).offer_id,
+      disclosure_hash: (offered.envelope.data as Data).disclosure_hash,
+    });
+    expect(accepted.envelope.status).toBe("ACTIVE");
+
+    const available = await availableLiquidity(db, privateWorldId);
+    const queued = await call(db, "redeem_notes", lender.key, { amount_cents: Number(available) });
+    expect(queued.envelope.status).toBe("QUEUED");
+    const noteTxId = (queued.envelope.data as Data).note_tx_id as string;
+
+    // A fresh private world's clock is frozen (speed 0): the ladder is
+    // skipped on the tick, but the queue still gets checked every minute —
+    // nothing to pay yet, no cash has arrived.
+    const beforeCash = await runTick(db, { now: new Date() });
+    expect(beforeCash.queuedRedemptionsPaid).toBe(0);
+    expect((await redemption(noteTxId)).status).toBe("queued");
+
+    // Cash arrives (a note purchase, not a loan repayment the ladder would
+    // need to run) — one tick pays it, even though the world is still frozen.
+    await fundPool(db, privateWorldId, 10000, "frozen-lender2@example.com");
+    const ticked = await runTick(db, { now: new Date() });
+    expect(ticked.queuedRedemptionsPaid).toBe(1);
+    expect((await redemption(noteTxId)).status).toBe("completed");
   });
 
   it("only the head fits: it is paid, the next stays queued (cash never goes below the floor)", async () => {

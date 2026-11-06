@@ -202,6 +202,8 @@ interface Underwriting {
   availableLiquidityCents: bigint;
   /** Invoice face ÷ principal in bps; `null` without an invoice. */
   coverageBps: number | null;
+  /** M2 (final review): the treasury facts gathered for the gates, so a decline can quote this world's actual caps. */
+  treasury: LoanTreasuryFacts | null;
 }
 
 /**
@@ -233,6 +235,7 @@ async function underwrite(
   // measured live (the pool can move a lot within a day — not the snapshot).
   const economy = await currentEconomy(db, worldId);
   const utilization = await liveUtilization(db, worldId);
+  const treasuryFacts = await loanTreasuryFacts(db, worldId, agent, availableLiquidityCents);
 
   const decision = evaluateApplication({
     amountCents: request.amountCents,
@@ -254,9 +257,18 @@ async function underwrite(
     baseRateBps: economy.baseRateBps,
     utilizationBps: utilization.utilizationBps,
     // P5 Task 3: reserve floor, concentration, daily budget (under the series lock for apply).
-    treasury: (await loanTreasuryFacts(db, worldId, agent, availableLiquidityCents)) ?? undefined,
+    treasury: treasuryFacts ?? undefined,
   });
-  return { decision, credit, mandate, exposureCents, tier: tier.tier, availableLiquidityCents, coverageBps };
+  return {
+    decision,
+    credit,
+    mandate,
+    exposureCents,
+    tier: tier.tier,
+    availableLiquidityCents,
+    coverageBps,
+    treasury: treasuryFacts,
+  };
 }
 
 /** The disclosure's rate components (bps of the principal for the term). */
@@ -496,6 +508,8 @@ export type CreateLoanOfferOutcome =
       /** P3 Task 4: the notice (with the template explanation), also stored on the application. */
       adverseAction: AdverseAction;
       narrative: NarrativeInputs;
+      /** M2 (final review): this world's actual treasury facts, for a treasury-gate decline's `data.treasury`. */
+      treasury: LoanTreasuryFacts | null;
     }
   | {
       outcome: "offered";
@@ -586,7 +600,7 @@ export async function createLoanOffer(
   // superseded underneath a concurrent acceptance of it.
   await lockNoteSeries(tx, worldId);
 
-  const { decision, credit, mandate, coverageBps } = await underwrite(tx, worldId, agentId, simNow, {
+  const { decision, credit, mandate, coverageBps, treasury } = await underwrite(tx, worldId, agentId, simNow, {
     amountCents: input.amountCents,
     termDays: input.termDays,
     purpose: input.purpose,
@@ -674,6 +688,7 @@ export async function createLoanOffer(
       credit,
       adverseAction,
       narrative,
+      treasury,
     };
   }
   const price = decision.price;

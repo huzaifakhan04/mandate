@@ -28,11 +28,18 @@ import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
  * catching up in order; the main world runs at speed 1, so once a real
  * day). A frozen private world's day doesn't move here — its advance steps it.
  *
- * P5 Task 3: after the ladder, the world's queued redemptions are paid in
- * FIFO order while cash allows (`processRedemptionQueue`; a frozen private
- * world's queue moves on its advance, like its ladder). Last, after all of
- * that has committed, the day's treasury memo (`writeDailyTreasuryMemo`:
- * once per world per sim day; templates only in private worlds).
+ * P5 Task 3 / final review I1: the world's queued redemptions are paid in
+ * FIFO order while cash allows (`processRedemptionQueue`), for EVERY active
+ * world, independent of the ladder gate above — it takes the note series
+ * lock, keeps FIFO and never reads the simulated clock, so a frozen private
+ * world (speed 0) still gets cash that arrives (e.g. a note purchase) paid
+ * out to its queue every minute, even though its delinquency ladder waits
+ * for the owner's advance. The owner's advance also calls it on its own
+ * (so a world the owner is actively driving pays the queue right away
+ * too); calling it again here moments later is a harmless no-op. Last,
+ * after all of that has committed, the day's treasury memo
+ * (`writeDailyTreasuryMemo`: once per world per sim day; templates only in
+ * private worlds).
  *
  * P2 Task 6: then, for every active private world, the bots act for each
  * simulated day the world's clock has passed since they last acted (at
@@ -84,10 +91,12 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
           errors.push(message);
           report.errors.push({ worldId, message });
         }
-        // P5 Task 3: queued redemptions, FIFO, while cash allows (no-op without a queue).
-        const queue = await processRedemptionQueue(db, worldId);
-        queuePaid = queue.paid + queue.failed;
       }
+      // Final review I1: the redemption queue is clock-independent (FIFO,
+      // series-lock-gated), so it runs every minute for every active world —
+      // including a frozen private world the ladder above just skipped.
+      const queue = await processRedemptionQueue(db, worldId);
+      queuePaid = queue.paid + queue.failed;
     } catch (err) {
       const message = errorMessage(err);
       console.error(`[tick] world ${worldId} failed: ${message}`);

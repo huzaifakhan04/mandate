@@ -32,8 +32,12 @@ export const cancelRedemptionTool = defineTool({
     const result = await cancelQueuedRedemption(ctx.tx, ctx.worldId, ctx.agentId, input.note_tx_id);
 
     switch (result.outcome) {
-      case "not_found":
-        return fail("NOT_FOUND", "No such redemption.", ["redemption_not_found"]);
+      case "not_found": {
+        // M1 (final review): point back at get_status rather than leaving a dead end.
+        const envelope = fail("NOT_FOUND", "No such redemption.", ["redemption_not_found"]);
+        envelope.next_actions = [{ tool: "get_status", args: {} }];
+        return envelope;
+      }
       case "not_queued":
         return fail(
           "INVALID_TRANSITION",

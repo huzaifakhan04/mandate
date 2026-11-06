@@ -1,13 +1,15 @@
 import { randomUUID } from "crypto";
 
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Envelope, NextAction } from "@/server/contracts/envelope";
 import { findTool } from "@/server/contracts/registry";
+import { halvedCheckArgs } from "@/server/contracts/sampleArgs";
 import { runTool } from "@/server/contracts/runTool";
 import "@/server/contracts/tools";
 import type { Db } from "@/server/db/client";
 import { createTestDb } from "@/server/db/testing";
+import { availableLiquidity } from "@/server/domain/liquidity";
 import { simApprove } from "@/server/rail/simHandler";
 import { getCaptureHandler } from "@/server/services/checkouts";
 
@@ -249,5 +251,43 @@ describe("M9: every emitted next_action passes its target tool's input schema", 
     expect(explanation.next_steps[0]).toContain("max fee (currently 5%) to at least 5.8% (580 bps");
 
     expectAllValid(emitted);
+  });
+
+  it("M1/M2 final review: a treasury-gate decline points at get_status + a smaller check_eligibility, with this world's cap in data.treasury; cancel_redemption NOT_FOUND points at get_status", async () => {
+    // Treasury gates are off by default in tests (vitest.config.ts); turn them on for this one.
+    vi.stubEnv("TREASURY_POLICY_DISABLED", "");
+    const emitted: Emitted[] = [];
+    const run = async (tool: string, key: string, input: Data, raw = false) => {
+      const result = raw ? await callRaw(db, tool, key, input) : await call(db, tool, key, input);
+      collect(`${tool}:${result.envelope.status}`, result.envelope, emitted);
+      return result.envelope;
+    };
+
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const available = await availableLiquidity(db, worldId);
+    const cap = (available * 3000n) / 10000n; // default concentration_limit: 30% of loans + available liquidity
+    const borrower = await createTestAgent(db, worldId, "capped-treasury@example.com");
+    const amountCents = Number(cap) + 1;
+
+    const declined = await run("apply_for_loan", borrower.key, {
+      amount_cents: amountCents,
+      term_days: 14,
+      purpose: "Working capital",
+    });
+    expect(declined.status).toBe("DECLINED");
+    expect(declined.reason_codes).toEqual(["concentration_limit"]);
+    expect(declined.next_actions).toEqual([
+      { tool: "get_status", args: {} },
+      { tool: "check_eligibility", args: halvedCheckArgs(amountCents, 14) },
+    ]);
+    expect((declined.data as Data).treasury).toEqual({ concentration_cap_cents: Number(cap) });
+
+    const notFound = await run("cancel_redemption", borrower.key, { note_tx_id: randomUUID() }, true);
+    expect(notFound.status).toBe("NOT_FOUND");
+    expect(notFound.next_actions).toEqual([{ tool: "get_status", args: {} }]);
+
+    expectAllValid(emitted);
+    vi.unstubAllEnvs();
   });
 });

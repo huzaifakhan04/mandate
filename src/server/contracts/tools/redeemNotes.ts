@@ -76,7 +76,8 @@ export const redeemNotesTool = defineTool({
           summary:
             `Redemption queued at position ${queue.position}: ${why} ` +
             `It is paid automatically, in order, once repayments or new note purchases bring in about ` +
-            `${queue.cashNeededCents.toString()} more cents of available cash (the bank checks every minute). ` +
+            `${queue.cashNeededCents.toString()} more cents of available cash (checked every minute; ` +
+            "paid FIFO as cash allows, even while this world's clock is frozen). " +
             "Your units stay reserved meanwhile; call cancel_redemption to withdraw it.",
           reason_codes: ["redemption_queued", queue.reason],
           next_actions: [
