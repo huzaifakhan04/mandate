@@ -6,7 +6,9 @@ import { expect, test, type Page } from "@playwright/test";
  * P2 Task 6: a private sandbox world in the browser, at 1280 and 390 px —
  * create it (bots seeded on the sim rail), move the clock +7 / +1 (the
  * bots act each day), register an agent into it (path B with a world),
- * switch the dashboard to it and back to main (where it doesn't show),
+ * buy notes as that agent and approve the checkout on the owner's sim
+ * approval page (I-1), switch the dashboard to it and back to main (where
+ * it doesn't show),
  * then reset (a fresh world; the old URL 404s).
  */
 
@@ -58,6 +60,30 @@ for (const width of [1280, 390]) {
     await expect(page.locator("#r-world")).toHaveValue(worldUrl.split("/").pop()!);
     await page.getByRole("button", { name: "Register agent" }).click();
     await expect(page.getByText("mnd_", { exact: false }).first()).toBeVisible();
+    const apiKey = /mnd_[A-Za-z0-9_-]+/.exec(await page.content())![0];
+
+    // I-1: the agent buys notes; its human_approval link is the owner's sim
+    // approval page, which approves and lands on the checkout return page.
+    const buy = await page.request.post("/api/v1/buy_notes", {
+      headers: { authorization: `Bearer ${apiKey}` },
+      data: { amount_cents: 2500 },
+    });
+    const bought = (await buy.json()) as { status: string; data: { checkout_id: string; approve_url: string } };
+    expect(bought.status).toBe("AWAITING_APPROVAL");
+    const approvePath = new URL(bought.data.approve_url).pathname;
+    expect(approvePath).toBe(`/dashboard/worlds/${worldUrl.split("/").pop()}/checkouts/${bought.data.checkout_id}/approve`);
+    await page.goto(approvePath);
+    await expect(page.getByRole("heading", { name: "Approve this payment" })).toBeVisible();
+    await expect(page.getByText("not deposits and not FDIC-insured")).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)).toBeLessThanOrEqual(0);
+    await page.getByRole("button", { name: "Approve $25.00" }).click();
+    await expect(page).toHaveURL(/\/checkout\/notes\/return\?token=/);
+    await expect(page.getByText("Payment approved", { exact: false }).first()).toBeVisible();
+    const confirm = await page.request.post("/api/v1/confirm_checkout", {
+      headers: { authorization: `Bearer ${apiKey}` },
+      data: { checkout_id: bought.data.checkout_id },
+    });
+    expect(((await confirm.json()) as { status: string }).status).toBe("COMPLETED");
 
     // The world's dashboard shows it; the main one doesn't.
     await page.goto(`/dashboard?world=${worldUrl.split("/").pop()}`);

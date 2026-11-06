@@ -266,7 +266,10 @@ function signatureFailure(status: string, reason: string): Envelope<unknown> {
  * 4. A mutating call from an agent passes the signature gate (P2 Task 3,
  *    `signatureGate`: 401 `SIGNATURE_REQUIRED`/`_INVALID`/`_EXPIRED`/
  *    `_REPLAYED`), then one whose agent has `status !== 'active'` → 403
- *    `AGENT_NOT_ACTIVE`; a borrowing tool then checks the KYA tier.
+ *    `AGENT_NOT_ACTIVE` — except that a `frozen`/`restricted` agent may
+ *    still call the money-in tools (`MONEY_IN_TOOLS`: repaying a loan and
+ *    capturing an approved checkout), so freezing never traps a debt; a
+ *    borrowing tool then checks the KYA tier.
  * 5. Mutating tools run inside a `db.transaction`. When the caller is an
  *    authenticated agent AND an idempotency key is present, the key is
  *    handled with a claim-first protocol that stays correct under
@@ -294,6 +297,21 @@ function signatureFailure(status: string, reason: string): Envelope<unknown> {
  * Every returned/stored/replayed HTTP status is derived from its
  * envelope's `status` via `httpStatusForEnvelope` — never hard-coded.
  */
+/**
+ * P2 final review (M4): tools that only bring money INTO the bank —
+ * `repay_loan` (start a repayment checkout) and `confirm_checkout`
+ * (capture one the human already approved). A frozen or restricted agent
+ * may still call them: freezing stops new borrowing, lending and
+ * redemptions, but must never stop a debt being repaid. A revoked agent
+ * (or one pending its claim) may not.
+ */
+export const MONEY_IN_TOOLS: ReadonlySet<string> = new Set(["repay_loan", "confirm_checkout"]);
+const MONEY_IN_STATUSES: ReadonlySet<string> = new Set(["frozen", "restricted"]);
+
+function mayBringMoneyIn(status: string, toolName: string): boolean {
+  return MONEY_IN_STATUSES.has(status) && MONEY_IN_TOOLS.has(toolName);
+}
+
 export async function runTool(
   tool: ToolDef | undefined,
   toolName: string,
@@ -383,7 +401,7 @@ export async function runTool(
       }
     }
 
-    if (tool.mutating && agent && agent.status !== "active") {
+    if (tool.mutating && agent && agent.status !== "active" && !mayBringMoneyIn(agent.status, tool.name)) {
       return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]), toolName);
     }
 

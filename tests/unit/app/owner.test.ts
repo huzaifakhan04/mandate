@@ -19,11 +19,12 @@ import { SESSION_COOKIE_NAME, createSession, readSession } from "@/server/auth/s
 import type { Db } from "@/server/db/client";
 import { agentKeys, agents, apiKeys, events, mandates, principals } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
+import { simApprove } from "@/server/rail/simHandler";
 import { parseOwnerRegisterInput } from "@/server/services/owner";
 import { loadAgentKya } from "@/server/services/kya";
 
 import { upgradeToTier2 } from "../../helpers/signing";
-import { call, createSimWorld, createTestAgent } from "../../helpers/world";
+import { call, createSimWorld, createTestAgent, type Data, fundPool } from "../../helpers/world";
 
 const ORIGIN = "https://mandate.test";
 const EVIL = "https://evil.example.com";
@@ -262,6 +263,38 @@ describe("owner dashboard routes (P2 Task 5)", () => {
       expect((await act("unfreeze", agent.principalId)).status).toBe(409);
       const types = (await db.select().from(events).where(eq(events.aggregateId, agent.agentId))).map((e) => e.type);
       expect(types).toEqual(expect.arrayContaining(["agent.frozen", "agent.unfrozen"]));
+    });
+  });
+
+  describe("frozen agents may still bring money in (M4)", () => {
+    it("a frozen agent with an open loan can repay_loan and confirm_checkout; buying, redeeming and borrowing stay refused", async () => {
+      await fundPool(db, worldId, 30000);
+      const offer = (await call(db, "apply_for_loan", agent.key, { amount_cents: 10000, term_days: 7, purpose: "Working capital" }))
+        .envelope.data as Data;
+      const accepted = await call(db, "accept_offer", agent.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash });
+      expect(accepted.envelope.status).toBe("ACTIVE");
+      const loanId = (accepted.envelope.data as Data).loan_id as string;
+
+      expect((await act("freeze", agent.principalId)).status).toBe(200);
+      for (const [tool, input] of [
+        ["buy_notes", { amount_cents: 1000 }],
+        ["redeem_notes", { amount_cents: 1000 }],
+        ["apply_for_loan", { amount_cents: 1000, term_days: 7, purpose: "Working capital" }],
+      ] as const) {
+        expect((await call(db, tool, agent.key, input)).envelope.status, tool).toBe("AGENT_NOT_ACTIVE");
+      }
+
+      const repay = await call(db, "repay_loan", agent.key, { loan_id: loanId });
+      expect(repay.envelope.status).toBe("AWAITING_APPROVAL");
+      const checkoutId = (repay.envelope.data as Data).checkout_id as string;
+      await simApprove(db, checkoutId);
+      expect((await call(db, "confirm_checkout", agent.key, { checkout_id: checkoutId })).envelope.status).toBe("COMPLETED");
+      const loan = await call(db, "get_loan", agent.key, { loan_id: loanId });
+      expect((loan.envelope.data as Data).status).toBe("REPAID");
+
+      // A revoked agent may not.
+      await db.update(agents).set({ status: "revoked" }).where(eq(agents.id, agent.agentId));
+      expect((await call(db, "repay_loan", agent.key, { loan_id: loanId })).envelope.status).toBe("AGENT_NOT_ACTIVE");
     });
   });
 

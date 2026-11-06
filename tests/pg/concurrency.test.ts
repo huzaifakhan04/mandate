@@ -14,6 +14,7 @@ import {
   idempotencyKeys,
   journalEntries,
   loans,
+  mandates,
   notePositions,
   noteTransactions,
   paypalOperations,
@@ -25,6 +26,7 @@ import { createTestDb } from "@/server/db/testing";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
 import { settleCheckoutByOrderId } from "@/server/services/checkouts";
+import { revokeMandate } from "@/server/services/mandates";
 
 import {
   call,
@@ -155,6 +157,38 @@ describe("real Postgres (TEST_PG=1)", () => {
     expect(loser.envelope.reason_codes).toEqual(["mandate_total_owed"]);
     expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
     expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(10000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
+  it("M3: revoke_mandate vs accept_offer overlapping → serialised on the series lock: a loan before the revoke, or MANDATE_REVOKED", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const a = await createTestAgent(db, worldId, "a@example.com");
+    const offer = (
+      await call(db, "apply_for_loan", a.key, { amount_cents: 10000, term_days: 7, purpose: "Working capital" })
+    ).envelope.data as Data;
+
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      call(db, "accept_offer", a.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash }),
+      revokeMandate(db, { principalId: a.principalId, agentId: a.agentId }),
+    ]);
+    // Both wait on the series row: the revoke takes it first too (Ruling N order).
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    const [accepted, revoked] = await racing;
+
+    expect(revoked.outcome).toBe("revoked");
+    const [mandate] = await db.select().from(mandates).where(eq(mandates.id, a.mandateId));
+    expect(mandate!.status).toBe("revoked");
+    const worldLoans = await db.select().from(loans).where(eq(loans.worldId, worldId));
+    if (accepted.envelope.status === "ACTIVE") {
+      expect(worldLoans).toHaveLength(1);
+      expect(worldLoans[0]!.createdAt.getTime()).toBeLessThanOrEqual(mandate!.revokedAt!.getTime());
+    } else {
+      expect(accepted.envelope.status).toBe("MANDATE_REVOKED");
+      expect(worldLoans).toHaveLength(0);
+    }
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 

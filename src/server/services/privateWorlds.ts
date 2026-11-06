@@ -8,6 +8,7 @@ import { scoped } from "../db/scoped";
 import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
+import { failWorldOperations } from "../paypal/operations";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -162,7 +163,8 @@ export type ResetOutcome = { outcome: "reset"; worldId: string } | { outcome: "n
 /**
  * Archives the owner's world (its agents stop: `WORLD_ARCHIVED`; crons
  * and the dashboard skip it) and opens a fresh one with the same name.
- * The old world is archived, never deleted — its ledger stays.
+ * The old world is archived, never deleted — its ledger stays; its
+ * unfinished operations become `failed_terminal` / `world_archived` (M6).
  */
 export async function resetPrivateWorld(db: Db, principalId: string, worldId: string, now: Date = new Date()): Promise<ResetOutcome> {
   const created = await db.transaction(async (tx): Promise<ResetOutcome> => {
@@ -179,6 +181,7 @@ export async function resetPrivateWorld(db: Db, principalId: string, worldId: st
     if (archived.length !== 1) {
       return { outcome: "not_found" };
     }
+    await failWorldOperations(tx, world.id);
     return { outcome: "reset", worldId: await createWorldWithBots(tx, principalId, world.name, world.botSeed, now) };
   });
   if (created.outcome === "reset") {

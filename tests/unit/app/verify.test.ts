@@ -169,7 +169,7 @@ describe("/verify/start → PayPal → /verify/return (sim rail)", () => {
       body: "",
     });
     expect((await start(crossSite)).status).toBe(403);
-    // A no-referrer page (the claim page) sends `Origin: null`: Sec-Fetch-Site decides.
+    // A no-referrer page (forced by a user agent or extension) sends `Origin: null`: Sec-Fetch-Site decides.
     const nullOriginSame = new Request(`${ORIGIN}/verify/start`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", origin: "null", "sec-fetch-site": "same-origin" },

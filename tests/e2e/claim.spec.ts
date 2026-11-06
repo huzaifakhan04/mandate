@@ -23,14 +23,20 @@ test("P2: a fresh claim link asks the human to verify with PayPal, returning to 
   expect(path).toMatch(/^\/claim\/[A-Za-z0-9_-]{43}$/);
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(path);
+  const response = await page.goto(path);
+  // I-2: a claim page (its URL is a bearer token) is never cached by a shared cache.
+  // (`next dev` answers plain `no-store`; a production build serves the proxy's
+  // `private, no-store` — asserted in tests/unit/app/proxy.test.ts.)
+  const cacheControl = response!.headers()["cache-control"] ?? "";
+  expect(cacheControl).toContain("no-store");
+  expect(cacheControl).not.toMatch(/public|s-maxage/);
   await expect(page.getByRole("heading", { name: "Claim E2E Claimer" })).toBeVisible();
   await expect(page.getByText("E2E Ops")).toBeVisible();
   await expect(page.getByText("e2e-model")).toBeVisible();
   await expect(page.locator('form[action="/verify/start"] input[name="return_to"]')).toHaveValue(path);
   await expect(page.getByRole("button", { name: "Verify with PayPal to claim E2E Claimer" })).toBeVisible();
   await expect(page.getByText("not deposits and not FDIC-insured")).toBeVisible();
-  await expect(page.locator('meta[name="referrer"]')).toHaveAttribute("content", "no-referrer");
+  await expect(page.locator('meta[name="referrer"]')).toHaveAttribute("content", "same-origin");
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);
