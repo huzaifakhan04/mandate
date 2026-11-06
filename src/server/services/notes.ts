@@ -18,6 +18,7 @@ import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { availableLiquidity } from "../domain/liquidity";
 import { railForWorld } from "./worlds";
+import { settleDeferredHolderLosses } from "./holderLosses";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
 import { SAMPLE_BUY_NOTES_ARGS } from "../contracts/sampleArgs";
 
@@ -483,11 +484,32 @@ export async function applyRedemptionPayoutOutcome(
     return; // Still in flight / unclaimed; a later call (cron/webhook, Task 8) retries.
   }
   if (resolution.kind === "failed") {
-    await scoped(db, worldId).update(
-      noteTransactions,
-      { status: "failed" },
-      and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
-    );
+    const failedAt = await getSimNow(db, worldId);
+    await db.transaction(async (tx) => {
+      const failed = await scoped(tx, worldId).update(
+        noteTransactions,
+        { status: "failed" },
+        and(eq(noteTransactions.id, noteTx.id), eq(noteTransactions.status, "pending")),
+      );
+      if (failed.length !== 1) {
+        return;
+      }
+      // Ruling P4-D: units this redemption reserved are the holder's again —
+      // a charged-off loan's deferred loss share now applies (series → position locks).
+      const [position] = await scoped(tx, worldId).select(notePositions, eq(notePositions.id, noteTx.positionId));
+      if (!position) {
+        return;
+      }
+      await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.id, position.seriesId));
+      await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.id, position.id));
+      await settleDeferredHolderLosses(tx, worldId, {
+        positionId: position.id,
+        agentId: position.agentId,
+        redemptionId: noteTx.id,
+        outcome: "failed",
+        simAt: failedAt,
+      });
+    });
     return;
   }
 
@@ -555,6 +577,14 @@ export async function applyRedemptionPayoutOutcome(
         },
         eq(notePositions.id, lockedPosition.id),
       );
+      // Ruling P4-D: a deferred loss share these units backed is absorbed by the bank.
+      await settleDeferredHolderLosses(tx, worldId, {
+        positionId: lockedPosition.id,
+        agentId: lockedPosition.agentId,
+        redemptionId: noteTx.id,
+        outcome: "completed",
+        simAt,
+      });
     }
   });
 }

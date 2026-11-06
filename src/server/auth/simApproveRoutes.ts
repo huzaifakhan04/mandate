@@ -86,7 +86,11 @@ function checkoutPage(checkout: SimCheckoutView): Response {
     200,
     "Approve checkout",
     `<span class="pill">SIMULATED · NO PAYPAL</span><h1>Approve this payment</h1><p class="amount">${amount}</p>
-<p>Your agent asked to pay <strong>${amount}</strong> in your sandbox world <strong>${world}</strong>. This stands in for approving in PayPal: no real or sandbox money moves. After you approve, tell your agent to call <code>confirm_checkout</code>.</p>
+${
+      checkout.purpose === "guarantee"
+        ? `<p>Your agent's loan in your sandbox world <strong>${world}</strong> was charged off and your guarantee is invoked for <strong>${amount}</strong>. This stands in for approving in PayPal: no real or sandbox money moves. Once approved, the payment settles on its own.</p>`
+        : `<p>Your agent asked to pay <strong>${amount}</strong> in your sandbox world <strong>${world}</strong>. This stands in for approving in PayPal: no real or sandbox money moves. After you approve, tell your agent to call <code>confirm_checkout</code>.</p>`
+    }
 <form method="post" action="${escapeHtml(simApprovePath(checkout.worldId, checkout.orderId))}"><button type="submit">Approve ${amount}</button></form>
 <a href="/dashboard?world=${checkout.worldId}">Back to the dashboard</a>`,
   );

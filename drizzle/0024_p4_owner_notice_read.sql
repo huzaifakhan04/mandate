@@ -1,0 +1,1 @@
+ALTER TABLE "agent_notices" ADD COLUMN "owner_read_at" timestamp with time zone;

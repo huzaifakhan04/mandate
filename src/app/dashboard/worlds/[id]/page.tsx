@@ -5,10 +5,11 @@ import { Suspense } from "react";
 
 import { requirePagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
-import { privateWorldView, type BotView } from "@/server/services/privateWorlds";
+import { privateWorldView, type BotView, type OwnerLoanView } from "@/server/services/privateWorlds";
 
+import { drawerHref, loanPill } from "../../_components/cards";
 import { DashFrame, LEGAL, LoadingFrame, Pill, TopBar } from "../../_components/chrome";
-import { formatCents, formatDate } from "../../_components/format";
+import { formatCents, formatDate, loanLabel } from "../../_components/format";
 import "../../dashboard.css";
 
 export const metadata: Metadata = {
@@ -56,6 +57,41 @@ function BotCard({ bot }: { bot: BotView }) {
       )}
       <small>Mandate bots · simulated</small>
     </div>
+  );
+}
+
+const STEP_LABEL: Record<string, string> = {
+  late: "late (+1 day: late fee)",
+  penalty: "penalty (+3 days: 2% a year accrues)",
+  substandard: "substandard (+7 days: agent restricted, mandate frozen)",
+  charged_off: "charged off (+10 days: your guarantee is invoked)",
+};
+
+/** P4 Task 4: one of the owner's agents' loans — its due day and ladder step, so +1 / +7 can walk it down the ladder. */
+function OwnerLoanRow({ loan, simDay }: { loan: OwnerLoanView; simDay: number }) {
+  const pill = loanPill(loan.status);
+  return (
+    <li data-testid="world-loan" data-loan-id={loan.loanId}>
+      <div>
+        <b>
+          {loan.agentName} · <span className="mono">{loanLabel(loan.loanId)}</span>
+        </b>{" "}
+        <span className="num">{formatCents(loan.principalCents)}</span>
+        <small data-testid="world-loan-due">
+          Due day {loan.dueDay}
+          {loan.daysLate > 0 ? ` · ${loan.daysLate} ${loan.daysLate === 1 ? "day" : "days"} late` : simDay <= loan.dueDay && loan.next ? ` · ${loan.dueDay - simDay} days to go` : ""}
+          {loan.dueNowCents > 0n ? ` · ${formatCents(loan.dueNowCents)} ${loan.status === "charged_off" ? "recoverable" : "to settle"}` : ""}
+        </small>
+        <small data-testid="world-loan-step">
+          Ladder step: {loan.step ? STEP_LABEL[loan.step] ?? loan.step : "none yet"}
+          {loan.next ? ` · next: ${loan.next.step.replace("_", " ")} on day ${loan.next.day}` : ""}
+        </small>
+      </div>
+      <Pill tone={pill.tone}>{pill.label}</Pill>
+      <a className="btn sm" href={drawerHref(loan.agentId)}>
+        Details
+      </a>
+    </li>
   );
 }
 
@@ -148,6 +184,22 @@ async function World({ params, searchParams }: { params: Params; searchParams: S
             <span>Available to lend</span>
           </div>
         </div>
+
+        {view.ownerLoans.length > 0 ? (
+          <section className="panel" aria-labelledby="ladder-h" data-testid="world-loans">
+            <h2 id="ladder-h">Your agents&apos; loans</h2>
+            <p>
+              Due days are on this world&apos;s clock (today is day {view.simDay}). Unpaid after the due day, a loan walks
+              the ladder: +1 late fee, +3 rate penalty, +7 substandard, +10 charged off and your guarantee invoked. Use
+              +1 / +7 to watch it happen.
+            </p>
+            <ul className="ladder">
+              {view.ownerLoans.map((loan) => (
+                <OwnerLoanRow key={loan.loanId} loan={loan} simDay={view.simDay} />
+              ))}
+            </ul>
+          </section>
+        ) : null}
 
         <section className="panel" aria-labelledby="bots-h">
           <h2 id="bots-h">Bots</h2>

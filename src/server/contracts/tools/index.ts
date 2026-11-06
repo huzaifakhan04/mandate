@@ -21,3 +21,4 @@ import "./getApplication";
 import "./getLoan";
 import "./repayLoan";
 import "./getStatement";
+import "./ackNotices";

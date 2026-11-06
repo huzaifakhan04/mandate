@@ -496,6 +496,50 @@ export const loans = pgTable(
     // Task 6: when the disbursement payout SUCCEEDED (sim time). `due_sim_at`
     // is re-based on it (disbursed + term) at activation.
     disbursedSimAt: timestamp("disbursed_sim_at", { withTimezone: true }),
+    /**
+     * P4 Task 1 (delinquency ladder). Late fees and the rate penalty are
+     * memo balances: assessed here with no journal, recognised as
+     * `late_fee_income` / `penalty_income` when a repayment collects them
+     * (P1 convention: fee income is booked on collection). `late_fees_cents`
+     * (P0) is the total late fee ever assessed; `outstanding_cents` stays
+     * the base principal + fee still owed.
+     */
+    lateFeeOutstandingCents: bigint("late_fee_outstanding_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    /** Total rate penalty accrued (whole days late through `penalty_accrued_days`). */
+    penaltyCents: bigint("penalty_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    penaltyOutstandingCents: bigint("penalty_outstanding_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    /** Days late the penalty has been accrued through (0 = not started). */
+    penaltyAccruedDays: integer("penalty_accrued_days").notNull().default(0),
+    /** The last ladder step applied: null | `late` | `penalty` | `substandard` | `charged_off`. */
+    delinquencyStep: text("delinquency_step"),
+    /**
+     * P4 Task 2 (charge-off at +10). `charge_off_principal_cents` is the
+     * principal written off (journaled: provision → allowance → loans
+     * receivable); `charge_off_total_cents` is everything owed at that
+     * moment — principal + base fee + late fees + penalty (the fees were
+     * memo balances, so they are simply written off) — and the amount of
+     * the principal's guarantee. `holders_loss_cents` is the part of the
+     * principal loss the note holders bore (≤ principal; the bank's capital
+     * absorbs the rest). `recovered_cents` is what payments after the
+     * charge-off have recovered (≤ `charge_off_total_cents`; equal → status
+     * `recovered`).
+     */
+    chargeOffPrincipalCents: bigint("charge_off_principal_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    chargeOffTotalCents: bigint("charge_off_total_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    holdersLossCents: bigint("holders_loss_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    /**
+     * P4 fix round 1 (Ruling P4-C): late fees / penalty waived because a
+     * full-payoff quote was paid as quoted after they were assessed or
+     * accrued (memo balances, so no journal).
+     */
+    waivedCents: bigint("waived_cents", { mode: "bigint" }).notNull().default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -504,18 +548,124 @@ export const loans = pgTable(
     // Task 6: DB backstop for "one open loan per agent" (P1), under the
     // application-level check `accept_offer` makes while holding the note
     // series row lock. Keep the status list in sync with
-    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts.
+    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts (P4: late and
+    // substandard loans are still open).
     uniqueIndex("loans_one_open_per_agent_idx")
       .on(table.worldId, table.agentId)
-      .where(sql`${table.status} in ('accepted', 'disbursing', 'active')`),
+      .where(sql`${table.status} in ('accepted', 'disbursing', 'active', 'late', 'substandard')`),
+  ],
+);
+
+/**
+ * P4 Task 1: one row per delinquency ladder step applied to a loan — the
+ * exactly-once key `(world_id, loan_id, step)`. Each step inserts its row
+ * (ON CONFLICT DO NOTHING) in the same transaction as its effects, under
+ * the series → loan locks, so a concurrent tick and manual advance (or a
+ * retry after a crash) apply it once.
+ */
+export const loanLadderSteps = pgTable(
+  "loan_ladder_steps",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    step: text("step").notNull(),
+    /** The sim time the step fell due (due_sim_at + its day offset). */
+    dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
+    /** The sim time it was applied. */
+    appliedSimAt: timestamp("applied_sim_at", { withTimezone: true }).notNull(),
+    /** Step-specific amounts (e.g. the late fee), for audit. */
+    detail: jsonb("detail"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("loan_ladder_steps_loan_step_idx").on(table.worldId, table.loanId, table.step)],
+);
+
+/**
+ * P4 Task 2: each note holder's share of a charged-off loan's principal
+ * loss (Ruling P4-D: deferred while reserved by a pending redemption) (Dr `notes_payable[holder]` / Cr `provision_expense`, units reduced
+ * by the same amount — Ruling T), and how much of it recoveries have
+ * credited back (`recovered_cents` ≤ `loss_cents`). Written under the
+ * loan row lock only (charge-off step, recovery capture).
+ */
+export const loanHolderLosses = pgTable(
+  "loan_holder_losses",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** The loss this holder has borne so far (units already reduced by it). */
+    lossCents: bigint("loss_cents", { mode: "bigint" }).notNull(),
+    recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    /**
+     * Ruling P4-D: the part of this holder's share (computed on FULL units)
+     * that couldn't be cut at charge-off because those units were reserved
+     * by a pending redemption. Applied (→ `loss_cents`) if that redemption
+     * fails; absorbed by the bank's capital (→ 0, nothing journaled) if it
+     * succeeds. Never more than the holder's pending redemptions.
+     */
+    deferredCents: bigint("deferred_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [uniqueIndex("loan_holder_losses_loan_agent_idx").on(table.worldId, table.loanId, table.agentId)],
+);
+
+/**
+ * P4 Task 1: notices to an agent and its owner (late, penalty,
+ * substandard, cured…). One row is visible to both: the agent through
+ * `get_status` / `get_loan` (`read_at` = the agent acknowledged it with
+ * `ack_notices`), the owner (`principal_id`) on the dashboard.
+ */
+export const agentNotices = pgTable(
+  "agent_notices",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    principalId: uuid("principal_id").references(() => principals.id),
+    kind: text("kind").notNull(),
+    loanId: uuid("loan_id").references(() => loans.id),
+    simAt: timestamp("sim_at", { withTimezone: true }).notNull(),
+    body: text("body").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    /** P4 Task 4: the owner's read state in the dashboard (separate from the agent's ack, `read_at`). */
+    ownerReadAt: timestamp("owner_read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    index("agent_notices_agent_idx").on(table.worldId, table.agentId, table.readAt),
+    index("agent_notices_principal_idx").on(table.worldId, table.principalId),
   ],
 );
 
 /**
  * Task 7: a repayment checkout for a loan — `kind` `invoice` (the payment
  * link the borrower's client pays; one per loan, created on activation,
- * its `order.create` keyed by the loan id) or `direct` (one per
- * `repay_loan` call, its `order.create` keyed by this row's id).
+ * its `order.create` keyed by the loan id), `direct` (one per
+ * `repay_loan` call, its `order.create` keyed by this row's id) or (P4
+ * Task 2) `guarantee` (the principal's guarantee, invoked at charge-off:
+ * one per loan, its `order.create` purpose `guarantee` keyed by the loan id).
  * `status`: `pending` (order not created yet) → `open` (approve URL
  * known) → `paid` (capture applied) | `review` (captured amount mismatch)
  * | `failed`.
@@ -537,6 +687,22 @@ export const repaymentLinks = pgTable(
     payerHint: text("payer_hint"),
     status: text("status").notNull().default("pending"),
     createOpId: uuid("create_op_id").references(() => paypalOperations.id),
+    /**
+     * P4 fix round 1 (Ruling P4-C): a quoted link — `repay_loan` for the
+     * full total due, or the guarantee — records the sim time of the quote
+     * and the total due it quoted. Paying it as quoted settles the loan:
+     * the penalty accrues only up to `quote_sim_at`, and anything assessed
+     * or accrued after it is waived. Null for invoice links and partial
+     * `repay_loan` amounts.
+     */
+    quoteSimAt: timestamp("quote_sim_at", { withTimezone: true }),
+    quotedCents: bigint("quoted_cents", { mode: "bigint" }),
+    /**
+     * Final fix I3: set when a guarantee link ran out of re-issues
+     * (`MAX_GUARANTEE_LINK_ISSUES`) — reported once as an anomaly, then the
+     * reconcile cron stops retrying it. Null otherwise.
+     */
+    reissueExhaustedAt: timestamp("reissue_exhausted_at", { withTimezone: true }),
     approveUrl: text("approve_url"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -548,6 +714,10 @@ export const repaymentLinks = pgTable(
     uniqueIndex("repayment_links_one_invoice_per_loan_idx")
       .on(table.worldId, table.loanId)
       .where(sql`${table.kind} = 'invoice'`),
+    // P4 Task 2: one guarantee link per loan (the charge-off step runs once).
+    uniqueIndex("repayment_links_one_guarantee_per_loan_idx")
+      .on(table.worldId, table.loanId)
+      .where(sql`${table.kind} = 'guarantee'`),
   ],
 );
 
@@ -570,6 +740,14 @@ export const repayments = pgTable("repayments", {
   appliedLateFeeCents: bigint("applied_late_fee_cents", {
     mode: "bigint",
   }).notNull(),
+  /** P4 Task 2: what this payment recovered on a charged-off loan (Cr `recoveries_income`). */
+  appliedRecoveryCents: bigint("applied_recovery_cents", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
+  /** P4 Task 1: the rate penalty this repayment collected (Cr `penalty_income`). */
+  appliedPenaltyCents: bigint("applied_penalty_cents", { mode: "bigint" })
+    .notNull()
+    .default(sql`0`),
   remainderCents: bigint("remainder_cents", { mode: "bigint" })
     .notNull()
     .default(sql`0`),

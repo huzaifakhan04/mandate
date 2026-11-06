@@ -25,6 +25,8 @@ export const REASON_PRIORITY = [
   "mandate_fee",
   "mandate_term",
   "mandate_collateral",
+  // P4: the mandate is frozen while any of the principal's loans is substandard
+  "delinquent_principal",
   // 3. sanctions stub
   "sanctions_hit",
   // 4. grade E
@@ -55,6 +57,8 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   mandate_fee: "The fee for this loan exceeds the maximum fee in your human's mandate.",
   mandate_term: "Term requested exceeds the maximum term in your human's mandate.",
   mandate_collateral: "The collateral offered is not allowed by your human's mandate.",
+  delinquent_principal:
+    "Your human's mandate is frozen for new loans: a loan of one of their agents is seriously past due (substandard).",
   sanctions_hit: "Unable to complete required sanctions screening of the applicant.",
   insufficient_credit_history: "Insufficient credit history.",
   score_too_low: "Agent Credit Score below our minimum (grade E).",

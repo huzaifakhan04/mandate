@@ -4,10 +4,10 @@ import { MANDATE_AGREEMENT_TEXT, MANDATE_BOUNDS } from "@/server/domain/mandate"
 import type { AgentDetailView, AgentEventView, LoanSummary } from "@/server/services/dashboard";
 import { KYA_DOCUMENT_KINDS } from "@/server/services/kyaDocs";
 
-import { STATUS_PILL, drawerHref } from "./cards";
-import { LEGAL, Pill, type Tone } from "./chrome";
+import { STATUS_PILL, drawerHref, isDelinquentStatus, loanPill } from "./cards";
+import { LEGAL, Pill } from "./chrome";
 import { DrawerKeys } from "./drawer-keys";
-import { centsInputValue, formatBps, formatCents, formatDate, formatDateTime, loanLabel, shortId } from "./format";
+import { approveHref, centsInputValue, formatBps, formatCents, formatDate, formatDateTime, loanLabel, shortId } from "./format";
 
 export type DrawerTab = "loans" | "notes" | "events";
 
@@ -22,17 +22,6 @@ const DOC_KIND_LABEL: Record<string, string> = {
   operator_registration: "Operator registration",
   code_manifest: "Code manifest",
   other: "Other",
-};
-
-const LOAN_PILL: Record<string, { tone: Tone; label: string }> = {
-  accepted: { tone: "blue", label: "Accepted" },
-  disbursing: { tone: "blue", label: "Disbursing" },
-  active: { tone: "ok", label: "Active" },
-  repaid: { tone: "plain", label: "Repaid" },
-  late: { tone: "warn", label: "Late" },
-  defaulted: { tone: "risk", label: "Defaulted" },
-  charged_off: { tone: "risk", label: "Charged off" },
-  disbursement_failed: { tone: "risk", label: "Disbursement failed" },
 };
 
 /** Field-level messages for a rejected mandate form (codes from `parseMandateSignInput`). */
@@ -386,13 +375,16 @@ function MandateSection({ agent, params }: { agent: AgentDetailView; params: Dra
 }
 
 function LoanCard({ loan }: { loan: LoanSummary }) {
-  const pill = LOAN_PILL[loan.status] ?? { tone: "plain" as const, label: loan.status };
+  const pill = loanPill(loan.status);
+  const delinquent = isDelinquentStatus(loan.status);
   const progress = loan.dayOfTerm !== null && loan.termDays ? Math.round((loan.dayOfTerm / loan.termDays) * 100) : 0;
   return (
     <div className="loan" data-testid="loan-card">
       <div className="lh">
         <b className="mono">{loanLabel(loan.id)}</b>
-        <Pill tone={pill.tone}>{pill.label}</Pill>
+        <span data-testid="loan-status">
+          <Pill tone={pill.tone}>{pill.label}</Pill>
+        </span>
       </div>
       <div className="big num">{formatCents(loan.principalCents)}</div>
       <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
@@ -425,6 +417,60 @@ function LoanCard({ loan }: { loan: LoanSummary }) {
         <dt>Collateral</dt>
         <dd>{COLLATERAL_LABEL[loan.collateral]}</dd>
       </dl>
+      {delinquent || loan.lateFeesCents > 0n || loan.penaltyCents > 0n || loan.waivedCents > 0n ? (
+        <dl className="rows num" data-testid="loan-delinquency" style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--line)" }}>
+          {delinquent ? (
+            <>
+              <dt>Days late</dt>
+              <dd data-testid="loan-days-late">{loan.daysLate}</dd>
+            </>
+          ) : null}
+          <dt>Late fee</dt>
+          <dd>
+            {formatCents(loan.lateFeesCents)}
+            {loan.lateFeeOutstandingCents > 0n && loan.lateFeeOutstandingCents !== loan.lateFeesCents
+              ? ` (${formatCents(loan.lateFeeOutstandingCents)} owed)`
+              : ""}
+          </dd>
+          <dt>Rate penalty</dt>
+          <dd>
+            {formatCents(loan.penaltyCents)}
+            {loan.penaltyOutstandingCents > 0n && loan.penaltyOutstandingCents !== loan.penaltyCents
+              ? ` (${formatCents(loan.penaltyOutstandingCents)} owed)`
+              : ""}
+          </dd>
+          {loan.waivedCents > 0n ? (
+            <>
+              <dt>Waived</dt>
+              <dd>{formatCents(loan.waivedCents)}</dd>
+            </>
+          ) : null}
+          {loan.status !== "charged_off" && delinquent ? (
+            <>
+              <dt>Due now</dt>
+              <dd data-testid="loan-due-now">{formatCents(loan.dueNowCents)}</dd>
+            </>
+          ) : null}
+        </dl>
+      ) : null}
+      {loan.chargeOff ? (
+        <dl className="rows num" data-testid="loan-charge-off" style={{ marginTop: 10 }}>
+          <dt>Written off</dt>
+          <dd>{formatCents(loan.chargeOff.writtenOffCents)}</dd>
+          <dt>Recovered</dt>
+          <dd>{formatCents(loan.chargeOff.recoveredCents)}</dd>
+          <dt>Recoverable</dt>
+          <dd data-testid="loan-recoverable">{formatCents(loan.chargeOff.recoverableCents)}</dd>
+        </dl>
+      ) : null}
+      {loan.status === "charged_off" && loan.chargeOff?.guaranteeLink?.approveUrl && loan.chargeOff.guaranteeLink.status === "open" ? (
+        <div className="link" data-testid="guarantee-link">
+          <Pill tone="dark">Your guarantee · {formatCents(loan.chargeOff.guaranteeLink.amountCents)}</Pill>
+          <a className="mono" href={approveHref(loan.chargeOff.guaranteeLink.approveUrl)} rel="noreferrer noopener" target="_blank">
+            Pay the guarantee
+          </a>
+        </div>
+      ) : null}
       {loan.repaymentLink?.approveUrl ? (
         <div className="link">
           <Pill tone="warn">Awaiting payer</Pill>
@@ -458,10 +504,34 @@ const EVENT_LABEL: Record<string, { text: string; tone?: "g" | "r" }> = {
   "loan.remainder_held": { text: "Overpayment held (no payout receiver)" },
   "loan.remainder_paid": { text: "Overpayment returned", tone: "g" },
   "loan.remainder_payout_failed": { text: "Overpayment return failed", tone: "r" },
+  // P4: the delinquency ladder, charge-off, guarantee and recovery.
+  "loan.late": { text: "Loan is late: late fee added", tone: "r" },
+  "loan.penalty_started": { text: "Rate penalty started (2% a year)", tone: "r" },
+  "loan.substandard": { text: "Loan substandard: agent restricted, mandate frozen", tone: "r" },
+  "agent.restricted": { text: "Agent restricted (can repay, can't borrow)", tone: "r" },
+  "loan.charged_off": { text: "Loan charged off: your guarantee is invoked", tone: "r" },
+  "loan.guarantee_reissued": { text: "Guarantee link reissued" },
+  "loan.recovery_received": { text: "Recovery received", tone: "g" },
+  "loan.recovered": { text: "Loan fully recovered", tone: "g" },
+  "loan.cured": { text: "Late loan cured: repaid in full", tone: "g" },
+  "loan.charges_waived": { text: "Post-quote charges waived (paid as quoted)" },
+  "loan.holder_loss_settled": { text: "Note holders' deferred loss settled" },
+  "agent.restored": { text: "Agent restored to active", tone: "g" },
+  "credit.limit_increased": { text: "Limit increased", tone: "g" },
 };
 
 function eventText(event: AgentEventView): string {
   const label = EVENT_LABEL[event.type]?.text ?? event.type;
+  const p = event.payload ?? {};
+  if (event.type === "credit.limit_increased" && typeof p.to_grade === "string" && typeof p.limit_cents === "number") {
+    return `${label}: grade ${String(p.from_grade)} → ${p.to_grade}, per-loan limit ${formatCents(p.limit_cents)}`;
+  }
+  if (event.type === "loan.late" && typeof p.late_fee_cents === "number") {
+    return `${label} (${formatCents(p.late_fee_cents)})`;
+  }
+  if (event.type === "loan.charged_off" && typeof p.written_off_cents === "number") {
+    return `${label} · ${formatCents(p.written_off_cents)} written off`;
+  }
   const version = event.payload?.version;
   return event.type.startsWith("mandate.") && typeof version === "number" ? `${label} · v${version}` : label;
 }

@@ -22,6 +22,7 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 | `--model <m>` | CLI default | Passed to `claude --model`. |
 | `--max-turns <n>` | 40 | Turn limit for each `claude -p` invocation. |
 | `--timeout-min <n>` | 10 | Wall-clock limit for each `claude -p` invocation. |
+| `--scenario <s>` | `core` | `core` (below) or `collections` (P4, local only, no PayPal). |
 
 ## Requirements
 
@@ -75,3 +76,19 @@ Each `claude -p` invocation runs with these limits:
 Claude Code's `WebFetch` can't reach `http://localhost`. In local runs, agents therefore read the bank through the `get_bank_guide` MCP tool rather than `/agents.md`. Against an `https` base, they can fetch `/agents.md` directly.
 
 If PayPal shows a captcha or security challenge, the run stops and reports `BLOCKED`. The harness never tries to get around it.
+
+## Scenario `collections` (P4)
+
+```sh
+npm run test:agents -- --scenario collections
+```
+
+It runs locally only, in a **private world**, so no PayPal money moves and no PayPal account is needed. The AI roles use their templates (`OPENAI_DISABLED=1` unless you set it). Only `claude` and Playwright Chromium are needed.
+
+1. **The human.** The harness signs in through the test-only `/api/test/session`, creates a private world, registers the borrower agent there from the dashboard (path B, so no claim link), and signs its mandate in the drawer ($20 per loan, $50 total, 10% fee, 30 days, invoice collateral). It checks that the agent is at tier 1.
+2. **The agent borrows.** Its prompt is `prompts/collections.md`, and its MCP config already carries the key. It must borrow $10 for 7 days against a $15 invoice. Nobody ever pays that invoice. The harness checks principal 1000 and a 1500 invoice link.
+3. **Late.** The harness moves the world clock to the day after the due date (+7, then +1), using the due day the world page shows. It checks that `get_status` shows `LATE`, a 100 late fee and a `late` notice. Then, as the human, it asks the agent where things stand. The agent must call `get_status` or `get_loan` and tell its human that the loan is late. It must also explain the consequences: the penalty, substandard status, the freeze, the guarantee or the charge-off.
+4. **Charged off.** The harness moves the clock to due + 10 (+7 +1 +1). It checks that `get_loan` shows `CHARGED_OFF` with a guarantee link, and asks the agent again. The agent's reply must mention the guarantee.
+5. **Recovery.** The harness opens the guarantee link, which is the owner's sim approve page, as the human and approves it. It then waits for the loan to reach `RECOVERED` with recovered equal to written off. It also checks that the agent is `active` again, that the world's trial balance is $0.00, and that the main world has no PayPal operations.
+
+Results go to `tests/acceptance/results/collections-<timestamp>.md`.

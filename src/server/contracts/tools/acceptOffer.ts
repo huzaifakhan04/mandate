@@ -10,6 +10,7 @@ import {
   getLoanView,
 } from "../../services/loans";
 import { refreshRepaymentLink } from "../../services/repayments";
+import { REASON_TEXT } from "../../domain/reasons";
 
 const inputSchema = z.object({
   offer_id: z.uuid(),
@@ -166,6 +167,11 @@ export const acceptOfferTool = defineTool({
         return mandateRevokedEnvelope(result.reason, result.retry);
       case "mandate_limit":
         return mandateLimitEnvelope(result.reasons, result.mandate, result.retry);
+      case "delinquent_principal": {
+        const envelope = fail("MANDATE_FROZEN", REASON_TEXT.delinquent_principal, ["delinquent_principal"]);
+        envelope.next_actions = [{ tool: "get_status", args: {} }];
+        return envelope;
+      }
       case "disbursing":
         break;
     }

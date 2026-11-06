@@ -9,7 +9,7 @@ import type { Db } from "../db/client";
 import { agents, events, loans, mandates, noteSeries } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type KyaTier } from "../domain/kya";
-import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import { DELINQUENT_LOAN_DB_STATUSES, isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import {
   agreementTextHash,
   checkMandate,
@@ -72,8 +72,9 @@ export async function currentMandateRow(
 /**
  * What the principal owes on the open loans of ALL their agents in the
  * world. A loan that is accepted or disbursing has `outstanding = 0`
- * until its funds are sent, so it counts at principal + fee; an active
- * loan counts at its outstanding balance.
+ * until its funds are sent, so it counts at principal + fee; a funded
+ * loan (active, late or substandard) counts at its outstanding balance
+ * plus any late fees and rate penalty still owed (P4).
  */
 export async function principalExposure(db: Db, worldId: string, principalId: string): Promise<bigint> {
   const owned = await scoped(db, worldId).selectFields(agents, { id: agents.id }, eq(agents.principalId, principalId));
@@ -91,9 +92,41 @@ export async function principalExposure(db: Db, worldId: string, principalId: st
     )!,
   );
   return open.reduce(
-    (sum, loan) => sum + (loan.status === "active" ? loan.outstandingCents : loan.principalCents + loan.feeCents),
+    (sum, loan) =>
+      sum +
+      (isOwingStatus(loan.status)
+        ? loan.outstandingCents + loan.lateFeeOutstandingCents + loan.penaltyOutstandingCents
+        : loan.principalCents + loan.feeCents),
     0n,
   );
+}
+
+/**
+ * P4 mandate freeze: whether any loan of any of `principalId`'s agents in
+ * the world is SUBSTANDARD (or, P4 Task 2, CHARGED_OFF and not yet
+ * recovered). While it is, new applications by any of their
+ * agents decline with `delinquent_principal` (and acceptances are refused).
+ */
+export async function principalHasDelinquentLoan(db: Db, worldId: string, principalId: string | null): Promise<boolean> {
+  if (!principalId) {
+    return false;
+  }
+  const owned = await scoped(db, worldId).selectFields(agents, { id: agents.id }, eq(agents.principalId, principalId));
+  if (owned.length === 0) {
+    return false;
+  }
+  const rows = await scoped(db, worldId).selectFields(
+    loans,
+    { id: loans.id },
+    and(
+      inArray(
+        loans.agentId,
+        owned.map((row) => row.id),
+      ),
+      inArray(loans.status, [...DELINQUENT_LOAN_DB_STATUSES]),
+    )!,
+  );
+  return rows.length > 0;
 }
 
 /** Reason code: the principal is above the agent's KYA tier per-loan cap. */

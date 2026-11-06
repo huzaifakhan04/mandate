@@ -1,8 +1,9 @@
-import { and, eq, inArray, isNotNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { loans, noteTransactions, repaymentLinks, repayments } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { isOwingStatus } from "../domain/loanMachine";
 import {
   deriveOperationId,
   executeOperation,
@@ -25,11 +26,14 @@ import {
   pollPayoutStatus,
   unknownPayoutFee,
 } from "../services/payoutPolling";
+import { refreshGuaranteeLink } from "../services/paymentLinks";
 import { isPollDue } from "../services/pollThrottle";
 import {
+  loanIdFromGuaranteeSourceId,
   loanIdFromInvoiceSourceId,
   refreshDirectRepayment,
   refreshRepaymentLink,
+  reissueGuaranteeLink,
   reissueInvoiceLink,
 } from "../services/repayments";
 import { listActiveWorldIds } from "../services/worlds";
@@ -219,6 +223,7 @@ export async function runReconcile(db: Db, options: ReconcileOptions = {}): Prom
     await run.item(worldId, "payout_sources", () => pollPayouts(run, worldId));
     await run.item(worldId, "checkouts", () => pollCheckouts(run, worldId));
     await run.item(worldId, "invoice_links", () => reissueFailedInvoiceLinks(run, worldId));
+    await run.item(worldId, "guarantee_links", () => reissueStaleGuaranteeLinks(run, worldId));
     await run.item(worldId, "anomalies", () => listAnomalies(run, worldId));
   }
 
@@ -313,6 +318,9 @@ async function followUp(db: Db, op: OperationRecord): Promise<void> {
         await refreshRepaymentLink(db, op.worldId, loanIdFromInvoiceSourceId(op.sourceId));
       } else if (op.purpose === "repayment_direct") {
         await refreshDirectRepayment(db, op.worldId, op.sourceId);
+      } else if (op.purpose === "guarantee") {
+        // P4 Task 2: the principal's guarantee link (sourceId = the loan id).
+        await refreshGuaranteeLink(db, op.worldId, loanIdFromGuaranteeSourceId(op.sourceId));
       }
       return;
     case "order.capture":
@@ -464,6 +472,46 @@ async function pollCheckouts(run: Run, worldId: string): Promise<void> {
 // 4. Failed invoice links (the one auto-fix) and anomalies
 // ---------------------------------------------------------------------
 
+/**
+ * P4-F: a charged-off loan's guarantee link whose `order.create` failed
+ * terminally (or that quotes more than is still recoverable) is re-issued
+ * in place at the recoverable amount (up to `MAX_GUARANTEE_LINK_ISSUES`
+ * issues). Final fix I3: a link that ran out of issues is reported once
+ * (`guarantee_reissue_exhausted`) and skipped from then on.
+ */
+async function reissueStaleGuaranteeLinks(run: Run, worldId: string): Promise<void> {
+  const state = run.world(worldId);
+  const links = await scoped(run.db, worldId).select(
+    repaymentLinks,
+    and(
+      eq(repaymentLinks.kind, "guarantee"),
+      inArray(repaymentLinks.status, ["failed", "pending", "open"]),
+      isNull(repaymentLinks.reissueExhaustedAt),
+    )!,
+  );
+  for (const link of links) {
+    const loan = await scoped(run.db, worldId).findOne(loans, eq(loans.id, link.loanId));
+    if (!loan || loan.status !== "charged_off") {
+      continue;
+    }
+    if (link.status !== "failed" && link.amountCents === loan.chargeOffTotalCents - loan.recoveredCents) {
+      continue;
+    }
+    if (!run.canStart()) {
+      return;
+    }
+    run.used += 1;
+    await run.item(worldId, `reissue_guarantee:${link.id}`, async () => {
+      const result = await reissueGuaranteeLink(run.db, worldId, loan.id, { markExhausted: true });
+      if (result.outcome === "reissued") {
+        state.counts.linksReissued += 1;
+      } else if (result.outcome === "exhausted" && result.firstTime) {
+        state.anomalies.push(invoiceLinkAnomaly(worldId, link.id, link.loanId, `guarantee_reissue_exhausted:${result.issues}`));
+      }
+    });
+  }
+}
+
 async function reissueFailedInvoiceLinks(run: Run, worldId: string): Promise<void> {
   const state = run.world(worldId);
   const failed = await scoped(run.db, worldId).select(
@@ -472,7 +520,7 @@ async function reissueFailedInvoiceLinks(run: Run, worldId: string): Promise<voi
   );
   for (const link of failed) {
     const loan = await scoped(run.db, worldId).findOne(loans, eq(loans.id, link.loanId));
-    if (loan?.status !== "active") {
+    if (!loan || !isOwingStatus(loan.status)) {
       continue; // Nothing left to collect through it.
     }
     if (!run.canStart()) {

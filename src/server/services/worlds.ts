@@ -151,6 +151,22 @@ export async function listActiveWorldIds(db: Db): Promise<string[]> {
   return rows.map((row) => row.id);
 }
 
+/**
+ * Final fix I1: the tick's world list — every active world's id, oldest
+ * first, with whether the delinquency ladder needs the tick at all: a
+ * PRIVATE world whose clock is frozen (speed 0) only moves on the owner's
+ * advance, which runs the ladder itself.
+ */
+export async function listActiveWorldsForTick(db: Db): Promise<{ id: string; ladderOnTick: boolean }[]> {
+  const rows = await db
+    .select({ id: worlds.id, kind: worlds.kind, speed: clock.speed })
+    .from(worlds)
+    .leftJoin(clock, eq(clock.worldId, worlds.id))
+    .where(eq(worlds.status, "active"))
+    .orderBy(worlds.createdAt, worlds.id);
+  return rows.map((row) => ({ id: row.id, ladderOnTick: !(row.kind === "private" && Number(row.speed ?? 0) === 0) }));
+}
+
 /** P2 Task 6: every active private world's id, oldest first (the tick runs their bots). */
 export async function listActivePrivateWorldIds(db: Db): Promise<string[]> {
   const rows = await db
@@ -170,7 +186,7 @@ function slugify(name: string): string {
 
 /**
  * Ensures the singleton "main" world exists (slug `main`, rail mode
- * `paypal`, clock speed 0, anchors set to now), seeding its chart of
+ * `paypal`, clock speed 1 — Ruling P4-A — anchors set to now), seeding its chart of
  * accounts. Idempotent and race-safe: uses `ON CONFLICT (slug) DO
  * NOTHING` followed by a reselect (never select-then-insert), so two
  * concurrent cold starts racing to create the main world never create
@@ -211,7 +227,9 @@ export async function ensureMainWorld(db: Db): Promise<{ worldId: string }> {
         worldId: world.id,
         anchorReal: now,
         anchorSim: now,
-        speed: "0",
+        // Ruling P4-A: the main world's clock runs in real time (1 sim day = 1
+        // real day) so due dates pass and the delinquency ladder runs.
+        speed: "1",
         manualOffsetMs: 0n,
       })
       .onConflictDoNothing({ target: clock.worldId });

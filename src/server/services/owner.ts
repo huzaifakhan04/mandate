@@ -6,6 +6,7 @@ import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { agentKeys, agents, apiKeys, events } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { agentHasDelinquentLoan, lockAgent } from "./collections";
 import { registerAgent } from "./agents";
 import { ownedPrivateWorld } from "./privateWorldAccess";
 import { ensureMainWorldOnce } from "./worlds";
@@ -170,7 +171,7 @@ export type FreezeOutcome = "frozen" | "unfrozen" | "not_found" | "conflict";
 
 /**
  * Freezes (`active`/`restricted` → `frozen`) or unfreezes (`frozen` →
- * `active`) the owner's agent. A frozen agent's mutating tool calls get
+ * `active`, or `restricted` while it has a substandard loan — P4) the owner's agent. A frozen agent's mutating tool calls get
  * 403 `AGENT_NOT_ACTIVE` (runTool); its loans and notes are untouched.
  * Any other starting status → `conflict`.
  */
@@ -184,9 +185,14 @@ export async function setAgentFrozen(
   }
   const from = params.frozen ? ["active", "restricted"] : ["frozen"];
   return db.transaction(async (tx) => {
+    // P4: an agent with a substandard loan unfreezes to `restricted`, not `active`.
+    // M1: lock the agent row first, so a concurrent cure / substandard step
+    // (which lock it too) is either fully before or after this check.
+    await lockAgent(tx, agent.worldId, agent.id);
+    const unfrozenStatus = (await agentHasDelinquentLoan(tx, agent.worldId, agent.id)) ? "restricted" : "active";
     const updated = await scoped(tx, agent.worldId).update(
       agents,
-      { status: params.frozen ? "frozen" : "active" },
+      { status: params.frozen ? "frozen" : unfrozenStatus },
       and(eq(agents.id, agent.id), eq(agents.principalId, params.principalId), inArray(agents.status, from))!,
     );
     if (updated.length === 0) {

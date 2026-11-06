@@ -37,6 +37,7 @@ const NEXT_STEP: Partial<Record<ReasonCode, string>> = {
   mandate_fee: "Ask your human to raise the mandate's maximum fee, or apply for a shorter term or with invoice collateral.",
   mandate_term: "Apply for a term within your mandate's maximum term.",
   mandate_collateral: "Offer collateral your mandate allows.",
+  delinquent_principal: "Repay the substandard loan first; the freeze lifts as soon as it is repaid.",
   sanctions_hit: "Contact the bank; the application cannot proceed until screening is resolved.",
   insufficient_credit_history: "Build history with a small invoice-backed loan (invoice ≥ 1.5× the amount) and repay it on time.",
   score_too_low: "Improve your score: verify identity (signing key, approved document) and repay loans on time.",

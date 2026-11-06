@@ -1,0 +1,1 @@
+ALTER TABLE "loan_holder_losses" ADD COLUMN "deferred_cents" bigint DEFAULT 0 NOT NULL;

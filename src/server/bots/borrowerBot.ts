@@ -4,7 +4,7 @@ import { simDayIndex } from "../clock/clock";
 import type { Db } from "../db/client";
 import { loans, repaymentLinks } from "../db/schema";
 import { scoped } from "../db/scoped";
-import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import { isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { simApprove } from "../rail/simHandler";
 import { settleCheckoutByOrderId } from "../services/checkouts";
 import { botCall, dataOf, type BotAction } from "./act";
@@ -57,7 +57,7 @@ async function maybeClientPays(
   bot: BotRef,
   loan: typeof loans.$inferSelect,
 ): Promise<BotAction[]> {
-  if (loan.status !== "active" || !loan.disbursedSimAt) {
+  if (!isOwingStatus(loan.status) || !loan.disbursedSimAt) {
     return [];
   }
   const payDay = clientPayDay(seed, index, simDayIndex(anchorSim, loan.disbursedSimAt), simDayIndex(anchorSim, loan.dueSimAt));

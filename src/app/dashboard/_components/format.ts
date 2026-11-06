@@ -58,3 +58,18 @@ export function shortId(id: string): string {
 export function loanLabel(id: string): string {
   return `L-${shortId(id).slice(0, 6).toUpperCase()}`;
 }
+
+/**
+ * A checkout's approve URL for a link on the dashboard: a private world's
+ * sim approve page (`/dashboard/worlds/<id>/checkouts/<order>/approve`)
+ * becomes a same-origin path, so it opens on the server the owner is
+ * signed in to; a PayPal URL is kept as is.
+ */
+export function approveHref(url: string): string {
+  try {
+    const parsed = new URL(url, "http://local.invalid");
+    return parsed.pathname.startsWith("/dashboard/worlds/") ? `${parsed.pathname}${parsed.search}` : url;
+  } catch {
+    return url;
+  }
+}

@@ -7,6 +7,7 @@ import { ownedAgent, ownedAgents, type OwnedAgent } from "../auth/ownership";
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import {
+  agentNotices,
   apiKeys,
   applications,
   events,
@@ -17,14 +18,18 @@ import {
   notePositions,
   offers,
   repaymentLinks,
+  scoreHistory,
   worlds,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type TierResult } from "../domain/kya";
 import { effectivePerLoanCap } from "../domain/mandate";
-import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import { daysLate, type LadderStep } from "../domain/delinquency";
+import { OPEN_LOAN_DB_STATUSES, isOwingStatus } from "../domain/loanMachine";
+import { GRADE_LIMIT_CENTS, type Grade } from "../domain/scorecard";
 import { maskPayoutReceiver } from "./agents";
 import type { ScoreResult } from "../domain/scorecard";
+import { recoverableCents, totalDueCents } from "./collections";
 import { scoreAgent } from "./credit";
 import { tierForAgent } from "./kya";
 import { currentMandateRow, mandateLimits, principalExposure, type MandateRow } from "./mandates";
@@ -59,8 +64,25 @@ export interface LoanSummary {
   feeCents: bigint;
   lateFeesCents: bigint;
   outstandingCents: bigint;
-  /** principal + fee + late fees. */
+  /** The contract total: principal + fee + late fees + rate penalty assessed so far. */
   totalDueCents: bigint;
+  /**
+   * P4 Task 4: what it takes to settle the loan now — base outstanding +
+   * late fees + penalty still owed while owing; the recoverable amount
+   * once charged off; 0 otherwise (`collections.totalDueCents`).
+   */
+  dueNowCents: bigint;
+  /** Sim days past `due_sim_at` while owing or charged off; 0 otherwise. */
+  daysLate: number;
+  /** The last ladder step applied (`late` / `penalty` / `substandard` / `charged_off`), `null` before it is late. */
+  delinquencyStep: LadderStep | null;
+  /** Late fees still owed (memo balance). */
+  lateFeeOutstandingCents: bigint;
+  /** Rate penalty assessed so far, and what is still owed of it. */
+  penaltyCents: bigint;
+  penaltyOutstandingCents: bigint;
+  /** Charges forgiven because a quoted payoff was paid as quoted (Rulings P4-C / P4-E). */
+  waivedCents: bigint;
   termDays: number | null;
   aprBps: number | null;
   /** Days since disbursement (sim time), clamped to [0, term]; `null` before disbursement. */
@@ -70,6 +92,17 @@ export interface LoanSummary {
   collateral: "invoice_link" | "none";
   /** The open repayment checkout, if any (status + approve URL). */
   repaymentLink: { status: string; approveUrl: string | null } | null;
+  /**
+   * P4 Task 2: once charged off — what was written off, recovered so far,
+   * and the owner's guarantee link (shown while the loan is CHARGED_OFF).
+   */
+  chargeOff: {
+    writtenOffCents: bigint;
+    recoveredCents: bigint;
+    /** What is still recoverable (0 once RECOVERED). */
+    recoverableCents: bigint;
+    guaranteeLink: { status: string; approveUrl: string | null; amountCents: bigint } | null;
+  } | null;
   createdAt: Date;
 }
 
@@ -110,6 +143,12 @@ export interface OwnerDashboard {
   summary: DashboardSummary;
   agents: AgentCardView[];
 }
+
+/**
+ * The loan an agent card shows: an open one, or (P4 Task 4) a charged-off
+ * one not yet recovered — the owner's guarantee is owed on it.
+ */
+export const CARD_LOAN_STATUSES = [...OPEN_LOAN_DB_STATUSES, "charged_off"] as const;
 
 function dayOfTerm(loan: { disbursedSimAt: Date | null }, termDays: number | null, simNow: Date): number | null {
   if (!loan.disbursedSimAt || termDays === null) {
@@ -154,8 +193,9 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
     .map((loan) => {
       const offer = offerById.get(loan.offerId);
       const app = offer ? appById.get(offer.applicationId) : undefined;
+      const guarantee = links.find((l) => l.loanId === loan.id && l.kind === "guarantee");
       const link = links
-        .filter((l) => l.loanId === loan.id && (l.status === "open" || l.status === "pending"))
+        .filter((l) => l.loanId === loan.id && l.kind !== "guarantee" && (l.status === "open" || l.status === "pending"))
         .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())[0];
       const termDays = offer?.termDays ?? null;
       return {
@@ -165,7 +205,15 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
         feeCents: loan.feeCents,
         lateFeesCents: loan.lateFeesCents,
         outstandingCents: loan.outstandingCents,
-        totalDueCents: loan.principalCents + loan.feeCents + loan.lateFeesCents,
+        totalDueCents: loan.principalCents + loan.feeCents + loan.lateFeesCents + loan.penaltyCents,
+        dueNowCents: totalDueCents(loan),
+        daysLate:
+          isOwingStatus(loan.status) || loan.status === "charged_off" ? daysLate(loan.dueSimAt, simNow) : 0,
+        delinquencyStep: (loan.delinquencyStep as LadderStep | null) ?? null,
+        lateFeeOutstandingCents: loan.lateFeeOutstandingCents,
+        penaltyCents: loan.penaltyCents,
+        penaltyOutstandingCents: loan.penaltyOutstandingCents,
+        waivedCents: loan.waivedCents,
         termDays,
         aprBps: offer?.aprBps ?? null,
         dayOfTerm: dayOfTerm(loan, termDays, simNow),
@@ -173,6 +221,16 @@ async function loanSummaries(db: Db, worldId: string, agentId: string, simNow: D
         disbursedSimAt: loan.disbursedSimAt,
         collateral: app?.invoiceRef ? ("invoice_link" as const) : ("none" as const),
         repaymentLink: link ? { status: link.status, approveUrl: link.approveUrl } : null,
+        chargeOff: loan.chargedOffAt
+          ? {
+              writtenOffCents: loan.chargeOffTotalCents,
+              recoveredCents: loan.recoveredCents,
+              recoverableCents: recoverableCents(loan),
+              guaranteeLink: guarantee
+                ? { status: guarantee.status, approveUrl: guarantee.approveUrl, amountCents: guarantee.amountCents }
+                : null,
+            }
+          : null,
         createdAt: loan.createdAt,
       };
     })
@@ -192,7 +250,7 @@ async function cardFor(db: Db, agent: OwnedAgent, now: Date): Promise<{ card: Ag
   const simNow = await getSimNow(db, agent.worldId, now);
   const credit = await scoreAgent(db, agent.worldId, agent.id, simNow, { now });
   const open = (await loanSummaries(db, agent.worldId, agent.id, simNow)).find((loan) =>
-    (OPEN_LOAN_DB_STATUSES as readonly string[]).includes(loan.status),
+    (CARD_LOAN_STATUSES as readonly string[]).includes(loan.status),
   );
   return {
     mandate,
@@ -475,6 +533,22 @@ export async function agentDetail(
     desc(events.seq),
   );
 
+  // P4 Task 4: "limit increased" — derived from score_history (the grade drives the limit, P3).
+  const scoreRows = await world.selectFields(
+    scoreHistory,
+    { id: scoreHistory.id, grade: scoreHistory.grade, simAt: scoreHistory.simAt, createdAt: scoreHistory.createdAt },
+    and(eq(scoreHistory.subjectType, "agent"), eq(scoreHistory.subjectId, agent.id))!,
+  );
+  const timeline = [
+    ...eventRows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      occurredSimAt: row.occurredSimAt,
+      payload: (row.payload as Record<string, unknown> | null) ?? null,
+    })),
+    ...limitIncreaseEvents(scoreRows),
+  ].sort((a, b) => b.occurredSimAt.getTime() - a.occurredSimAt.getTime());
+
   return {
     ...card,
     codeManifestHash: agent.codeManifestHash,
@@ -496,12 +570,177 @@ export async function agentDetail(
       accruedCents: p.accruedCents,
       status: p.status,
     })),
-    events: eventRows.slice(0, DRAWER_EVENT_LIMIT).map((row) => ({
-      id: row.id,
-      type: row.type,
-      occurredSimAt: row.occurredSimAt,
-      payload: (row.payload as Record<string, unknown> | null) ?? null,
-    })),
+    events: timeline.slice(0, DRAWER_EVENT_LIMIT),
     simNow,
   };
+}
+
+// ---------------------------------------------------------------------
+// P4 Task 4: limit increases, owner notices, guarantees
+// ---------------------------------------------------------------------
+
+const GRADE_RANK: Record<Grade, number> = { A: 0, B: 1, C: 2, D: 3, E: 4 };
+
+function isGrade(value: string | null): value is Grade {
+  return value !== null && value in GRADE_RANK;
+}
+
+/**
+ * Pure: a synthetic `credit.limit_increased` event for every score_history
+ * row whose grade is better than the previous graded row's — the grade
+ * sets the per-loan limit (P3), so a better grade is a higher limit.
+ * Rows are ordered by sim time (then insertion); ungraded rows are skipped.
+ */
+export function limitIncreaseEvents(
+  rows: ReadonlyArray<{ id: string; grade: string | null; simAt: Date | null; createdAt: Date }>,
+): AgentEventView[] {
+  const ordered = [...rows]
+    .filter((row): row is typeof row & { grade: Grade } => isGrade(row.grade))
+    .sort(
+      (a, b) =>
+        (a.simAt ?? a.createdAt).getTime() - (b.simAt ?? b.createdAt).getTime() || a.createdAt.getTime() - b.createdAt.getTime(),
+    );
+  const out: AgentEventView[] = [];
+  for (let i = 1; i < ordered.length; i += 1) {
+    const prev = ordered[i - 1]!;
+    const row = ordered[i]!;
+    if (GRADE_RANK[row.grade] < GRADE_RANK[prev.grade]) {
+      out.push({
+        id: `limit-${row.id}`,
+        type: "credit.limit_increased",
+        occurredSimAt: row.simAt ?? row.createdAt,
+        payload: {
+          from_grade: prev.grade,
+          to_grade: row.grade,
+          from_limit_cents: GRADE_LIMIT_CENTS[prev.grade],
+          limit_cents: GRADE_LIMIT_CENTS[row.grade],
+        },
+      });
+    }
+  }
+  return out;
+}
+
+export interface OwnerNoticeView {
+  id: string;
+  worldId: string;
+  agentId: string;
+  agentName: string;
+  kind: string;
+  loanId: string | null;
+  simAt: Date;
+  body: string;
+  /** The owner's own read state (the agent's ack, `read_at`, is separate). */
+  ownerReadAt: Date | null;
+}
+
+export const OWNER_NOTICE_LIMIT = 20;
+
+/**
+ * The notices addressed to `principalId` about their agents in one
+ * dashboard view (a private world, or the main view), newest first, and
+ * how many the owner hasn't marked read. Owner read state
+ * (`owner_read_at`) is independent of the agent's `ack_notices`.
+ */
+export async function ownerNotices(
+  db: Db,
+  principalId: string,
+  options: { worldId?: string; limit?: number } = {},
+): Promise<{ unread: number; notices: OwnerNoticeView[] }> {
+  const agentsHere = await agentsInView(db, principalId, options.worldId);
+  const names = new Map(agentsHere.map((agent) => [agent.id, agent.name]));
+  const rows: Array<typeof agentNotices.$inferSelect> = [];
+  for (const worldId of new Set(agentsHere.map((agent) => agent.worldId))) {
+    rows.push(
+      ...(await scoped(db, worldId).select(
+        agentNotices,
+        and(
+          eq(agentNotices.principalId, principalId),
+          inArray(
+            agentNotices.agentId,
+            agentsHere.filter((agent) => agent.worldId === worldId).map((agent) => agent.id),
+          ),
+        )!,
+      )),
+    );
+  }
+  rows.sort((a, b) => b.simAt.getTime() - a.simAt.getTime() || b.createdAt.getTime() - a.createdAt.getTime());
+  return {
+    unread: rows.filter((row) => row.ownerReadAt === null).length,
+    notices: rows.slice(0, options.limit ?? OWNER_NOTICE_LIMIT).map((row) => ({
+      id: row.id,
+      worldId: row.worldId,
+      agentId: row.agentId,
+      agentName: names.get(row.agentId) ?? "Your agent",
+      kind: row.kind,
+      loanId: row.loanId,
+      simAt: row.simAt,
+      body: row.body,
+      ownerReadAt: row.ownerReadAt,
+    })),
+  };
+}
+
+/**
+ * The owner marks their notices read in one view: one notice
+ * (`noticeId`) or all unread ones. Only notices addressed to them about
+ * their own agents change; returns how many did. Never touches the
+ * agent's `read_at`.
+ */
+export async function markOwnerNoticesRead(
+  db: Db,
+  principalId: string,
+  options: { worldId?: string; noticeId?: string },
+  now: Date = new Date(),
+): Promise<number> {
+  const agentsHere = await agentsInView(db, principalId, options.worldId);
+  let changed = 0;
+  for (const worldId of new Set(agentsHere.map((agent) => agent.worldId))) {
+    const updated = await scoped(db, worldId).update(
+      agentNotices,
+      { ownerReadAt: now },
+      and(
+        eq(agentNotices.principalId, principalId),
+        isNull(agentNotices.ownerReadAt),
+        inArray(
+          agentNotices.agentId,
+          agentsHere.filter((agent) => agent.worldId === worldId).map((agent) => agent.id),
+        ),
+        options.noticeId ? eq(agentNotices.id, options.noticeId) : undefined,
+      )!,
+    );
+    changed += updated.length;
+  }
+  return changed;
+}
+
+export interface GuaranteeView {
+  agentId: string;
+  agentName: string;
+  worldId: string;
+  loanId: string;
+  /** What the owner owes as guarantor now (the recoverable amount). */
+  owedCents: bigint;
+  /** The link's status and approve URL (PayPal in the main world; the sim approve page in a private one). */
+  link: { status: string; approveUrl: string | null; amountCents: bigint } | null;
+}
+
+/** Pure: the guarantees the owner owes, from the dashboard's agent cards (charged-off loans still recoverable). */
+export function guaranteesOwed(agents: readonly AgentCardView[]): GuaranteeView[] {
+  return agents.flatMap((agent) => {
+    const loan = agent.openLoan;
+    if (!loan || loan.status !== "charged_off" || !loan.chargeOff || loan.chargeOff.recoverableCents <= 0n) {
+      return [];
+    }
+    return [
+      {
+        agentId: agent.id,
+        agentName: agent.name,
+        worldId: agent.worldId,
+        loanId: loan.id,
+        owedCents: loan.chargeOff.recoverableCents,
+        link: loan.chargeOff.guaranteeLink,
+      },
+    ];
+  });
 }

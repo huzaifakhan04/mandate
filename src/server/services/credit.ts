@@ -41,7 +41,10 @@ export function invoiceCoverageBps(invoiceCents: bigint, principalCents: bigint)
  *
  * - on time: status `repaid`, principal ≥ 1000 cents (Review Focus 3), and
  *   its `loan.repaid` event's sim time ≤ `due_sim_at`.
- * - late: status `repaid` with the `loan.repaid` event after `due_sim_at`.
+ * - late: status `repaid` with the `loan.repaid` event after `due_sim_at`,
+ *   or (P4) a loan currently down the ladder — status `late` or
+ *   `substandard` — so the −15 lands when the `late` step does and a cure
+ *   (repaid after due) keeps counting it once.
  * - charged off: `charged_off_at` set or status `charged_off`.
  *
  * Late is derived from the repayment's sim time, so it already applies to
@@ -92,6 +95,7 @@ async function historyFacts(
       onTimeRepaidLoans += 1;
     }
   }
+  lateRepayments += rows.filter((loan) => loan.status === "late" || loan.status === "substandard").length;
   const everChargedOff = rows.some((loan) => loan.chargedOffAt !== null || loan.status === "charged_off");
   return { onTimeRepaidLoans, lateRepayments, everChargedOff };
 }

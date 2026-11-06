@@ -4,11 +4,12 @@ import { Suspense } from "react";
 
 import { requirePagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
-import { agentDetail, ownerDashboard } from "@/server/services/dashboard";
+import { agentDetail, guaranteesOwed, ownerDashboard, ownerNotices } from "@/server/services/dashboard";
 import { resolveDashboardWorld } from "@/server/services/privateWorldAccess";
 
 import { AgentCard, PasteClaimCard, SummaryStrip } from "./_components/cards";
 import { DashFrame, LEGAL, LoadingFrame, TopBar } from "./_components/chrome";
+import { GuaranteeCards, NoticesPanel } from "./_components/collections";
 import { AgentDrawer, type DrawerParams, type DrawerTab } from "./_components/drawer";
 import "./dashboard.css";
 
@@ -46,6 +47,8 @@ async function Dashboard({ searchParams }: { searchParams: SearchParams }) {
   const privateWorldId = world.kind === "private" ? world.id : undefined;
   const { summary, agents } = await ownerDashboard(db, session.principalId, new Date(), { worldId: privateWorldId });
   const worldQuery = privateWorldId ? `?world=${privateWorldId}` : "";
+  const notices = await ownerNotices(db, session.principalId, { worldId: privateWorldId });
+  const guarantees = guaranteesOwed(agents);
   const tab: DrawerTab = TABS.includes(params.tab as DrawerTab) ? (params.tab as DrawerTab) : "loans";
 
   return (
@@ -84,6 +87,8 @@ async function Dashboard({ searchParams }: { searchParams: SearchParams }) {
           </div>
         ) : null}
 
+        <GuaranteeCards guarantees={guarantees} privateWorld={Boolean(privateWorldId)} />
+
         <SummaryStrip summary={summary} />
 
         <section className="grid" aria-label="Agents">
@@ -100,6 +105,8 @@ async function Dashboard({ searchParams }: { searchParams: SearchParams }) {
               : "No agents yet. Register one here, or open the claim link your agent gave you."}
           </p>
         ) : null}
+
+        <NoticesPanel notices={notices.notices} unread={notices.unread} worldId={privateWorldId} />
 
         <p className="pagelegal">{LEGAL}</p>
       </main>

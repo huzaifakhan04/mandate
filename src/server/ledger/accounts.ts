@@ -13,6 +13,8 @@ export const ACCOUNT_CODES = [
   "payable_to_borrower",
   "fee_income",
   "late_fee_income",
+  "penalty_income",
+  "recoveries_income",
   "provision_expense",
   "note_interest_expense",
   "paypal_fees_expense",
@@ -40,6 +42,14 @@ export const CHART_OF_ACCOUNTS: Record<AccountCode, AccountType> = {
   payable_to_borrower: "liability",
   fee_income: "income",
   late_fee_income: "income",
+  // P4 Task 1: late fees and the rate penalty are memo balances on the
+  // loan until a repayment collects them (P1: fee income on collection);
+  // collected late fees Cr `late_fee_income`, the penalty Cr here.
+  penalty_income: "income",
+  // P4 Task 2: payments on a charged-off loan (Dr `cash_paypal` / Cr here);
+  // the holders' share of it is passed back to them (Dr here / Cr
+  // `notes_payable[holder]`) up to the loss they bore at charge-off.
+  recoveries_income: "income",
   provision_expense: "expense",
   // Task 4 (Note economics): holders' 80% share of each repayment's fee
   // is booked Dr `note_interest_expense` / Cr `notes_payable[holder_i]`.

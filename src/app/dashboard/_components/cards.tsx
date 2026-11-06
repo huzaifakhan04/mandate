@@ -13,6 +13,29 @@ export const STATUS_PILL: Record<AgentDisplayStatus, { tone: Tone; label: string
   revoked: { tone: "risk", label: "Revoked" },
 };
 
+/** Loan status pills (P4 Task 4: LATE amber, SUBSTANDARD red, CHARGED_OFF dark red, RECOVERED green). */
+export const LOAN_PILL: Record<string, { tone: Tone; label: string }> = {
+  accepted: { tone: "blue", label: "Accepted" },
+  disbursing: { tone: "blue", label: "Disbursing" },
+  active: { tone: "ok", label: "Active" },
+  repaid: { tone: "plain", label: "Repaid" },
+  late: { tone: "warn", label: "Late" },
+  substandard: { tone: "risk", label: "Substandard" },
+  defaulted: { tone: "risk", label: "Defaulted" },
+  charged_off: { tone: "dark", label: "Charged off" },
+  recovered: { tone: "ok", label: "Recovered" },
+  disbursement_failed: { tone: "risk", label: "Disbursement failed" },
+};
+
+export function loanPill(status: string): { tone: Tone; label: string } {
+  return LOAN_PILL[status] ?? { tone: "plain", label: status };
+}
+
+/** Whether a loan is down the delinquency ladder (late, substandard or charged off). */
+export function isDelinquentStatus(status: string): boolean {
+  return status === "late" || status === "substandard" || status === "charged_off";
+}
+
 export function drawerHref(agentId: string, extra: Record<string, string> = {}, hash = "agent-drawer"): string {
   return `/dashboard?${new URLSearchParams({ agent: agentId, ...extra }).toString()}#${hash}`;
 }
@@ -139,6 +162,22 @@ export function AgentCard({ agent, selected }: { agent: AgentCardView; selected:
       </div>
       {agent.display === "frozen" ? (
         <p className="lead">Frozen by you: its calls that move money are refused until you unfreeze it.</p>
+      ) : loan && isDelinquentStatus(loan.status) ? (
+        <div data-testid="card-delinquency">
+          <div className="loanline num">
+            <span>
+              Loan {loanLabel(loan.id)} · <b>{formatCents(loan.dueNowCents)}</b> {loan.status === "charged_off" ? "recoverable" : "due now"}
+            </span>
+            <Pill tone={loanPill(loan.status).tone}>{loanPill(loan.status).label}</Pill>
+          </div>
+          <p className="lead">
+            <span className="late num" data-testid="card-days-late">
+              {loan.daysLate} {loan.daysLate === 1 ? "day" : "days"} late
+            </span>
+            {loan.lateFeesCents > 0n ? ` · late fee ${formatCents(loan.lateFeesCents)}` : ""}
+            {loan.penaltyCents > 0n ? ` · penalty ${formatCents(loan.penaltyCents)}` : ""}
+          </p>
+        </div>
       ) : loan ? (
         <div>
           <div className="loanline num">

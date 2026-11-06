@@ -13,6 +13,12 @@
  *   DISBURSING --PAYOUT_SUCCEEDED--> ACTIVE
  *   DISBURSING --PAYOUT_FAILED-->    DISBURSEMENT_FAILED
  *   ACTIVE     --REPAY-->            REPAID
+ *   ACTIVE     --MARK_LATE-->        LATE                  (P4: due + 1 sim day, still owing)
+ *   LATE       --MARK_SUBSTANDARD--> SUBSTANDARD           (P4: due + 7 sim days)
+ *   LATE       --REPAY-->            REPAID                (P4: cure — everything owed paid)
+ *   SUBSTANDARD --REPAY-->           REPAID                (P4: cure)
+ *   SUBSTANDARD --CHARGE_OFF-->      CHARGED_OFF           (P4 Task 2: due + 10 sim days)
+ *   CHARGED_OFF --RECOVER-->         RECOVERED             (P4 Task 2: everything written off recovered)
  *
  * States are uppercase (the API vocabulary); rows store them lowercase
  * (Ruling E) — use `toDbStatus`/`fromDbStatus` at the boundary.
@@ -29,6 +35,10 @@ export const LOAN_STATES = [
   "ACTIVE",
   "DISBURSEMENT_FAILED",
   "REPAID",
+  "LATE",
+  "SUBSTANDARD",
+  "CHARGED_OFF",
+  "RECOVERED",
 ] as const;
 
 export type LoanState = (typeof LOAN_STATES)[number];
@@ -42,14 +52,21 @@ export type LoanEvent =
   | "DISBURSE"
   | "PAYOUT_SUCCEEDED"
   | "PAYOUT_FAILED"
-  | "REPAY";
+  | "REPAY"
+  | "MARK_LATE"
+  | "MARK_SUBSTANDARD"
+  | "CHARGE_OFF"
+  | "RECOVER";
 
 const EDGES: Partial<Record<LoanState, Partial<Record<LoanEvent, LoanState>>>> = {
   SUBMITTED: { OFFER: "OFFERED", DECLINE: "DECLINED" },
   OFFERED: { ACCEPT: "ACCEPTED", DECLINE_OFFER: "DECLINED_BY_AGENT", EXPIRE: "EXPIRED" },
   ACCEPTED: { DISBURSE: "DISBURSING" },
   DISBURSING: { PAYOUT_SUCCEEDED: "ACTIVE", PAYOUT_FAILED: "DISBURSEMENT_FAILED" },
-  ACTIVE: { REPAY: "REPAID" },
+  ACTIVE: { REPAY: "REPAID", MARK_LATE: "LATE" },
+  LATE: { REPAY: "REPAID", MARK_SUBSTANDARD: "SUBSTANDARD" },
+  SUBSTANDARD: { REPAY: "REPAID", CHARGE_OFF: "CHARGED_OFF" },
+  CHARGED_OFF: { RECOVER: "RECOVERED" },
 };
 
 export class InvalidTransitionError extends Error {
@@ -89,5 +106,23 @@ export function fromDbStatus(status: string): LoanState {
   return upper as LoanState;
 }
 
-/** Loan statuses that count as the agent's one open loan (P1: one per agent). */
-export const OPEN_LOAN_DB_STATUSES = ["accepted", "disbursing", "active"] as const;
+/**
+ * Loan statuses that count as the agent's one open loan (P1: one per
+ * agent). P4: a late or substandard loan is still open. Keep in sync with
+ * `loans_one_open_per_agent_idx` (schema.ts).
+ */
+export const OPEN_LOAN_DB_STATUSES = ["accepted", "disbursing", "active", "late", "substandard"] as const;
+
+/** P4: funded loans that still owe (ACTIVE, or down the delinquency ladder before charge-off). */
+export const OWING_LOAN_DB_STATUSES = ["active", "late", "substandard"] as const;
+
+export function isOwingStatus(status: string): boolean {
+  return (OWING_LOAN_DB_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * P4 Task 2: loans that keep their agent restricted and their principal's
+ * mandate frozen — substandard, or charged off and not yet fully
+ * recovered. A cure (→ REPAID) or a full recovery (→ RECOVERED) lifts it.
+ */
+export const DELINQUENT_LOAN_DB_STATUSES = ["substandard", "charged_off"] as const;

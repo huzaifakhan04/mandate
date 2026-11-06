@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { getSimNow } from "../clock/clock";
 import type { NextAction } from "../contracts/envelope";
@@ -9,6 +9,7 @@ import {
   events,
   journalEntries,
   ledgerAccounts,
+  loanHolderLosses,
   loans,
   noteSeries,
   notePositions,
@@ -18,8 +19,9 @@ import {
   repayments,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { SMALL_BALANCE_WAIVER_CENTS } from "../domain/delinquency";
 import { distribute } from "../domain/distribution";
-import { fromDbStatus, toDbStatus, transition } from "../domain/loanMachine";
+import { fromDbStatus, isOwingStatus, toDbStatus, transition } from "../domain/loanMachine";
 import { holdersShare, waterfall } from "../domain/waterfall";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { postJournal } from "../ledger/postJournal";
@@ -28,17 +30,24 @@ import {
   buildSendPayoutRequest,
   deriveOperationId,
   enqueueOperation,
-  executeOperation,
   getOperation,
   journalKey,
-  successBody,
   type ExecuteOperationOptions,
   type OperationPurpose,
   type OrderCaptureResult,
 } from "../paypal/operations";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
+import {
+  accruePenaltyLocked,
+  onLoanCured,
+  onLoanRecovery,
+  outstandingParts,
+  recoverableCents,
+  totalDueCents,
+} from "./collections";
 import { registerLoanActivatedHook } from "./loans";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
+import { checkoutUrl, refreshLinkRow } from "./paymentLinks";
 import { postCaptureFee, postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
 
@@ -48,10 +57,15 @@ import { railForWorld } from "./worlds";
  * `get_statement`.
  *
  * Money flow (Global Constraints journal templates):
- * - capture of gross G against outstanding fee F' / principal P'
- *   (fee first): Dr `cash_paypal` G / Cr `fee_income` f / Cr
- *   `loans_receivable` p / Cr `payable_to_borrower[borrower]` r;
- * - holders' share of the fee collected BY THIS CAPTURE, cumulative so
+ * - capture of gross G against outstanding late fees L', penalty N',
+ *   fee F' and principal P' (P4 waterfall: late fees → penalty → fee →
+ *   principal → remainder): Dr `cash_paypal` G / Cr `late_fee_income` l /
+ *   Cr `penalty_income` n / Cr `fee_income` f / Cr `loans_receivable` p /
+ *   Cr `payable_to_borrower[borrower]` r. Late fees and the penalty are
+ *   recognised here, on collection (they were memo balances on the loan —
+ *   `services/collections.ts`);
+ * - holders' share of the BASE fee collected by this capture (never the
+ *   late fees or penalty — those are the bank's), cumulative so
  *   flooring never loses a cent across partial payments:
  *   H = floor((F_before+f)×80/100) − floor(F_before×80/100),
  *   Dr `note_interest_expense` H / Cr `notes_payable[holder_i]` h_i,
@@ -64,6 +78,20 @@ import { railForWorld } from "./worlds";
  * - remainder r > 0 is paid back to the borrower by a `remainder_payout`
  *   (Dr `payable_to_borrower` / Cr `cash_paypal` once SUCCESS). A failed
  *   payout leaves r owed in `payable_to_borrower` (get_status shows it).
+ *
+ * P4 Task 2 — recovery: a capture on a CHARGED_OFF (or already RECOVERED)
+ * loan — the guarantee link, the old invoice link or a direct repayment —
+ * recovers rc = min(G, written-off total − recovered so far):
+ * Dr `cash_paypal` G / Cr `recoveries_income` rc / Cr
+ * `payable_to_borrower[borrower]` G − rc (the excess goes back by the
+ * remainder payout, exactly as above). Holders are made whole first: hc =
+ * min(rc, Σ their losses not yet credited back), distributed pro rata to
+ * what each is still owed (so never above its loss), Dr
+ * `recoveries_income` hc / Cr `notes_payable[holder_i]`, units += share
+ * (Ruling T). The bank keeps rc − hc (its own principal loss, the fees).
+ * Fully recovered → RECOVERED (agent restored, freeze lifted); partial →
+ * stays CHARGED_OFF with `recovered_cents`. A payment on a RECOVERED loan
+ * recovers nothing: it is all remainder (Review Focus 4).
  *
  * Lock order inside the capture transaction: note series row → loan row
  * → note positions. It extends Ruling N (series before positions) and
@@ -82,11 +110,6 @@ type RepaymentRow = typeof repayments.$inferSelect;
 /** The open (unsettled) link statuses a capture may settle or a failure may close. */
 const OPEN_LINK_STATUSES = ["pending", "open"];
 
-function checkoutUrl(path: string): string {
-  const base = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
-  return `${base.replace(/\/+$/, "")}${path}`;
-}
-
 async function appendEvent(
   tx: Db,
   worldId: string,
@@ -101,26 +124,8 @@ async function appendEvent(
   });
 }
 
-/**
- * What's still owed on a loan, split fee / principal. P1 has no late fees
- * and the waterfall always pays the fee first, so the split is derived
- * from `outstanding_cents` alone: paid so far = (P + F) − outstanding,
- * of which min(paid, F) went to the fee. A loan that isn't ACTIVE owes
- * nothing (REPAID, or never funded).
- */
-export function outstandingParts(loan: LoanRow): { principalCents: bigint; feeCents: bigint } {
-  if (loan.status !== "active") {
-    return { principalCents: 0n, feeCents: 0n };
-  }
-  const paid = loan.principalCents + loan.feeCents - loan.outstandingCents;
-  const feePaid = paid < loan.feeCents ? paid : loan.feeCents;
-  const feeCents = loan.feeCents - feePaid;
-  const principalCents = loan.outstandingCents - feeCents;
-  if (paid < 0n || principalCents < 0n) {
-    throw new Error(`loan ${loan.id} has an inconsistent outstanding balance ${loan.outstandingCents.toString()}`);
-  }
-  return { principalCents, feeCents };
-}
+/** What's still owed on a loan by bucket (moved to `collections.ts` in P4; re-exported). */
+export { outstandingParts, totalDueCents } from "./collections";
 
 // ---------------------------------------------------------------------
 // The invoice payment link
@@ -247,7 +252,7 @@ export async function reissueInvoiceLink(db: Db, worldId: string, linkId: string
       return { outcome: "not_needed" };
     }
     const loan = await scoped(tx, worldId).findOne(loans, eq(loans.id, link.loanId));
-    if (!loan || loan.status !== "active") {
+    if (!loan || !isOwingStatus(loan.status)) {
       return { outcome: "not_needed" };
     }
     const invoice = await loanInvoice(tx, loan);
@@ -306,48 +311,6 @@ export const invoiceRepaymentLinkHook = createInvoiceRepaymentLink;
 registerLoanActivatedHook(invoiceRepaymentLinkHook);
 
 /**
- * Executes a link's queued `order.create` if it hasn't produced an order
- * yet, and copies the order id + approve URL onto the link row (`pending`
- * → `open`). A terminally failed create marks the link `failed`. Never
- * call inside a transaction. Returns the link's current row.
- */
-async function refreshLinkRow(
-  db: Db,
-  worldId: string,
-  link: LinkRow,
-  options: ExecuteOperationOptions = {},
-): Promise<LinkRow> {
-  if (link.approveUrl || !link.createOpId) {
-    return link;
-  }
-  const result = await executeOperation(db, link.createOpId, options);
-  if (result.status === "succeeded") {
-    const body = successBody(result, "order.create");
-    // Copied even if a capture already settled the link (cron raced us).
-    await scoped(db, worldId).update(
-      repaymentLinks,
-      { paypalOrderId: body.orderId, approveUrl: body.approveUrl },
-      and(eq(repaymentLinks.id, link.id), isNull(repaymentLinks.approveUrl))!,
-    );
-    await scoped(db, worldId).update(
-      repaymentLinks,
-      { status: "open" },
-      and(eq(repaymentLinks.id, link.id), eq(repaymentLinks.status, "pending"))!,
-    );
-  } else if (result.status === "failed_terminal") {
-    const failed = await scoped(db, worldId).update(
-      repaymentLinks,
-      { status: "failed" },
-      and(eq(repaymentLinks.id, link.id), eq(repaymentLinks.status, "pending"))!,
-    );
-    if (failed.length === 1) {
-      console.error(`[repayments] order.create for repayment link ${link.id} failed terminally`);
-    }
-  }
-  return (await scoped(db, worldId).findOne(repaymentLinks, eq(repaymentLinks.id, link.id))) ?? link;
-}
-
-/**
  * The loan's invoice link (or `undefined` if it has none), with its
  * `order.create` executed and approve URL stored if that hasn't happened
  * yet. Called after commit by `accept_offer`'s finalize, by
@@ -389,8 +352,9 @@ export type BeginDirectRepaymentOutcome =
   | { outcome: "submitted"; linkId: string; createOperationId: string; amountCents: bigint; loanId: string };
 
 /**
- * `repay_loan`'s transactional half: the caller's own ACTIVE loan
- * (row-locked), an amount of at most what's outstanding (default: all of
+ * `repay_loan`'s transactional half: the caller's own ACTIVE (or LATE /
+ * SUBSTANDARD) loan (row-locked), an amount of at most everything it owes
+ * — base outstanding plus late fees and penalty (default: all of
  * it — a direct repayment can never overpay; only an invoice link can
  * produce a remainder), a `repayment_links` row of kind `direct` and its
  * queued `order.create` (purpose `repayment_direct`, sourceId = the link
@@ -404,23 +368,33 @@ export async function beginDirectRepayment(
   loanId: string,
   amountCents: bigint | null,
 ): Promise<BeginDirectRepaymentOutcome> {
-  const [loan] = await scoped(tx, worldId).forUpdate(loans, and(eq(loans.id, loanId), eq(loans.agentId, agentId))!);
-  if (!loan) {
+  const [lockedLoan] = await scoped(tx, worldId).forUpdate(loans, and(eq(loans.id, loanId), eq(loans.agentId, agentId))!);
+  if (!lockedLoan) {
     return { outcome: "not_found" };
   }
-  if (loan.status !== "active") {
-    return { outcome: "invalid_transition", state: fromDbStatus(loan.status) };
+  // P4 Task 2: a charged-off loan can still be repaid (a recovery, up to what was written off).
+  if (!isOwingStatus(lockedLoan.status) && lockedLoan.status !== "charged_off") {
+    return { outcome: "invalid_transition", state: fromDbStatus(lockedLoan.status) };
   }
-  const amount = amountCents ?? loan.outstandingCents;
-  if (amount > loan.outstandingCents) {
-    return { outcome: "amount_exceeds_outstanding", outstandingCents: loan.outstandingCents };
+  // P4: the quote includes the penalty up to now (accrued under the loan lock).
+  const quoteSimAt = await getSimNow(tx, worldId);
+  const loan = await accruePenaltyLocked(tx, worldId, lockedLoan, quoteSimAt);
+  // P4: a late loan owes its late fees and penalty too (paid first).
+  const due = totalDueCents(loan);
+  const amount = amountCents ?? due;
+  if (amount > due) {
+    return { outcome: "amount_exceeds_outstanding", outstandingCents: due };
   }
+  // Ruling P4-C: a full payoff of an owing loan is a quote — paid as quoted,
+  // it settles the loan even if charges accrue before the capture lands.
+  const quoted = isOwingStatus(loan.status) && amount === due;
 
   const [link] = await scoped(tx, worldId).insert(repaymentLinks, {
     loanId: loan.id,
     kind: "direct",
     amountCents: amount,
     status: "pending",
+    ...(quoted ? { quoteSimAt, quotedCents: due } : {}),
   });
   if (!link) {
     throw new Error("Expected a repayment_links row to be inserted");
@@ -457,6 +431,12 @@ async function findLinkForCheckout(
   purpose: OperationPurpose,
   createSourceId: string,
 ): Promise<LinkRow | undefined> {
+  if (purpose === "guarantee") {
+    return scoped(db, worldId).findOne(
+      repaymentLinks,
+      and(eq(repaymentLinks.loanId, loanIdFromGuaranteeSourceId(createSourceId)), eq(repaymentLinks.kind, "guarantee"))!,
+    );
+  }
   return purpose === "repayment_link"
     ? scoped(db, worldId).findOne(
         repaymentLinks,
@@ -471,15 +451,38 @@ async function findLinkForCheckout(
 async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): Promise<CaptureApplyResult> {
   const loan = await scoped(db, worldId).findOne(loans, eq(loans.id, repayment.loanId));
   const state = loan ? fromDbStatus(loan.status) : "ACTIVE";
-  const outstanding = loan?.outstandingCents ?? 0n;
+  const outstanding = loan ? totalDueCents(loan) : 0n;
   const remainderNote =
     repayment.remainderCents > 0n
       ? ` ${repayment.remainderCents.toString()} cents over what was owed is being returned to the borrower (${repayment.remainderStatus}).`
       : "";
+  if (state === "CHARGED_OFF" || state === "RECOVERED") {
+    return {
+      outcome: "applied",
+      summary:
+        `Payment of ${repayment.grossCents.toString()} cents on the charged-off loan: ` +
+        `${repayment.appliedRecoveryCents.toString()} cents recovered. Loan is ${state}; ${outstanding.toString()} cents still owed.` +
+        remainderNote,
+      data: {
+        loan_id: repayment.loanId,
+        loan_status: state,
+        repayment_id: repayment.id,
+        gross_cents: Number(repayment.grossCents),
+        applied_recovery_cents: Number(repayment.appliedRecoveryCents),
+        remainder_cents: Number(repayment.remainderCents),
+        remainder_status: repayment.remainderStatus.toUpperCase(),
+        outstanding_cents: Number(outstanding),
+      },
+    };
+  }
   return {
     outcome: "applied",
     summary:
-      `Repayment of ${repayment.grossCents.toString()} cents applied: fee ${repayment.appliedFeeCents.toString()}, ` +
+      `Repayment of ${repayment.grossCents.toString()} cents applied: ` +
+      (repayment.appliedLateFeeCents > 0n || repayment.appliedPenaltyCents > 0n
+        ? `late fees ${repayment.appliedLateFeeCents.toString()}, penalty ${repayment.appliedPenaltyCents.toString()}, `
+        : "") +
+      `fee ${repayment.appliedFeeCents.toString()}, ` +
       `principal ${repayment.appliedPrincipalCents.toString()}. Loan is ${state}; ${outstanding.toString()} cents outstanding.` +
       remainderNote,
     data: {
@@ -487,6 +490,8 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
       loan_status: state,
       repayment_id: repayment.id,
       gross_cents: Number(repayment.grossCents),
+      applied_late_fee_cents: Number(repayment.appliedLateFeeCents),
+      applied_penalty_cents: Number(repayment.appliedPenaltyCents),
       applied_fee_cents: Number(repayment.appliedFeeCents),
       applied_principal_cents: Number(repayment.appliedPrincipalCents),
       remainder_cents: Number(repayment.remainderCents),
@@ -511,7 +516,11 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
  * pending remainder payout along).
  *
  * The captured amount must equal the link's amount, else the link goes
- * to `review` and nothing is applied (`mismatch`).
+ * to `review` and nothing is applied (`mismatch`; accepted P1 gap — booked
+ * by hand on review). Fix round 2: a capture that is NOT for the link's
+ * current open issue (superseded issue, link already paid or failed) is
+ * still booked — applied to the loan without touching the link, its
+ * excess refunded by the remainder payout (see the "stray" comment below).
  *
  * In the transaction (series → loan → positions locks): the waterfall
  * on the loan's CURRENT outstanding (fee first), the repayment row, the
@@ -538,18 +547,24 @@ export async function applyRepaymentCapture(
     await settlePendingRemainder(db, existing);
     return appliedResult(db, worldId, (await reloadRepayment(db, worldId, existing.id)) ?? existing);
   }
-  if (link.status === "review") {
+  // Fix round 2: PayPal has already taken this money, so it is ALWAYS
+  // booked. A "stray" capture — of a superseded issue of the link (P4-F
+  // guarantee re-issue, Task 8 invoice re-issue), or landing on a link that
+  // is already `paid` by another capture or was marked `failed` — leaves the
+  // link row alone and is applied to the loan like any payment: a recovery
+  // on a charged-off/recovered loan, the waterfall on an owing one (never a
+  // quote), and whatever the loan doesn't owe is excess → remainder payout
+  // to the borrower (the existing refund path). Exactly once via the
+  // capture-id-keyed repayment row and journal key.
+  const createOperationId = deriveOperationId(worldId, args.purpose, args.createSourceId);
+  const staleOutside = link.createOpId !== null && link.createOpId !== createOperationId;
+  const openOutside = OPEN_LINK_STATUSES.includes(link.status);
+  if (!staleOutside && link.status === "review") {
+    // An earlier capture of this order mismatched (accepted P1 gap: booked by hand on review).
     return { outcome: "mismatch", reason: `captured ${capturedCents.toString()} cents, expected ${link.amountCents.toString()}` };
   }
-  if (link.status === "failed") {
-    return { outcome: "failed", reason: "this repayment checkout previously failed" };
-  }
-  if (link.status === "paid") {
-    // Paid by a capture we can't find — never apply a second one.
-    return { outcome: "failed", reason: "this repayment checkout was already paid" };
-  }
 
-  if (capturedCents !== link.amountCents) {
+  if (!staleOutside && openOutside && capturedCents !== link.amountCents) {
     await scoped(db, worldId).update(
       repaymentLinks,
       { status: "review" },
@@ -571,22 +586,71 @@ export async function applyRepaymentCapture(
 
   const applied = await db.transaction(async (tx) => {
     const [series] = await scoped(tx, worldId).forUpdate(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
-    const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, link.loanId));
-    if (!loan) {
+    const [lockedLoan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, link.loanId));
+    if (!lockedLoan) {
       throw new Error(`loan ${link.loanId} not found for repayment link ${link.id}`);
     }
 
-    const marked = await scoped(tx, worldId).update(
-      repaymentLinks,
-      { status: "paid", paypalOrderId: args.orderId },
-      and(eq(repaymentLinks.id, link.id), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
-    );
-    if (marked.length !== 1) {
-      return null; // Lost a race with another settlement of this checkout.
+    // Re-check under the loan → link locks (a re-issue takes them in the
+    // same order) whether this capture is for the link's current, open issue.
+    const [current] = await scoped(tx, worldId).forUpdate(repaymentLinks, eq(repaymentLinks.id, link.id));
+    const stale =
+      !current ||
+      (current.createOpId !== null && current.createOpId !== createOperationId) ||
+      !OPEN_LINK_STATUSES.includes(current.status);
+    if (!stale) {
+      const marked = await scoped(tx, worldId).update(
+        repaymentLinks,
+        { status: "paid", paypalOrderId: args.orderId },
+        and(eq(repaymentLinks.id, link.id), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
+      );
+      if (marked.length !== 1) {
+        throw new Error(`repayment link ${link.id} changed under its row lock`);
+      }
+    } else {
+      console.warn(
+        `[repayments] capture ${captureId} (order ${args.orderId}) is stray for link ${link.id} (${current?.status ?? "missing"}) — applied to the loan, excess refunded`,
+      );
     }
 
+    if (lockedLoan.status === "charged_off" || lockedLoan.status === "recovered") {
+      // P4 Task 2: a payment after charge-off is a recovery.
+      const recovered = await applyRecoveryLocked(tx, worldId, simNow, {
+        loan: lockedLoan,
+        link,
+        stale,
+        seriesId: series?.id ?? null,
+        captureId,
+        captureOperationId,
+        capturedCents,
+        capture: args.capture,
+      });
+      if (!recovered) {
+        return null;
+      }
+      const payoutOperationId = await enqueueRemainderLocked(tx, worldId, simNow, lockedLoan, {
+        ...recovered,
+        note: "Mandate: payment received above what your charged-off loan owed",
+      });
+      return { repaymentId: recovered.repaymentId, payoutOperationId };
+    }
+
+    // P4: the penalty is owed up to the cure date — accrue it to now first
+    // (under the loan lock, so it can't race processDue's accrual). Ruling
+    // P4-C: for a quoted link only up to the quote's sim time, and whatever
+    // was assessed or accrued after the quote is waived when it is paid as quoted.
+    const quoteAt = stale ? null : link.quoteSimAt;
+    const accrueTo = quoteAt && quoteAt.getTime() < simNow.getTime() ? quoteAt : simNow;
+    const accrued = await accruePenaltyLocked(tx, worldId, lockedLoan, accrueTo);
+    const loan = stale ? accrued : await waivePostQuoteChargesLocked(tx, worldId, simNow, accrued, link, capturedCents);
     const owed = outstandingParts(loan);
-    const split = waterfall({ grossCents: capturedCents, principalCents: owed.principalCents, feeCents: owed.feeCents });
+    const split = waterfall({
+      grossCents: capturedCents,
+      principalCents: owed.principalCents,
+      feeCents: owed.feeCents,
+      lateFeeCents: owed.lateFeeCents,
+      penaltyCents: owed.penaltyCents,
+    });
 
     const [repayment] = await scoped(tx, worldId).insertOnConflictDoNothing(
       repayments,
@@ -596,7 +660,8 @@ export async function applyRepaymentCapture(
         grossCents: capturedCents,
         appliedPrincipalCents: split.principal,
         appliedFeeCents: split.fee,
-        appliedLateFeeCents: 0n,
+        appliedLateFeeCents: split.lateFee,
+        appliedPenaltyCents: split.penalty,
         remainderCents: split.remainder,
         captureId,
         linkId: link.id,
@@ -612,6 +677,8 @@ export async function applyRepaymentCapture(
       { accountCode: "cash_paypal" as const, amountCents: capturedCents },
       { accountCode: "loans_receivable" as const, amountCents: -split.principal },
       { accountCode: "fee_income" as const, amountCents: -split.fee },
+      { accountCode: "late_fee_income" as const, amountCents: -split.lateFee },
+      { accountCode: "penalty_income" as const, amountCents: -split.penalty },
       { accountCode: "payable_to_borrower" as const, ownerRef: loan.agentId, amountCents: -split.remainder },
     ].filter((posting) => posting.amountCents !== 0n);
     await postJournal(tx, {
@@ -670,15 +737,44 @@ export async function applyRepaymentCapture(
     }
 
     const newOutstanding = loan.outstandingCents - split.fee - split.principal;
-    const repaidNow = loan.status === "active" && newOutstanding === 0n;
-    await scoped(tx, worldId).update(
+    const leftLateFees = loan.lateFeeOutstandingCents - split.lateFee;
+    const leftPenalty = loan.penaltyOutstandingCents - split.penalty;
+    // Final fix (minor a): base principal + fee fully paid and at most
+    // SMALL_BALANCE_WAIVER_CENTS of late fees + penalty left → waived (memo
+    // balances, so no journal; recorded in waived_cents) and the loan cures.
+    const residue = leftLateFees + leftPenalty;
+    const smallBalanceWaived =
+      isOwingStatus(loan.status) && newOutstanding === 0n && residue > 0n && residue <= SMALL_BALANCE_WAIVER_CENTS
+        ? residue
+        : 0n;
+    const newLateFees = smallBalanceWaived > 0n ? 0n : leftLateFees;
+    const newPenalty = smallBalanceWaived > 0n ? 0n : leftPenalty;
+    // Cure (P4): everything owed — base, late fees and penalty — is paid.
+    const repaidNow = isOwingStatus(loan.status) && newOutstanding === 0n && newLateFees === 0n && newPenalty === 0n;
+    const [after] = await scoped(tx, worldId).update(
       loans,
       {
         outstandingCents: newOutstanding,
+        lateFeeOutstandingCents: newLateFees,
+        penaltyOutstandingCents: newPenalty,
+        ...(smallBalanceWaived > 0n ? { waivedCents: loan.waivedCents + smallBalanceWaived } : {}),
         ...(repaidNow ? { status: toDbStatus(transition(fromDbStatus(loan.status), "REPAY")) } : {}),
       },
       eq(loans.id, loan.id),
     );
+    if (smallBalanceWaived > 0n) {
+      await appendEvent(tx, worldId, {
+        type: "loan.charges_waived",
+        aggregateId: loan.id,
+        simAt: simNow,
+        payload: {
+          repayment_id: repayment.id,
+          waived_penalty_cents: Number(leftPenalty),
+          waived_late_fee_cents: Number(leftLateFees),
+          reason: "small_balance",
+        },
+      });
+    }
 
     await appendEvent(tx, worldId, {
       type: "loan.repayment_received",
@@ -688,60 +784,40 @@ export async function applyRepaymentCapture(
         repayment_id: repayment.id,
         source: link.kind,
         gross_cents: Number(capturedCents),
+        late_fee_cents: Number(split.lateFee),
+        penalty_cents: Number(split.penalty),
         fee_cents: Number(split.fee),
         principal_cents: Number(split.principal),
         remainder_cents: Number(split.remainder),
         holders_share_cents: Number(holdersPaid),
-        outstanding_cents: Number(newOutstanding),
+        outstanding_cents: Number(newOutstanding + newLateFees + newPenalty),
       },
     });
     if (repaidNow) {
       await appendEvent(tx, worldId, { type: "loan.repaid", aggregateId: loan.id, simAt: simNow });
-    }
-
-    let payoutOperationId: string | null = null;
-    if (split.remainder > 0n) {
-      const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, loan.agentId));
-      const recipientType = payoutRecipientType(agent?.payoutReceiverType ?? null);
-      if (!agent?.payoutReceiver || !recipientType) {
-        // Nowhere to send it: stays owed in payable_to_borrower.
-        await scoped(tx, worldId).update(repayments, { remainderStatus: "held" }, eq(repayments.id, repayment.id));
-        await appendEvent(tx, worldId, {
-          type: "loan.remainder_held",
-          aggregateId: loan.id,
-          simAt: simNow,
-          payload: { repayment_id: repayment.id, remainder_cents: Number(split.remainder), reason: "payout_receiver_missing" },
-        });
-      } else {
-        const rail = await railForWorld(tx, worldId);
-        const enqueued = await enqueueOperation(tx, {
-          worldId,
-          rail,
-          kind: "payout.send",
-          purpose: "remainder_payout",
-          sourceId: repayment.id,
-          request: buildSendPayoutRequest({
-            receiver: agent.payoutReceiver,
-            receiverType: recipientType,
-            amountCents: split.remainder,
-            note: "Mandate: invoice proceeds above what your loan owed",
-            senderItemId: repayment.id,
-          }),
-        });
-        payoutOperationId = enqueued.operationId;
-        await scoped(tx, worldId).update(
-          repayments,
-          { remainderPayoutOpId: payoutOperationId, remainderStatus: "pending" },
-          eq(repayments.id, repayment.id),
-        );
+      if (loan.status !== "active") {
+        // A delinquent loan cured: restore the agent, notify, stop polling its other links.
+        await onLoanCured(tx, worldId, after!, simNow);
+        await closeOpenLinksLocked(tx, worldId, loan.id, simNow);
       }
     }
+
+    const payoutOperationId = await enqueueRemainderLocked(tx, worldId, simNow, loan, {
+      repaymentId: repayment.id,
+      remainderCents: split.remainder,
+    });
 
     return { repaymentId: repayment.id, payoutOperationId };
   });
 
   if (applied?.payoutOperationId) {
     await applyRemainderPayoutOutcome(db, applied.payoutOperationId);
+  }
+  if (applied) {
+    // P4-F: a partial recovery leaves the guarantee link quoting too much — re-issue it.
+    await reissueGuaranteeLink(db, worldId, link.loanId).catch((err: unknown) => {
+      console.error(`[repayments] guarantee re-issue for loan ${link.loanId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   const settled = await scoped(db, worldId).findOne(repayments, eq(repayments.captureId, captureId));
@@ -751,6 +827,312 @@ export async function applyRepaymentCapture(
     return { outcome: "failed", reason: "this repayment checkout was already paid" };
   }
   return appliedResult(db, worldId, settled);
+}
+
+/**
+ * Ruling P4-C (inside the capture transaction, loan row locked): a quoted
+ * full-payoff link (`quoted_cents` set, link amount = the quote) paid as
+ * quoted settles the loan. If the loan now owes more than the quote, the
+ * excess can only be late fees / penalty assessed or accrued after the
+ * quote (the base principal + fee never grows; other payments only lower
+ * it), so it is waived — penalty first, then late fees. Both are memo
+ * balances (fees are recognised on collection), so the waiver posts no
+ * journal: it is recorded in `loans.waived_cents` and a
+ * `loan.charges_waived` event. Invoice links and partial amounts carry no
+ * quote and are unaffected.
+ */
+async function waivePostQuoteChargesLocked(
+  tx: Db,
+  worldId: string,
+  simNow: Date,
+  loan: LoanRow,
+  link: LinkRow,
+  capturedCents: bigint,
+): Promise<LoanRow> {
+  if (link.quotedCents === null || link.quotedCents !== link.amountCents || capturedCents !== link.quotedCents) {
+    return loan;
+  }
+  const excess = totalDueCents(loan) - capturedCents;
+  if (excess <= 0n) {
+    return loan;
+  }
+  const waivedPenalty = excess < loan.penaltyOutstandingCents ? excess : loan.penaltyOutstandingCents;
+  const waivedLateFees = excess - waivedPenalty;
+  if (waivedLateFees > loan.lateFeeOutstandingCents) {
+    // Unreachable: base principal + fee never grows after a quote.
+    throw new Error(`loan ${loan.id} owes ${excess.toString()} more than quoted beyond its late fees and penalty`);
+  }
+  const [updated] = await scoped(tx, worldId).update(
+    loans,
+    {
+      penaltyOutstandingCents: loan.penaltyOutstandingCents - waivedPenalty,
+      lateFeeOutstandingCents: loan.lateFeeOutstandingCents - waivedLateFees,
+      waivedCents: loan.waivedCents + excess,
+    },
+    eq(loans.id, loan.id),
+  );
+  await appendEvent(tx, worldId, {
+    type: "loan.charges_waived",
+    aggregateId: loan.id,
+    simAt: simNow,
+    payload: {
+      link_id: link.id,
+      quote_sim_at: link.quoteSimAt?.toISOString() ?? null,
+      quoted_cents: Number(link.quotedCents),
+      waived_penalty_cents: Number(waivedPenalty),
+      waived_late_fee_cents: Number(waivedLateFees),
+      reason: "paid_as_quoted",
+    },
+  });
+  return updated!;
+}
+
+/**
+ * Final fix (minor b), inside the capture transaction that cured or fully
+ * recovered a loan (loan row locked; links after it, the re-issue's
+ * order): its still-`pending`/`open` repayment, direct and guarantee links
+ * go to `closed`, so the reconcile cron stops polling their orders and the
+ * views stop offering them. A capture that still lands on a closed link
+ * (webhook, confirm_checkout) is booked as a stray capture — applied to
+ * the loan, the excess refunded.
+ */
+async function closeOpenLinksLocked(tx: Db, worldId: string, loanId: string, simNow: Date): Promise<void> {
+  const closed = await scoped(tx, worldId).update(
+    repaymentLinks,
+    { status: "closed" },
+    and(eq(repaymentLinks.loanId, loanId), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
+  );
+  if (closed.length > 0) {
+    await appendEvent(tx, worldId, {
+      type: "loan.links_closed",
+      aggregateId: loanId,
+      simAt: simNow,
+      payload: { link_ids: closed.map((row) => row.id) },
+    });
+  }
+}
+
+/**
+ * Inside the capture transaction: a remainder r > 0 is paid back to the
+ * borrower (`remainder_payout`, executed after commit), or held when the
+ * agent has no payout receiver. Returns the payout operation id, if any.
+ */
+async function enqueueRemainderLocked(
+  tx: Db,
+  worldId: string,
+  simNow: Date,
+  loan: LoanRow,
+  args: { repaymentId: string; remainderCents: bigint; note?: string },
+): Promise<string | null> {
+  if (args.remainderCents <= 0n) {
+    return null;
+  }
+  const [agent] = await scoped(tx, worldId).select(agents, eq(agents.id, loan.agentId));
+  const recipientType = payoutRecipientType(agent?.payoutReceiverType ?? null);
+  if (!agent?.payoutReceiver || !recipientType) {
+    // Nowhere to send it: stays owed in payable_to_borrower.
+    await scoped(tx, worldId).update(repayments, { remainderStatus: "held" }, eq(repayments.id, args.repaymentId));
+    await appendEvent(tx, worldId, {
+      type: "loan.remainder_held",
+      aggregateId: loan.id,
+      simAt: simNow,
+      payload: { repayment_id: args.repaymentId, remainder_cents: Number(args.remainderCents), reason: "payout_receiver_missing" },
+    });
+    return null;
+  }
+  const rail = await railForWorld(tx, worldId);
+  const enqueued = await enqueueOperation(tx, {
+    worldId,
+    rail,
+    kind: "payout.send",
+    purpose: "remainder_payout",
+    sourceId: args.repaymentId,
+    request: buildSendPayoutRequest({
+      receiver: agent.payoutReceiver,
+      receiverType: recipientType,
+      amountCents: args.remainderCents,
+      note: args.note ?? "Mandate: invoice proceeds above what your loan owed",
+      senderItemId: args.repaymentId,
+    }),
+  });
+  await scoped(tx, worldId).update(
+    repayments,
+    { remainderPayoutOpId: enqueued.operationId, remainderStatus: "pending" },
+    eq(repayments.id, args.repaymentId),
+  );
+  return enqueued.operationId;
+}
+
+/**
+ * P4 Task 2: applies a capture on a CHARGED_OFF / RECOVERED loan (row
+ * locked, series locked before it) — see the file comment's "recovery".
+ * Returns `null` if this capture was already applied.
+ */
+async function applyRecoveryLocked(
+  tx: Db,
+  worldId: string,
+  simNow: Date,
+  args: {
+    loan: LoanRow;
+    link: LinkRow;
+    seriesId: string | null;
+    captureId: string;
+    captureOperationId: string;
+    capturedCents: bigint;
+    capture: OrderCaptureResult;
+    /** A capture of a superseded guarantee issue (P4-F): never a quote. */
+    stale?: boolean;
+  },
+): Promise<{ repaymentId: string; remainderCents: bigint } | null> {
+  const { loan, capturedCents, link } = args;
+  const recoverable = recoverableCents(loan);
+  const recovery = capturedCents < recoverable ? capturedCents : recoverable;
+  const remainder = capturedCents - recovery;
+  // Ruling P4-E (as P4-C): a full-payoff quote made before the charge-off,
+  // paid as quoted, fully recovers — the residue (charges that accrued
+  // between the quote and the charge-off) is waived.
+  const paidAsQuoted =
+    !args.stale &&
+    loan.status === "charged_off" &&
+    link.quotedCents !== null &&
+    link.quotedCents === link.amountCents &&
+    capturedCents === link.quotedCents &&
+    link.quoteSimAt !== null &&
+    loan.chargedOffAt !== null &&
+    link.quoteSimAt.getTime() <= loan.chargedOffAt.getTime();
+  const waivedResidue = paidAsQuoted && recoverable > capturedCents ? recoverable - capturedCents : 0n;
+
+  const [repayment] = await scoped(tx, worldId).insertOnConflictDoNothing(
+    repayments,
+    {
+      loanId: loan.id,
+      opId: args.captureOperationId,
+      grossCents: capturedCents,
+      appliedPrincipalCents: 0n,
+      appliedFeeCents: 0n,
+      appliedLateFeeCents: 0n,
+      appliedPenaltyCents: 0n,
+      appliedRecoveryCents: recovery,
+      remainderCents: remainder,
+      captureId: args.captureId,
+      linkId: args.link.id,
+      remainderStatus: "none",
+    },
+    [repayments.worldId, repayments.captureId],
+  );
+  if (!repayment) {
+    return null;
+  }
+
+  await postJournal(tx, {
+    worldId,
+    memo: args.link.kind === "guarantee" ? "Guarantee payment captured (recovery)" : "Recovery captured",
+    sourceType: "repayments",
+    sourceId: repayment.id,
+    simAt: simNow,
+    idempotencyKey: journalKey("repayment_capture", args.captureId),
+    postings: [
+      { accountCode: "cash_paypal" as const, amountCents: capturedCents },
+      { accountCode: "recoveries_income" as const, amountCents: -recovery },
+      { accountCode: "payable_to_borrower" as const, ownerRef: loan.agentId, amountCents: -remainder },
+    ].filter((posting) => posting.amountCents !== 0n),
+  });
+  // Task 10b: PayPal's fee on this capture is the bank's expense.
+  await postCaptureFee(tx, { worldId, simAt: simNow, sourceType: "repayments", sourceId: repayment.id }, args.capture);
+
+  // Holders are made whole first, pro rata to what each is still owed.
+  let holdersCents = 0n;
+  if (recovery > 0n) {
+    const losses = await scoped(tx, worldId).select(loanHolderLosses, eq(loanHolderLosses.loanId, loan.id));
+    const owedBack = losses.reduce((sum, row) => sum + (row.lossCents - row.recoveredCents), 0n);
+    const toHolders = recovery < owedBack ? recovery : owedBack;
+    if (toHolders > 0n && args.seriesId) {
+      // Series (locked) → loan (locked) → positions.
+      const positions = await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.seriesId, args.seriesId));
+      const shares = distribute(
+        losses.map((row) => ({ agentId: row.agentId, units: row.lossCents - row.recoveredCents })),
+        toHolders,
+      ).filter((share) => share.cents > 0n);
+      await postJournal(tx, {
+        worldId,
+        memo: "Recovery credited back to note holders",
+        sourceType: "repayments",
+        sourceId: repayment.id,
+        simAt: simNow,
+        idempotencyKey: journalKey("repayment_capture", `${args.captureId}:holders_recovery`),
+        postings: [
+          { accountCode: "recoveries_income", amountCents: toHolders },
+          ...shares.map((share) => ({
+            accountCode: "notes_payable" as const,
+            ownerRef: share.agentId,
+            amountCents: -share.cents,
+          })),
+        ],
+      });
+      for (const share of shares) {
+        const position = positions.find((row) => row.agentId === share.agentId);
+        const loss = losses.find((row) => row.agentId === share.agentId)!;
+        if (!position) {
+          throw new Error(`note holder ${share.agentId} of loan ${loan.id} has no position`);
+        }
+        await scoped(tx, worldId).update(notePositions, { units: position.units + share.cents }, eq(notePositions.id, position.id));
+        await scoped(tx, worldId).update(
+          loanHolderLosses,
+          { recoveredCents: loss.recoveredCents + share.cents },
+          eq(loanHolderLosses.id, loss.id),
+        );
+      }
+      holdersCents = toHolders;
+    }
+  }
+
+  const newRecovered = loan.recoveredCents + recovery;
+  const fullyRecovered = loan.status === "charged_off" && newRecovered + waivedResidue >= loan.chargeOffTotalCents;
+  const [after] = await scoped(tx, worldId).update(
+    loans,
+    {
+      recoveredCents: newRecovered,
+      ...(waivedResidue > 0n ? { waivedCents: loan.waivedCents + waivedResidue } : {}),
+      ...(fullyRecovered ? { status: toDbStatus(transition(fromDbStatus(loan.status), "RECOVER")) } : {}),
+    },
+    eq(loans.id, loan.id),
+  );
+  await appendEvent(tx, worldId, {
+    type: "loan.recovery_received",
+    aggregateId: loan.id,
+    simAt: simNow,
+    payload: {
+      repayment_id: repayment.id,
+      source: args.link.kind,
+      gross_cents: Number(capturedCents),
+      recovery_cents: Number(recovery),
+      holders_recovery_cents: Number(holdersCents),
+      remainder_cents: Number(remainder),
+      still_owed_cents: Number(after!.chargeOffTotalCents - after!.recoveredCents),
+    },
+  });
+  if (waivedResidue > 0n) {
+    await appendEvent(tx, worldId, {
+      type: "loan.charges_waived",
+      aggregateId: loan.id,
+      simAt: simNow,
+      payload: {
+        link_id: link.id,
+        quote_sim_at: link.quoteSimAt?.toISOString() ?? null,
+        quoted_cents: Number(link.quotedCents),
+        waived_recovery_cents: Number(waivedResidue),
+        reason: "paid_as_quoted_after_charge_off",
+      },
+    });
+  }
+  if (fullyRecovered) {
+    await appendEvent(tx, worldId, { type: "loan.recovered", aggregateId: loan.id, simAt: simNow });
+    await closeOpenLinksLocked(tx, worldId, loan.id, simNow);
+  }
+  if (recovery > 0n) {
+    await onLoanRecovery(tx, worldId, after!, simNow, { recoveredNowCents: recovery, fullyRecovered });
+  }
+  return { repaymentId: repayment.id, remainderCents: remainder };
 }
 
 async function reloadRepayment(db: Db, worldId: string, id: string): Promise<RepaymentRow | undefined> {
@@ -827,6 +1209,17 @@ registerCaptureHandler("repayment_direct", {
       ? { tool: "repay_loan", args: { loan_id: link.loanId, amount_cents: Number(link.amountCents) } }
       : { tool: "get_status", args: {} };
   },
+});
+
+registerCaptureHandler("guarantee", {
+  // P4 Task 2: the owner pays it; the borrower agent may confirm it too (it's its loan).
+  resolveOwnerAgentId: (db, worldId, sourceId) => resolveLinkOwnerAgentId(db, worldId, loanIdFromGuaranteeSourceId(sourceId)),
+  applyEffect: (db, worldId, simNow, args) => applyRepaymentCapture(db, worldId, simNow, { purpose: "guarantee", ...args }),
+  applyFailure: failureApplier("guarantee"),
+  retryNextAction: async (_db, _worldId, sourceId): Promise<NextAction> => ({
+    tool: "get_loan",
+    args: { loan_id: loanIdFromGuaranteeSourceId(sourceId) },
+  }),
 });
 
 // ---------------------------------------------------------------------
@@ -935,6 +1328,131 @@ export async function applyRemainderPayoutOutcome(
 export async function remainderPayoutNeedsPolling(db: Db, worldId: string, repaymentId: string): Promise<boolean> {
   const repayment = await scoped(db, worldId).findOne(repayments, eq(repayments.id, repaymentId));
   return repayment?.remainderStatus === "pending";
+}
+
+// ---------------------------------------------------------------------
+// P4-F: guarantee link re-issue
+// ---------------------------------------------------------------------
+
+/**
+ * How many times a guarantee link may be issued in total (the first + 7
+ * re-issues — each partial recovery re-issues it). Final fix I3: once
+ * exhausted, the link is marked (`reissue_exhausted_at`) and the reconcile
+ * cron reports it once and stops retrying.
+ */
+export const MAX_GUARANTEE_LINK_ISSUES = 8;
+
+/** The `guarantee` checkout's sourceId for issue `n`: the loan id, then `${loanId}:g<n>`. */
+export function guaranteeSourceId(loanId: string, issue: number): string {
+  return issue <= 1 ? loanId : `${loanId}:g${issue}`;
+}
+
+/** The loan id behind a `guarantee` checkout's sourceId. */
+export function loanIdFromGuaranteeSourceId(sourceId: string): string {
+  return sourceId.replace(/:g\d+$/, "");
+}
+
+export type ReissueGuaranteeOutcome =
+  | { outcome: "reissued"; issue: number; link: LinkRow }
+  | { outcome: "not_needed" }
+  /** `firstTime`: this call marked the link exhausted (report it once). */
+  | { outcome: "exhausted"; issues: number; firstTime: boolean };
+
+/**
+ * Ruling P4-F: re-issues a CHARGED_OFF loan's guarantee link at what is
+ * still recoverable — after a partial recovery (the open link quotes too
+ * much) or after its `order.create` failed terminally. Updates the SAME
+ * row in place (one guarantee link per loan): a new `order.create` with
+ * sourceId `${loanId}:g<n>` (deterministic, so a repeat resolves to the
+ * same operation), status `pending`, no order/URL yet, amount = quote =
+ * the recoverable amount, `quote_sim_at` = now. At most
+ * `MAX_GUARANTEE_LINK_ISSUES` issues; `markExhausted` (the reconcile cron)
+ * records `reissue_exhausted_at` the first time that limit is hit. Locks loan → link (the capture
+ * path's order). An owner paying an OLDER issue afterwards is still
+ * applied — as a stray capture: a recovery, any excess refunded — see
+ * `applyRepaymentCapture`. Executes the create after commit. Never call
+ * inside a transaction.
+ */
+export async function reissueGuaranteeLink(
+  db: Db,
+  worldId: string,
+  loanId: string,
+  options: { markExhausted?: boolean } = {},
+): Promise<ReissueGuaranteeOutcome> {
+  const result = await db.transaction(async (tx): Promise<ReissueGuaranteeOutcome> => {
+    const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, loanId));
+    if (!loan || loan.status !== "charged_off") {
+      return { outcome: "not_needed" };
+    }
+    const [link] = await scoped(tx, worldId).forUpdate(
+      repaymentLinks,
+      and(eq(repaymentLinks.loanId, loanId), eq(repaymentLinks.kind, "guarantee"))!,
+    );
+    const recoverable = recoverableCents(loan);
+    if (!link || recoverable <= 0n) {
+      return { outcome: "not_needed" };
+    }
+    const stale = link.status === "failed" || (OPEN_LINK_STATUSES.includes(link.status) && link.amountCents !== recoverable);
+    if (!stale) {
+      return { outcome: "not_needed" };
+    }
+    let current = 1;
+    for (let issue = 1; issue <= MAX_GUARANTEE_LINK_ISSUES; issue += 1) {
+      if (deriveOperationId(worldId, "guarantee", guaranteeSourceId(loanId, issue)) === link.createOpId) {
+        current = issue;
+        break;
+      }
+    }
+    const next = current + 1;
+    if (next > MAX_GUARANTEE_LINK_ISSUES) {
+      // Only the reconcile cron marks it (and so reports it, once).
+      if (options.markExhausted && !link.reissueExhaustedAt) {
+        await scoped(tx, worldId).update(repaymentLinks, { reissueExhaustedAt: new Date() }, eq(repaymentLinks.id, link.id));
+      }
+      return { outcome: "exhausted", issues: current, firstTime: Boolean(options.markExhausted) && !link.reissueExhaustedAt };
+    }
+    const simNow = await getSimNow(tx, worldId);
+    const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
+    const rail = await railForWorld(tx, worldId);
+    const { operationId } = await enqueueOperation(tx, {
+      worldId,
+      rail,
+      kind: "order.create",
+      purpose: "guarantee",
+      sourceId: guaranteeSourceId(loanId, next),
+      request: buildCreateOrderRequest({
+        amountCents: recoverable,
+        description: `Guarantee: Mandate loan ${loan.id} to ${agent?.name ?? "your agent"} was charged off`.slice(0, PAYPAL_DESCRIPTION_MAX),
+        customId: loan.id,
+        returnUrl: checkoutUrl("/checkout/guarantee/return"),
+        cancelUrl: checkoutUrl("/checkout/guarantee/cancel"),
+      }),
+    });
+    const [reset] = await scoped(tx, worldId).update(
+      repaymentLinks,
+      {
+        status: "pending",
+        amountCents: recoverable,
+        quotedCents: recoverable,
+        quoteSimAt: simNow,
+        createOpId: operationId,
+        paypalOrderId: null,
+        approveUrl: null,
+      },
+      eq(repaymentLinks.id, link.id),
+    );
+    await appendEvent(tx, worldId, {
+      type: "loan.guarantee_reissued",
+      aggregateId: loan.id,
+      simAt: simNow,
+      payload: { link_id: link.id, issue: next, amount_cents: Number(recoverable), previous_status: link.status },
+    });
+    return { outcome: "reissued", issue: next, link: reset! };
+  });
+  if (result.outcome !== "reissued") {
+    return result;
+  }
+  return { ...result, link: await refreshLinkRow(db, worldId, result.link, { ignoreBackoff: true }) };
 }
 
 // ---------------------------------------------------------------------

@@ -36,7 +36,9 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
-import { claimAndSignMandateAsHuman, type MandateFormValues } from "../helpers/humanOwner";
+import { chromium, type Page } from "@playwright/test";
+
+import { claimAndSignMandateAsHuman, signMandateInDrawer, type MandateFormValues } from "../helpers/humanOwner";
 import { type ApproveResult } from "../helpers/paypalApprove";
 import {
   approveAs,
@@ -100,7 +102,7 @@ function mandateSummary(m: MandateFormValues): string {
 
 // ---------------------------------------------------------------- CLI args
 
-type Scenario = "happy" | "decline";
+type Scenario = "happy" | "decline" | "collections";
 
 interface Options {
   scenario: Scenario;
@@ -127,8 +129,8 @@ function parseArgs(argv: string[]): Options {
     switch (arg) {
       case "--scenario": {
         const scenario = value();
-        if (scenario !== "happy" && scenario !== "decline") {
-          throw new Error("--scenario must be happy or decline");
+        if (scenario !== "happy" && scenario !== "decline" && scenario !== "collections") {
+          throw new Error(`--scenario must be happy, decline or collections, not ${scenario}`);
         }
         opts.scenario = scenario;
         break;
@@ -159,6 +161,9 @@ function parseArgs(argv: string[]): Options {
   }
   if (!Number.isInteger(opts.runs) || opts.runs < 1) {
     throw new Error("--runs must be a positive integer");
+  }
+  if (opts.scenario === "collections" && opts.base) {
+    throw new Error("--scenario collections runs locally only (it signs the human in through the test-only /api/test/session)");
   }
   return opts;
 }
@@ -908,13 +913,360 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
   return result;
 }
 
+// ---------------------------------------------------------------- scenario: collections (P4 Task 4)
+
+/** What the human signs for the collections borrower (room for the $10 / 7-day loan). */
+const COLLECTIONS_MANDATE: MandateFormValues = {
+  maxPerLoanUsd: "20",
+  maxTotalOwedUsd: "50",
+  maxFeePct: "10",
+  maxTermDays: "30",
+  collateral: ["invoice_link"],
+};
+
+/** Matches a reply that tells the human what being late means (beyond "it's late"). */
+const CONSEQUENCES_RE = /penalt|substandard|restrict|frozen|freez|guarant|charged[ -]off|write[ -]?off|written off/i;
+
+/**
+ * `--scenario collections` — a PRIVATE world, so no PayPal money moves:
+ *
+ * 1. the harness (as the human: test session) creates a private world,
+ *    registers the borrower agent there from the dashboard (path B) and
+ *    signs its mandate in the drawer;
+ * 2. the agent (MCP, key already set) borrows $10 for 7 days against a
+ *    $15 invoice that nobody pays;
+ * 3. the harness moves the clock to the day after the due date (+7 +1):
+ *    `get_status` carries a `late` notice; the agent is asked where things
+ *    stand and must explain the consequences to its human;
+ * 4. the harness moves the clock to due + 10 (+7 +1 +1): charged off; the
+ *    agent's reply must mention the guarantee;
+ * 5. the harness pays the guarantee on the owner's sim approve page →
+ *    RECOVERED, the agent active again, trial balance 0, no PayPal operations.
+ *
+ * (The brief's "+7 → late, +7 → charged off" assumes the loan is already
+ * near its due date; a 7-day loan taken on day 0 is due on day 7, so the
+ * harness lands on due + 1 and then due + 10 instead.)
+ */
+async function runCollectionsOnce(ctx: RunContext, index: number): Promise<RunResult> {
+  const runStart = Date.now();
+  const tmp = mkdtempSync(join(tmpdir(), "mandate-acceptance-"));
+  const cwd = join(tmp, "cwd");
+  mkdirSync(cwd);
+  const transcript: string[] = [];
+  const result: RunResult = {
+    index,
+    pass: false,
+    error: null,
+    timingsMs: {},
+    agents: [],
+    ids: {},
+    checks: [],
+    notes: [],
+    transcriptPath: join(ARTIFACTS, `collections-${new Date(runStart).toISOString().replace(/[:.]/g, "-")}-${index}.log`),
+  };
+  const mark = (step: string) => {
+    result.timingsMs[step] = Date.now() - runStart;
+    log(`run ${index}: ${step}`);
+  };
+  const check = (name: string, ok: boolean, detail: string) => {
+    result.checks.push({ name, ok, detail: redact(detail) });
+    if (!ok) {
+      throw new Error(`check failed: ${name} (${redact(detail)})`);
+    }
+  };
+  const { base } = ctx;
+  const settle = async () => {
+    if (ctx.server) {
+      const errors = await reconcile(base, ctx.server.cronSecret);
+      if (errors.length) {
+        result.notes.push(`reconcile reported errors: ${redact(JSON.stringify(errors))}`);
+      }
+    }
+  };
+  const runTag = `${new Date(runStart).toISOString().slice(0, 10).replace(/-/g, "")}-${index}-${Math.random().toString(36).slice(2, 6)}`;
+  const browser = await chromium.launch();
+  const context = await browser.newContext();
+  const page: Page = await context.newPage();
+
+  try {
+    // ------------------------------------------------ the human: session, private world, path B, mandate
+    const session = await context.request.post(`${base}/api/test/session`, {
+      form: { name: "Sandbox Owner", return_to: "/dashboard" },
+      maxRedirects: 0,
+    });
+    check("human signed in (test session)", session.status() === 303, `HTTP ${session.status()}`);
+    // A cold `next dev` may still be compiling (and reloading) the page: let it settle first.
+    await page.goto(`${base}/dashboard/worlds`, { waitUntil: "networkidle", timeout: 120_000 });
+    await page.waitForTimeout(1_000);
+    await page.waitForLoadState("networkidle");
+    await page.getByLabel("World name").fill(`Collections ${index}`);
+    await page.getByRole("button", { name: "Create world" }).click();
+    await page.getByTestId("world-name").waitFor({ state: "visible", timeout: 120_000 });
+    const worldId = new URL(page.url()).pathname.split("/").pop()!;
+    result.ids.world_id = worldId;
+    mark("private_world_created");
+
+    await page.goto(`${base}/dashboard/agents/new?world=${worldId}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.getByLabel("Agent name").fill(`Collections borrower ${index}`);
+    await page.getByLabel("Operator").fill("Acceptance harness");
+    await page.getByLabel("Model").fill("Claude");
+    await page.getByLabel("Payout PayPal account").fill("borrower@example.com");
+    await page.getByRole("button", { name: "Register agent" }).click();
+    await page.getByText("mnd_", { exact: false }).first().waitFor({ state: "visible", timeout: 60_000 });
+    const apiKey = (await page.content()).match(KEY_RE)?.[0];
+    if (!apiKey) {
+      throw new Error("path B: the key page showed no API key");
+    }
+    const registered = await tool(base, "get_status", {}, apiKey);
+    const agentId = String((registered.data.agent as Json).id);
+    result.ids.borrower_agent_id = agentId;
+    const signed = await signMandateInDrawer(page, base, agentId, COLLECTIONS_MANDATE, "Sandbox Owner");
+    check("mandate signed in the drawer", signed.ok, signed.notice);
+    const kya = (await tool(base, "get_status", {}, apiKey)).data.kya as Json;
+    check("borrower tier 1 (path B + mandate)", kya.tier === 1 && kya.can_borrow === true, JSON.stringify(kya));
+    mark("agent_registered_with_mandate");
+
+    // ------------------------------------------------ the agent borrows (invoice-backed)
+    const record: AgentRecord = {
+      role: "borrower",
+      agentId,
+      sessionId: null,
+      turns: 0,
+      claudeInvocations: 0,
+      costUsd: 0,
+      toolCalls: {},
+      keyPrintedByAgent: false,
+      finalMessage: "",
+    };
+    result.agents.push(record);
+    const configPath = join(tmp, "borrower-key.mcp.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({ mcpServers: { mandate: { type: "http", url: `${base}/api/mcp/mcp`, headers: { Authorization: `Bearer ${apiKey}` } } } }),
+      { mode: 0o600 },
+    );
+    const say = async (text: string): Promise<AgentTurn> => {
+      transcript.push(`\n===== borrower ← ${redact(text).slice(0, 4000)}`);
+      const turn = await runClaude({
+        prompt: text,
+        resume: record.sessionId ?? undefined,
+        mcpConfigPath: configPath,
+        options: ctx.options,
+        cwd,
+        transcript,
+      });
+      record.sessionId = turn.sessionId;
+      record.turns += turn.numTurns;
+      record.claudeInvocations += 1;
+      record.costUsd += turn.costUsd;
+      for (const name of turn.toolCalls) {
+        record.toolCalls[name] = (record.toolCalls[name] ?? 0) + 1;
+      }
+      record.finalMessage = redact(turn.result);
+      transcript.push(`----- borrower result (${turn.ms} ms, ${turn.numTurns} turns${turn.isError ? ", ERROR" : ""}): ${redact(turn.result)}`);
+      log(`run ${index}: borrower turn done in ${(turn.ms / 1000).toFixed(0)}s, tools: ${turn.toolCalls.join(", ") || "none"}`);
+      return turn;
+    };
+
+    let turn = await say(template("collections.md", { BASE: base, CLIENT_EMAIL: "client@example.com", RUN_TAG: runTag }));
+    let loanId: string | null = null;
+    for (let step = 0; ; step += 1) {
+      await settle();
+      const openLoan = (await tool(base, "get_status", {}, apiKey)).data.open_loan as Json | null;
+      if (openLoan?.loan_id && openLoan.status === "ACTIVE") {
+        loanId = String(openLoan.loan_id);
+        break;
+      }
+      if (step >= 5) {
+        throw new Error(`the agent did not take out the loan within 5 follow-ups (open_loan ${JSON.stringify(openLoan)})`);
+      }
+      turn = await say("Continue toward your goal.");
+    }
+    result.ids.loan_id = loanId;
+    const borrowed = await tool(base, "get_loan", { loan_id: loanId }, apiKey);
+    check("loan principal 1000", borrowed.data.principal_cents === PRINCIPAL_CENTS, `principal_cents=${String(borrowed.data.principal_cents)}`);
+    check(
+      "invoice-backed (repayment link 1500)",
+      (borrowed.data.repayment_link as Json | null)?.amount_cents === INVOICE_CENTS,
+      JSON.stringify(borrowed.data.repayment_link),
+    );
+    mark("loan_active");
+
+    // ------------------------------------------------ the clock: due + 1 → late
+    const advance = async (days: number) => {
+      const res = await context.request.post(`${base}/dashboard/worlds/${worldId}/advance`, {
+        form: { days: String(days) },
+        headers: { origin: base, accept: "application/json" },
+        maxRedirects: 0,
+        timeout: 120_000,
+      });
+      if (res.status() >= 400) {
+        throw new Error(`advance +${days} → HTTP ${res.status()}: ${(await res.text()).slice(0, 200)}`);
+      }
+      await settle();
+    };
+    // Today's world day and the loan's due day, from the world page (the ladder panel).
+    const worldDays = async () => {
+      await page.goto(`${base}/dashboard/worlds/${worldId}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+      const today = Number(/Day (\d+)/.exec((await page.getByTestId("sim-date").textContent()) ?? "")?.[1]);
+      const row = page.locator(`[data-testid="world-loan"][data-loan-id="${loanId}"]`);
+      const due = Number(/Due day (\d+)/.exec((await row.getByTestId("world-loan-due").textContent()) ?? "")?.[1]);
+      if (!Number.isInteger(today) || !Number.isInteger(due)) {
+        throw new Error("the world page didn't show today's day and the loan's due day");
+      }
+      return { today, due };
+    };
+    const moveTo = async (daysAfterDue: number) => {
+      const { today, due } = await worldDays();
+      const plan = chunk(Math.max(due + daysAfterDue - today, 0));
+      for (const days of plan) {
+        await advance(days);
+      }
+      return plan;
+    };
+    const plan1 = await moveTo(1);
+    result.ids.advance_to_late = plan1.map((d) => `+${d}`).join(" ");
+    const late = await tool(base, "get_status", {}, apiKey);
+    const lateLoan = late.data.open_loan as Json;
+    check("loan LATE at due + 1", lateLoan.status === "LATE", JSON.stringify(lateLoan));
+    check("late fee 100 (min of 5% × 1000)", lateLoan.late_fee_cents === 100, String(lateLoan.late_fee_cents));
+    const lateNotices = (late.data.notices as Json[]).map((n) => n.kind);
+    check("get_status carries the late notice", lateNotices.includes("late"), JSON.stringify(lateNotices));
+    mark("late");
+
+    const callsBefore = { ...record.toolCalls };
+    turn = await say(
+      "Hi, it's your human. Some time has passed since you took out the loan. Check on it with the bank and tell me " +
+        "where things stand: what do I owe now, and what happens next if it isn't repaid?",
+    );
+    const checked = ["get_status", "get_loan"].some(
+      (name) => (record.toolCalls[`mcp__mandate__${name}`] ?? 0) > (callsBefore[`mcp__mandate__${name}`] ?? 0),
+    );
+    check("agent checked its loan (get_status / get_loan)", checked, JSON.stringify(record.toolCalls));
+    check("agent told its human the loan is late", /\blate\b|past due|overdue/i.test(turn.result), turn.result.slice(0, 300));
+    check("agent explained the consequences to its human", CONSEQUENCES_RE.test(turn.result), turn.result.slice(0, 300));
+    result.ids.agent_late_message = redact(turn.result).replace(/\s+/g, " ").slice(0, 600);
+    result.ids.agent_acked_notices = (record.toolCalls["mcp__mandate__ack_notices"] ?? 0) > 0;
+    mark("agent_explained_late");
+
+    // ------------------------------------------------ the clock: due + 10 → charged off
+    const plan2 = await moveTo(10);
+    result.ids.advance_to_charge_off = plan2.map((d) => `+${d}`).join(" ");
+    const chargedOff = await tool(base, "get_loan", { loan_id: loanId }, apiKey);
+    check("loan CHARGED_OFF at due + 10", chargedOff.data.status === "CHARGED_OFF", String(chargedOff.data.status));
+    const chargeOff = chargedOff.data.charge_off as Json;
+    const guaranteeUrl = (chargeOff.guarantee_link as Json | null)?.url as string | null | undefined;
+    check("guarantee link issued", Boolean(guaranteeUrl), JSON.stringify(chargeOff));
+    result.ids.written_off_cents = chargeOff.written_off_cents;
+    mark("charged_off");
+
+    turn = await say("It's your human again. More time has passed. Check on the loan once more and tell me where things stand.");
+    check("agent's final message mentions the guarantee", /guarant/i.test(turn.result), turn.result.slice(0, 300));
+    result.ids.agent_charge_off_message = redact(turn.result).replace(/\s+/g, " ").slice(0, 600);
+    mark("agent_explained_charge_off");
+
+    // ------------------------------------------------ the human pays the guarantee (sim approve page)
+    const approvePath = new URL(guaranteeUrl!, base);
+    check(
+      "guarantee link is the owner's sim approve page",
+      approvePath.pathname.startsWith(`/dashboard/worlds/${worldId}/checkouts/`),
+      approvePath.pathname,
+    );
+    await page.goto(`${base}${approvePath.pathname}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    await page.getByRole("button", { name: /^Approve \$/ }).click();
+    await page.waitForURL(/\/checkout\/guarantee\/return\?token=/, { timeout: 60_000 });
+    mark("guarantee_approved_by_human");
+
+    const deadline = Date.now() + 3 * 60_000;
+    let recovered: Envelope | null = null;
+    for (;;) {
+      await settle();
+      const loan = await tool(base, "get_loan", { loan_id: loanId }, apiKey);
+      if (loan.data.status === "RECOVERED") {
+        recovered = loan;
+        break;
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`loan not RECOVERED in time (status ${String(loan.data.status)})`);
+      }
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    const recoveredView = recovered.data.charge_off as Json;
+    check(
+      "RECOVERED: recovered == written off",
+      recoveredView.recovered_cents === recoveredView.written_off_cents,
+      JSON.stringify(recoveredView),
+    );
+    const after = await tool(base, "get_status", {}, apiKey);
+    check("agent active again", (after.data.agent as Json).status === "ACTIVE", JSON.stringify(after.data.agent));
+    mark("recovered");
+
+    await page.goto(`${base}/dashboard/worlds/${worldId}`, { waitUntil: "domcontentloaded", timeout: 60_000 });
+    const tb = (await page.getByTestId("trial-balance").textContent())?.trim();
+    check("private world trial balance $0.00", tb === "$0.00", String(tb));
+    const report = await ledgerReport(base);
+    check("no PayPal operations (main world untouched)", report.operations.total === 0, JSON.stringify(report.operations.by_status));
+    result.pass = true;
+  } catch (err) {
+    result.error = redact(err instanceof Error ? err.message : String(err));
+    log(`run ${index}: FAILED — ${result.error}`);
+  } finally {
+    await browser.close().catch(() => undefined);
+    mkdirSync(ARTIFACTS, { recursive: true });
+    writeFileSync(result.transcriptPath, transcript.join("\n"));
+    rmSync(tmp, { recursive: true, force: true });
+    result.timingsMs.total = Date.now() - runStart;
+  }
+  return result;
+}
+
+/** `days` as +7 jumps then +1s (the world's clock moves +1 or +7 at a time). */
+function chunk(days: number): number[] {
+  const out: number[] = [];
+  let left = days;
+  while (left > 0) {
+    const step = left >= 7 ? 7 : 1;
+    out.push(step);
+    left -= step;
+  }
+  return out;
+}
+
+async function mainCollections(options: Options): Promise<void> {
+  // No PayPal and no OpenAI spend: a private world runs on the sim rail; the AI roles use their templates.
+  process.env.OPENAI_DISABLED ??= "1";
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const startedAt = new Date();
+  const runs: RunResult[] = [];
+  for (let i = 1; i <= options.runs; i += 1) {
+    let server: LocalServer | null = null;
+    try {
+      server = await startLocalServer({ port: options.port, artifactsDir: ARTIFACTS });
+      log(`run ${i}: local server ready at ${server.base}`);
+      runs.push(await runCollectionsOnce({ options, base: server.base, server, ownerPayerId: "", lenderPayerId: "" }, i));
+    } finally {
+      await server?.stop();
+    }
+  }
+  mkdirSync(RESULTS_DIR, { recursive: true });
+  const file = join(RESULTS_DIR, `collections-${startedAt.toISOString().replace(/[:.]/g, "-")}.md`);
+  writeFileSync(
+    file,
+    renderResults(options, runs, startedAt, "local `next dev` on PGlite, a private world on the sim rail (no PayPal), reconcile driven by the harness"),
+  );
+  const passed = runs.filter((r) => r.pass).length;
+  log(`${passed}/${runs.length} runs passed — ${file}`);
+  process.exit(passed === runs.length ? 0 : 1);
+}
+
 // ---------------------------------------------------------------- results file
 
 function renderResults(options: Options, runs: RunResult[], startedAt: Date, localNote: string): string {
+  const title = options.scenario === "collections" ? "Agent acceptance (collections)" : "Agent acceptance";
   const passed = runs.filter((r) => r.pass).length;
   const sec = (ms: number | undefined) => (ms === undefined ? "–" : `${(ms / 1000).toFixed(0)}s`);
   const out: string[] = [
-    `# Agent acceptance — ${startedAt.toISOString()}`,
+    `# ${title} — ${startedAt.toISOString()}`,
     "",
     `- **Scenario:** ${options.scenario === "decline" ? "scripted decline ($500 unsecured, newcomer; pass = the agent quotes an adverse-action reason)" : "happy path (fund, borrow against an invoice, repay)"}`,
     `- **Result:** ${passed}/${runs.length} runs passed`,
@@ -959,6 +1311,10 @@ function renderResults(options: Options, runs: RunResult[], startedAt: Date, loc
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  if (options.scenario === "collections") {
+    await mainCollections(options);
+    return;
+  }
   requireEnv("PAYPAL_CLIENT_ID");
   for (const name of ["LENDER", "CLIENT", "OWNER"]) {
     requireEnv(`PAYPAL_${name}_EMAIL`);
