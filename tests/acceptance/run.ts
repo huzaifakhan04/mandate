@@ -18,7 +18,13 @@
  * it and signs a mandate in the dashboard), then borrows $10 for 7 days
  * against a $15 invoice and hands over the client's payment link (the
  * harness pays it as PAYPAL_CLIENT); the harness then waits for REPAID and
- * the $4.85 remainder payout, and asserts the books.
+ * the $4.42 remainder payout, and asserts the books.
+ *
+ * `--scenario decline` (P3) runs a scripted decline instead: a fresh
+ * borrower (claimed + mandate, no history) asks for $500 unsecured; the
+ * bank declines it, and the run passes when the agent's final message to
+ * its human contains the text of at least one reason the bank returned in
+ * `adverse_action.reasons[].text` (checked against get_application).
  *
  * Secrets: agent API keys live only in memory and in temp MCP configs under
  * the OS temp dir (deleted after each run); transcripts and results redact
@@ -76,9 +82,28 @@ const BORROWER_MANDATE: MandateFormValues = {
   collateral: ["invoice_link"],
 };
 
+/** Scripted decline (P3): $500 unsecured for 30 days from a newcomer with no history. */
+const DECLINE_AMOUNT_CENTS = 50000;
+/** The decline borrower's human allows the ask on paper, so the bank's own rules (score, tier) decline it. */
+const DECLINE_MANDATE: MandateFormValues = {
+  maxPerLoanUsd: "500",
+  maxTotalOwedUsd: "1000",
+  maxFeePct: "10",
+  maxTermDays: "30",
+  collateral: ["invoice_link", "none"],
+};
+
+function mandateSummary(m: MandateFormValues): string {
+  const collateral = m.collateral.map((c) => (c === "none" ? "unsecured" : "invoice collateral")).join(" or ");
+  return `up to $${m.maxPerLoanUsd} per loan, $${m.maxTotalOwedUsd} owed in total, ${m.maxFeePct}% fee, ${m.maxTermDays} days, ${collateral}`;
+}
+
 // ---------------------------------------------------------------- CLI args
 
+type Scenario = "happy" | "decline";
+
 interface Options {
+  scenario: Scenario;
   base: string | null;
   runs: number;
   model: string | null;
@@ -88,7 +113,7 @@ interface Options {
 }
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140 };
+  const opts: Options = { scenario: "happy", base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140 };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => {
@@ -100,6 +125,14 @@ function parseArgs(argv: string[]): Options {
       return v;
     };
     switch (arg) {
+      case "--scenario": {
+        const scenario = value();
+        if (scenario !== "happy" && scenario !== "decline") {
+          throw new Error("--scenario must be happy or decline");
+        }
+        opts.scenario = scenario;
+        break;
+      }
       case "--base":
         opts.base = value().replace(/\/+$/, "");
         break;
@@ -161,6 +194,8 @@ interface AgentTurn {
   toolCalls: string[];
   /** api_key values seen in register_agent tool results (fallback if the agent doesn't print it). */
   keysSeen: string[];
+  /** Every Mandate envelope the agent's tool calls returned (parsed, in memory only). */
+  envelopes: Envelope[];
   ms: number;
 }
 
@@ -225,6 +260,7 @@ function runClaude(call: ClaudeCall): Promise<AgentTurn> {
       costUsd: 0,
       toolCalls: [],
       keysSeen: [],
+      envelopes: [],
       ms: 0,
     };
     const onLine = (line: string) => {
@@ -259,6 +295,7 @@ function runClaude(call: ClaudeCall): Promise<AgentTurn> {
             for (const key of text.match(KEY_RE) ?? []) {
               turn.keysSeen.push(key);
             }
+            turn.envelopes.push(...envelopesIn(item.content));
             call.transcript.push(`RESULT ${redact(text).slice(0, 1500)}`);
           }
         }
@@ -296,6 +333,40 @@ function runClaude(call: ClaudeCall): Promise<AgentTurn> {
       resolvePromise(turn);
     });
   });
+}
+
+/** Mandate envelopes inside a tool_result's content (a string, or MCP text blocks carrying the JSON envelope). */
+function envelopesIn(content: unknown): Envelope[] {
+  const texts =
+    typeof content === "string"
+      ? [content]
+      : Array.isArray(content)
+        ? (content as Json[]).map((block) => (typeof block.text === "string" ? block.text : "")).filter(Boolean)
+        : [];
+  const out: Envelope[] = [];
+  for (const text of texts) {
+    try {
+      const parsed = JSON.parse(text) as Envelope;
+      if (parsed && typeof parsed.status === "string" && parsed.data && typeof parsed.data === "object") {
+        out.push(parsed);
+      }
+    } catch {
+      // not an envelope (e.g. WebFetch output)
+    }
+  }
+  return out;
+}
+
+/** Lowercase, straight quotes, collapsed whitespace, no trailing period — for "does the message quote this reason". */
+function normalizeForQuote(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/\*\*|`/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\.$/, "");
 }
 
 // ---------------------------------------------------------------- bank access (the harness's own checks)
@@ -495,7 +566,125 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     return approved;
   }
 
+  /**
+   * The scripted decline (P3): a newcomer borrower asks for $500 unsecured.
+   * Pass = the bank DECLINED it (per get_application) and the agent's final
+   * message to its human contains the text of at least one returned reason.
+   */
+  async function runDecline(): Promise<void> {
+    const borrower = await bootstrap(
+      "borrower",
+      template("borrower-decline.md", { BASE: base, PAYOUT_ID: ctx.ownerPayerId }),
+    );
+    let turn = borrower.turn;
+    const envelopes: Envelope[] = [...turn.envelopes];
+    let claimed = false;
+    let nudgedToApply = false;
+    for (let step = 0; ; step += 1) {
+      if (!claimed) {
+        const kya = (await tool(base, "get_status", {}, borrower.apiKey)).data.kya as Json;
+        const current = kya.claim_url as string | null;
+        if (current && claimUrls(borrower.replies.join("\n"), base).includes(current)) {
+          mark("claim_url_surfaced_by_agent");
+          const owner = await claimAndSignMandateAsHuman({
+            claimUrl: current,
+            base,
+            agentId: borrower.record.agentId!,
+            account: "OWNER",
+            mandate: DECLINE_MANDATE,
+            signerName: "Sandbox Owner",
+            screenshotDir: ARTIFACTS,
+            label: `run${index}-decline-owner`,
+          });
+          if (owner.blocked) {
+            throw new Error(`BLOCKED: PayPal showed a security challenge to OWNER (screenshot: ${owner.screenshotPath}); stopping`);
+          }
+          if (!owner.ok) {
+            throw new Error(`owner claim/mandate steps failed: ${owner.errorText} (screenshot: ${owner.screenshotPath})`);
+          }
+          const after = (await tool(base, "get_status", {}, borrower.apiKey)).data.kya as Json;
+          check("borrower tier 1 after claim + mandate", after.tier === 1 && after.can_borrow === true, JSON.stringify(after));
+          claimed = true;
+          mark("borrower_claimed_and_mandate_signed");
+          turn = await borrower.say(
+            "Done: I verified with PayPal, claimed you, and signed your mandate in my dashboard " +
+              `(${mandateSummary(DECLINE_MANDATE)}). Continue toward your goal.`,
+          );
+          envelopes.push(...turn.envelopes);
+          continue;
+        }
+        claimed = kya.claimed === true;
+      }
+
+      const declined = envelopes.filter(
+        (e) => e.status === "DECLINED" && typeof e.data.application_id === "string" && e.data.adverse_action,
+      );
+      if (declined.length > 0) {
+        // The agent's turn ended after the bank declined: its final message is what its human reads.
+        const finalMessage = turn.result;
+        const texts = new Set<string>();
+        const codes = new Set<string>();
+        const asked: number[] = [];
+        for (const envelope of declined) {
+          const app = await tool(base, "get_application", { application_id: envelope.data.application_id }, borrower.apiKey);
+          check(
+            `application ${String(envelope.data.application_id).slice(0, 8)} is DECLINED`,
+            app.data.status === "DECLINED",
+            String(app.data.status),
+          );
+          const ala = app.data.ala as { amount_term?: { amount_cents?: number } } | null;
+          asked.push(Number(ala?.amount_term?.amount_cents ?? NaN));
+          const adverse = app.data.adverse_action as { reasons: { code: string; text: string }[] };
+          for (const reason of adverse.reasons) {
+            texts.add(reason.text);
+            codes.add(reason.code);
+          }
+        }
+        result.ids.declined_applications = declined.map((e) => e.data.application_id);
+        result.ids.declined_reason_codes = [...codes];
+        result.ids.explanation_sources = declined.map((e) => (e.data.explanation as Json | undefined)?.source ?? null);
+        mark("application_declined");
+        const quoted = [...texts].filter((text) => normalizeForQuote(finalMessage).includes(normalizeForQuote(text)));
+        result.ids.quoted_reasons = quoted;
+        if (asked.some((a) => a !== DECLINE_AMOUNT_CENTS)) {
+          result.notes.push(`declined amounts seen: ${asked.join(", ")}`);
+        }
+        check(
+          "final message quotes at least one adverse-action reason",
+          quoted.length > 0,
+          `reasons: ${[...texts].join(" | ")}`,
+        );
+        return;
+      }
+      if (step >= 6) {
+        throw new Error(
+          claimed
+            ? "borrower agent never submitted the application within 6 follow-ups"
+            : "borrower agent never gave its human the claim_url within 6 follow-ups",
+        );
+      }
+      if (claimed && !nudgedToApply && envelopes.some((e) => e.data && "eligible" in e.data)) {
+        // It checked eligibility and stopped: the human wants the bank's formal decision.
+        nudgedToApply = true;
+        turn = await borrower.say(
+          "Please submit the actual application for the $500 anyway — I want the bank's formal decision on it, " +
+            "and if it says no, tell me exactly why.",
+        );
+      } else {
+        turn = await borrower.say("Continue toward your goal.");
+      }
+      envelopes.push(...turn.envelopes);
+    }
+  }
+
   try {
+    if (ctx.options.scenario === "decline") {
+      await runDecline();
+      result.ids.borrower_agent_id = result.agents[0]?.agentId ?? null;
+      result.pass = true;
+      return result;
+    }
+
     // ------------------------------------------------ lender: fund the bank with $30
     const lender = await bootstrap(
       "lender",
@@ -581,7 +770,7 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
           mark("borrower_claimed_and_mandate_signed");
           borrowerTurn = await borrower.say(
             "Done: I verified with PayPal, claimed you, and signed your mandate in my dashboard " +
-              "(up to $20 per loan, $50 owed in total, 5% fee, 30 days, invoice collateral). Continue toward your goal.",
+              `(${mandateSummary(BORROWER_MANDATE)}). Continue toward your goal.`,
           );
           continue;
         }
@@ -727,6 +916,7 @@ function renderResults(options: Options, runs: RunResult[], startedAt: Date, loc
   const out: string[] = [
     `# Agent acceptance — ${startedAt.toISOString()}`,
     "",
+    `- **Scenario:** ${options.scenario === "decline" ? "scripted decline ($500 unsecured, newcomer; pass = the agent quotes an adverse-action reason)" : "happy path (fund, borrow against an invoice, repay)"}`,
     `- **Result:** ${passed}/${runs.length} runs passed`,
     `- **Base:** ${localNote}`,
     `- **Model:** ${options.model ?? "CLI default"}; --max-turns ${options.maxTurns}; ${options.timeoutMs / 60_000} min per claude invocation`,

@@ -6,6 +6,7 @@ Headless Claude Code agents that know only the bank's URL must fund it, borrow f
 # Local: starts `next dev` on in-memory PGlite (a fresh server for each run) and drives the reconcile cron itself
 npm run test:agents                     # 1 run
 npm run test:agents -- --runs 3
+npm run test:agents -- --scenario decline   # P3: the scripted decline (no lender, no PayPal checkout)
 
 # Remote (e.g. prod): settlement comes from Vercel cron and webhooks; the harness only polls the public tools
 npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
@@ -15,6 +16,7 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 
 | Option | Default | Meaning |
 | --- | --- | --- |
+| `--scenario <s>` | `happy` | `happy` (fund, borrow, repay — below) or `decline` ([Scripted decline](#scripted-decline)). |
 | `--base <url>` | (none: local) | Bank to test. Without it, a local server is started on `--port` (3140). |
 | `--runs <n>` | 1 | Number of independent runs. Each run uses fresh agents. |
 | `--model <m>` | CLI default | Passed to `claude --model`. |
@@ -49,6 +51,12 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 
    Locally, `/api/test/ledger` also checks that the trial balance is 0, that no PayPal operation failed, and that exactly two payouts (disbursement and remainder) succeeded. Remotely, these checks are skipped and the results file says so.
 8. **Debrief.** The borrower is told the client paid and asked where things stand. Its answer is recorded but not asserted.
+
+## Scripted decline
+
+`--scenario decline` checks that an agent explains a decline to its human with the bank's own reasons (P3 adverse action). One borrower agent (`prompts/borrower-decline.md`) is asked to borrow **$500 for 30 days, unsecured**. It surfaces its `claim_url` as above; the harness claims it as OWNER and signs a mandate that allows the ask on paper ($500 per loan, $1000 total, 10% fee, 30 days, invoice or unsecured), so the bank's own rules decide. A fresh, claimed agent with no history scores 20 (grade E), so the application is `DECLINED` — typically `tier_per_loan` and `insufficient_credit_history`. If the agent only checks eligibility and stops, the harness asks it once to submit the application anyway.
+
+The harness reads the agent's `apply_for_loan` results, re-fetches each declined application with `get_application` (status must be `DECLINED`) and collects `adverse_action.reasons[].text`. The run **passes** when the agent's final message to its human contains the text of at least one of those reasons (case, quotes, markdown and a trailing period are ignored). The results file records the reason codes, which texts were quoted and whether the explanation came from the AI or the template.
 
 Each `claude -p` invocation runs with these limits:
 

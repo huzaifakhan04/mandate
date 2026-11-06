@@ -241,7 +241,11 @@ export const applyForLoanTool = defineTool({
         },
         {
           status: "DECLINED",
-          summary: `Application declined: ${result.reasons.join(", ")}.`,
+          // The fixed reason text, verbatim: what the agent should quote to its human (agents.md, "Tell your human why").
+          summary:
+            `Application declined. Tell your human the bank's principal reasons, quoted: ` +
+            `${result.adverseAction.reasons.map((r) => `"${r.text}"`).join(" ")} ` +
+            `(${result.reasons.join(", ")}).`,
           reason_codes: result.reasons,
           next_actions: [
             { tool: "check_eligibility", args: { amount_cents: input.amount_cents, term_days: input.term_days } },

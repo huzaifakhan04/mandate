@@ -81,7 +81,7 @@ export const getApplicationTool = defineTool({
         status: "OK",
         summary:
           decision === "declined"
-            ? `Application ${status}: ${reasonCodes.join(", ")}.`
+            ? `Application ${status}. Principal reasons: ${principalReasons(reasonCodes).map((r) => `"${r.text}"`).join(" ")} (${reasonCodes.join(", ")}).`
             : `Application ${status}${offerId ? ` (offer ${offerId})` : ""}.`,
         reason_codes: decision === "declined" ? reasonCodes : [],
         next_actions: nextActions,

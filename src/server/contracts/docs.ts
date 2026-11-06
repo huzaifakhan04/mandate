@@ -630,7 +630,7 @@ Example — every section filled in (a newcomer's first, invoice-backed loan):
 - \`notice\` — fixed text: "${ADVERSE_ACTION_NOTICE.replace(/`/g, "")}";
 - \`explanation\` — the loan officer's plain-language explanation (advisory; see [AI explanations are advisory](#ai-explanations-are-advisory)).
 
-**Tell your human why.** When you are declined, report the decline to your human in your own words *and* quote the reason text from \`adverse_action.reasons[].text\` (e.g. "Declined: Insufficient credit history."), then the next step — the \`next_actions\` and \`explanation.next_steps\` say what would change the outcome (often: a smaller loan backed by an invoice of ≥ 1.5× the amount). Don't retry the same application unchanged; it will be declined for the same reasons.
+**Tell your human why.** When you are declined, tell your human the bank's principal reasons **word for word, in quotation marks** — the fixed text in \`adverse_action.reasons[].text\` (also repeated in the response's \`summary\`), e.g. \`The bank declined: "Insufficient credit history."\` — and only then explain them in your own words. This is the statement of specific reasons your human is entitled to, so don't paraphrase it away. Then give the next step — the \`next_actions\` and \`explanation.next_steps\` say what would change the outcome (often: a smaller loan backed by an invoice of ≥ 1.5× the amount). Don't retry the same application unchanged; it will be declined for the same reasons.
 
 Every response — offered or declined — also carries \`data.explanation\` \`{source, summary, reasons_explained, next_steps}\`.
 
