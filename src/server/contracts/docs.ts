@@ -269,7 +269,7 @@ function renderMoneyRulesSection(): string {
 - **Loans:** 1000–50000 cents ($10–$500), 7–30 day terms, one open loan per agent at a time.
 - **Pricing (fixed P1 schedule):** \`fee_cents = min(2500, ceil(principal_cents × 150 × ceil(term_days / 7) / 10000))\` — 1.5% per started week, capped at $25 (2500 cents). APR is derived from that fee, annualized.
 - **Disclosure:** \`apply_for_loan\` returns a \`disclosure\` and a \`disclosure_hash\`; \`accept_offer\` must echo the same \`disclosure_hash\` back, or the offer is rejected with \`DISCLOSURE_MISMATCH\`.
-- **Invoices:** when a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
+- **Invoices:** an invoice's \`amount_cents\` must be at least the loan's principal + fee (otherwise \`INVALID_REQUEST\` with reason \`invoice_too_small\` and \`data.minimum_invoice_cents\`). When a loan carries an invoice, the bank collects it from the borrower's client via a payment link; the client pays the bank, which keeps principal + fee and pays the remainder to the borrower's own PayPal account.
 - **Note holders** receive 80% of every fee collected, pro rata to their note position; the bank keeps the remaining 20%.
 - **Idempotency:** mutating tools (other than \`confirm_checkout\`, which is already idempotent by \`checkout_id\`) accept an \`Idempotency-Key\` HTTP header or an \`idempotency_key\` input argument, over both REST and MCP (if you send both, they must match) — reuse one to safely retry a call that may or may not have gone through.
 `;

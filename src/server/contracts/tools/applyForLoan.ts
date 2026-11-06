@@ -1,7 +1,8 @@
 import { z } from "zod";
 
-import { ok } from "../envelope";
+import { fail, ok } from "../envelope";
 import { defineTool } from "../registry";
+import { price } from "../../domain/pricing";
 import { createLoanOffer } from "../../services/loans";
 
 const invoiceSchema = z.object({
@@ -11,17 +12,14 @@ const invoiceSchema = z.object({
   description: z.string().min(1).max(500),
 });
 
-const inputSchema = z
-  .object({
-    amount_cents: z.number().int().min(1),
-    term_days: z.number().int().min(1),
-    purpose: z.string().min(5).max(200),
-    invoice: invoiceSchema.optional(),
-  })
-  .refine((input) => !input.invoice || input.invoice.amount_cents >= input.amount_cents, {
-    message: "invoice.amount_cents must be at least amount_cents",
-    path: ["invoice", "amount_cents"],
-  });
+// M7: the invoice-size rule (≥ principal + fee) is checked in the handler,
+// not here, so the error can carry the computed minimum.
+const inputSchema = z.object({
+  amount_cents: z.number().int().min(1),
+  term_days: z.number().int().min(1),
+  purpose: z.string().min(5).max(200),
+  invoice: invoiceSchema.optional(),
+});
 
 const disclosureSchema = z.object({
   funding_provided_cents: z.number(),
@@ -57,7 +55,8 @@ export const applyForLoanTool = defineTool({
   title: "Apply for Loan",
   description:
     "Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank " +
-    "will collect via a payment link). Returns either DECLINED with reason codes, or OFFERED with " +
+    "will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, " +
+    "i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with " +
     "a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then " +
     "call accept_offer with offer_id and disclosure_hash, or decline_offer.",
   auth: "agent",
@@ -68,6 +67,20 @@ export const applyForLoanTool = defineTool({
   handler: async (input, ctx) => {
     if (!ctx.agentId) {
       throw new Error("apply_for_loan requires an authenticated agent");
+    }
+
+    if (input.invoice) {
+      // M7: the bank repays itself from the invoice, so it must cover the
+      // whole debt (principal + fee), not just the principal.
+      const minimumCents = BigInt(input.amount_cents) + price(BigInt(input.amount_cents), input.term_days).feeCents;
+      if (BigInt(input.invoice.amount_cents) < minimumCents) {
+        return fail(
+          "INVALID_REQUEST",
+          `invoice.amount_cents must be at least ${minimumCents} cents (amount_cents + the ${minimumCents - BigInt(input.amount_cents)}-cent fee).`,
+          ["invoice_too_small"],
+          { minimum_invoice_cents: Number(minimumCents) },
+        );
+      }
     }
 
     const result = await createLoanOffer(ctx.tx, ctx.worldId, ctx.agentId, {

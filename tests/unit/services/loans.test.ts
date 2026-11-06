@@ -189,6 +189,27 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
     expect(result.envelope.status).toBe("INVALID_REQUEST");
   });
 
+  it("M7: an invoice must cover principal + fee — invoice_too_small with the minimum; exactly the minimum is accepted", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const { key } = await createTestAgent(db, worldId);
+    // 25000 for 14 days → fee 750 → minimum invoice 25750.
+    const invoice = (amount: number) => ({
+      invoice: { client_email: "client@example.com", amount_cents: amount, due_in_days: 14, description: "Work" },
+    });
+    const tooSmall = await applyFor(db, key, 25000, 14, invoice(25749));
+    expect(tooSmall.httpStatus).toBe(400);
+    expect(tooSmall.envelope.status).toBe("INVALID_REQUEST");
+    expect(tooSmall.envelope.reason_codes).toEqual(["invoice_too_small"]);
+    expect(tooSmall.envelope.data).toEqual({ minimum_invoice_cents: 25750 });
+
+    const belowPrincipal = await applyFor(db, key, 25000, 14, invoice(20000));
+    expect(belowPrincipal.envelope.reason_codes).toEqual(["invoice_too_small"]);
+
+    const exact = await applyFor(db, key, 25000, 14, invoice(25750));
+    expect(exact.envelope.status).toBe("OFFERED");
+  });
+
   it("fund via notes, apply, accept → loan ACTIVE, loans_receivable 25000, balanced ledger", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 30000);
