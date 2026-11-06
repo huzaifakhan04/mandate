@@ -17,10 +17,10 @@ import { PRICING_LIMITS } from "../domain/pricing";
 import { totalBps, type LoanPrice } from "../domain/pricingV2";
 import type { ReasonCode } from "../domain/reasons";
 import { evaluateApplication, sanctionsStubList, type ApplicationDecision } from "../domain/rules";
-import type { Grade, ScoreResult } from "../domain/scorecard";
-import { isCurrentMandate, TIER_MAX_PER_LOAN_CENTS, type KyaTier } from "../domain/kya";
+import { computeScore, type Grade, type ScoreResult } from "../domain/scorecard";
+import { TIER_MAX_PER_LOAN_CENTS, type KyaTier } from "../domain/kya";
 import type { MandateCollateral } from "../domain/mandate";
-import { invoiceCoverageBps, recordScore, scoreAgent } from "./credit";
+import { invoiceCoverageBps, recordScore, scoreFacts } from "./credit";
 import { postJournal } from "../ledger/postJournal";
 import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } from "../paypal/operations";
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
@@ -30,10 +30,9 @@ import { borrowGate, loadAgentKya } from "./kya";
 import type { BorrowBlocker } from "../domain/kya";
 import {
   checkAgentMandate,
-  currentMandateRow,
   mandateLimits,
   mandateSummary,
-  principalExposure,
+  resolveCurrentMandate,
   type MandateRow,
   type MandateSummary,
   type TierReason,
@@ -204,15 +203,14 @@ async function underwrite(
   now: Date = new Date(),
 ): Promise<Underwriting> {
   const { agent, tier } = await loadAgentKya(db, worldId, agentId, now);
-  const row = await currentMandateRow(db, worldId, agent.id, agent.principalId);
-  const mandate = row && isCurrentMandate(row, agent.principalId, now) ? row : null;
-  const exposureCents = mandate ? await principalExposure(db, worldId, mandate.principalId) : 0n;
+  const { mandate, exposureCents } = await resolveCurrentMandate(db, worldId, agent, now);
   const coverageBps =
     request.invoiceAmountCents === null ? null : invoiceCoverageBps(request.invoiceAmountCents, request.amountCents);
-  const credit = await scoreAgent(db, worldId, agentId, simNow, {
+  const facts = await scoreFacts(db, worldId, agentId, simNow, {
     now,
     ...(coverageBps === null ? {} : { invoiceCoverageBps: coverageBps }),
   });
+  const credit = computeScore(facts);
   const availableLiquidityCents = await availableLiquidity(db, worldId);
 
   const decision = evaluateApplication({
@@ -220,6 +218,8 @@ async function underwrite(
     termDays: request.termDays,
     purpose: request.purpose,
     credit,
+    // Any qualifying loan on file (on time, late or charged off) — not the clamped component.
+    hasHistory: facts.onTimeRepaidLoans > 0 || facts.lateRepayments > 0 || facts.everChargedOff,
     tierCapCents: BigInt(TIER_MAX_PER_LOAN_CENTS[tier.tier]),
     mandate: mandate ? mandateLimits(mandate) : null,
     exposureCents,

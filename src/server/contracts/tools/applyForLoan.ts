@@ -114,9 +114,13 @@ export const applyForLoanTool = defineTool({
       // M7: the bank repays itself from the invoice, so it must cover the
       // whole debt (principal + the risk-priced fee), not just the principal.
       const minimumCents = result.minimumInvoiceCents;
+      const feeCents = minimumCents - BigInt(input.amount_cents);
       return fail(
         "INVALID_REQUEST",
-        `invoice.amount_cents must be at least ${minimumCents} cents (amount_cents + the ${minimumCents - BigInt(input.amount_cents)}-cent fee).`,
+        feeCents > 0n
+          ? `invoice.amount_cents must be at least ${minimumCents} cents (amount_cents + the ${feeCents}-cent fee).`
+          : // No price (grade E): the invoice must at least cover amount_cents.
+            `invoice.amount_cents must be at least ${minimumCents} cents (amount_cents).`,
         ["invoice_too_small"],
         { minimum_invoice_cents: Number(minimumCents) },
       );

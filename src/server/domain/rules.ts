@@ -2,7 +2,7 @@ import { checkMandate, type MandateCollateral, type MandateLimits } from "./mand
 import { rangeReasons } from "./pricing";
 import { priceLoan, type LoanPrice } from "./pricingV2";
 import type { ReasonCode } from "./reasons";
-import { GRADE_LIMIT_CENTS, type ScoreResult } from "./scorecard";
+import { GRADE_LIMIT_CENTS, type Grade, type ScoreResult } from "./scorecard";
 
 /**
  * The deterministic underwriting rules pipeline (P3 Global Constraints,
@@ -44,6 +44,12 @@ export interface ApplicationFacts {
   termDays: number;
   purpose: string;
   credit: Pick<ScoreResult, "score" | "grade" | "components">;
+  /**
+   * The agent has any qualifying loan on file — repaid on time, repaid late
+   * or charged off. Decides the grade-E code (a late repayment clamps the
+   * history component to 0 but is still history).
+   */
+  hasHistory: boolean;
   /** The agent's KYA tier per-loan cap in cents. */
   tierCapCents: bigint;
   /** The current mandate's limits; `null` without one. */
@@ -74,8 +80,14 @@ export interface ApplicationDecision {
   primary: ReasonCode | null;
   /** min(grade limit, tier cap, mandate max_per_loan); 0 without a mandate. */
   effectiveCapCents: bigint;
-  /** `manual_review_declined` when the grade D manual-review band decided it, else `auto`. */
-  approval: "auto" | "manual_review_declined";
+  /**
+   * `auto` when approved; `manual_review_declined` when the grade D
+   * manual-review band applied; `n/a` for any other decline.
+   */
+  approval: "auto" | "manual_review_declined" | "n/a";
+  /** The grade decided on (Task 4 triggers the risk officer memo for grade D). */
+  grade: Grade;
+  isGradeD: boolean;
   /** The v2 price (grade E is never priced: `null`). */
   price: LoanPrice | null;
 }
@@ -88,10 +100,25 @@ export function sanctionsStubList(raw: string | undefined = process.env.SANCTION
     .filter((entry) => entry.length > 0);
 }
 
-/** Case-insensitive substring match of any stub entry on the agent's name or operator. */
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Case-insensitive whole-word match of any stub entry on the agent's name
+ * or operator: the entry must not be preceded or followed by a letter or
+ * digit ("sanctioned" matches "Sanctioned Bot", not "Unsanctioned").
+ */
 export function sanctionsHit(name: string, operator: string, list: readonly string[]): boolean {
   const haystacks = [name.toLowerCase(), operator.toLowerCase()];
-  return list.some((entry) => entry.length > 0 && haystacks.some((text) => text.includes(entry.toLowerCase())));
+  return list.some((entry) => {
+    const word = entry.trim().toLowerCase();
+    if (word.length === 0) {
+      return false;
+    }
+    const pattern = new RegExp(`(^|[^\\p{L}\\p{N}])${escapeRegExp(word)}($|[^\\p{L}\\p{N}])`, "u");
+    return haystacks.some((text) => pattern.test(text));
+  });
 }
 
 function minBig(...values: bigint[]): bigint {
@@ -140,7 +167,7 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
 
   // 4. Grade E.
   if (credit.grade === "E") {
-    reasons.push(credit.components.history === 0 ? "insufficient_credit_history" : "score_too_low");
+    reasons.push(facts.hasHistory ? "score_too_low" : "insufficient_credit_history");
   }
 
   // 5. Amount vs the grade limit, then approval authority for grade D.
@@ -176,7 +203,9 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
     reasons,
     primary,
     effectiveCapCents,
-    approval: manualReview ? "manual_review_declined" : "auto",
+    approval: manualReview ? "manual_review_declined" : primary ? "n/a" : "auto",
     price,
+    grade: credit.grade,
+    isGradeD: credit.grade === "D",
   };
 }

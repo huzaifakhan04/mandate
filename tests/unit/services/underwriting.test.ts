@@ -64,6 +64,25 @@ describe("underwriting: rules pipeline + pricing v2 in apply_for_loan / check_el
     expect(await db.select().from(offers).where(eq(offers.applicationId, applicationId))).toHaveLength(0);
   });
 
+  it("grade E with only a late repayment on file → score_too_low (history facts, not the clamped component)", async () => {
+    const { agentId, key } = await createTestAgent(db, worldId, "late@example.com", REAL);
+    // A late repayment: history clamps to 0 (score 20, E), but the agent HAS a credit history.
+    __setScoreFactsOverrideForTests(agentId, { lateRepayments: 1 });
+    const declined = await apply(key, 1000, 7);
+    expect(declined.envelope).toMatchObject({ status: "DECLINED", reason_codes: ["score_too_low"] });
+  });
+
+  it("grade E with an invoice below the principal → invoice_too_small without fee wording (no price)", async () => {
+    const { key } = await createTestAgent(db, worldId, "new@example.com", REAL);
+    const refused = await apply(key, 1000, 7, invoice(999));
+    expect(refused.envelope).toMatchObject({
+      status: "INVALID_REQUEST",
+      reason_codes: ["invoice_too_small"],
+      data: { minimum_invoice_cents: 1000 },
+    });
+    expect(refused.envelope.summary).toBe("invoice.amount_cents must be at least 1000 cents (amount_cents).");
+  });
+
   it("Ruling P3-A: a newcomer with a 1.5× invoice is grade D → OFFERED at the v2 price, disclosure v2 hashed", async () => {
     const { agentId, key } = await createTestAgent(db, worldId, "new@example.com", REAL);
     const offered = await apply(key, 1000, 7, invoice(1500));

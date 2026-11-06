@@ -32,6 +32,7 @@ function facts(overrides: Partial<ApplicationFacts> = {}): ApplicationFacts {
     termDays: 14,
     purpose: "Working capital",
     credit: credit("B"),
+    hasHistory: true,
     tierCapCents: 50000n,
     mandate: MANDATE,
     exposureCents: 0n,
@@ -84,27 +85,37 @@ describe("evaluateApplication (rules pipeline)", () => {
       reasons: ["mandate_fee", "amount_exceeds_limit"],
       primary: "mandate_fee",
       effectiveCapCents: 10000n,
-      approval: "auto",
+      approval: "n/a",
+      grade: "D",
+      isGradeD: true,
     });
     expect(decision.price?.feeCents).toBe(4495n);
   });
 
   it("golden: grade E with no history → insufficient_credit_history; with some history → score_too_low", () => {
-    const fresh = evaluateApplication(facts({ credit: credit("E", { history: 0 }) }));
+    const fresh = evaluateApplication(facts({ credit: credit("E", { history: 0 }), hasHistory: false }));
     expect(fresh).toMatchObject({
       decision: "decline",
       reasons: ["insufficient_credit_history"],
       primary: "insufficient_credit_history",
       effectiveCapCents: 0n,
+      approval: "n/a",
       price: null,
+      grade: "E",
+      isGradeD: false,
     });
     const someHistory = evaluateApplication(facts({ credit: credit("E", { history: 7 }) }));
     expect(someHistory).toMatchObject({ decision: "decline", reasons: ["score_too_low"], price: null });
   });
 
+  it("grade E with only a late repayment (history component clamped to 0) → score_too_low, not insufficient_credit_history", () => {
+    const lateOnly = evaluateApplication(facts({ credit: credit("E", { history: 0 }), hasHistory: true }));
+    expect(lateOnly).toMatchObject({ decision: "decline", reasons: ["score_too_low"], primary: "score_too_low" });
+  });
+
   it("grade D: ≤ 5000 auto-approves; above 5000 (within the D limit) → manual_review_declined", () => {
     const small = evaluateApplication(facts({ amountCents: 5000n, credit: credit("D") }));
-    expect(small).toMatchObject({ decision: "approve", approval: "auto" });
+    expect(small).toMatchObject({ decision: "approve", approval: "auto", grade: "D", isGradeD: true });
     const band = evaluateApplication(facts({ amountCents: 5001n, credit: credit("D") }));
     expect(band).toMatchObject({
       decision: "decline",
@@ -169,6 +180,7 @@ describe("evaluateApplication (rules pipeline)", () => {
         termDays: 40,
         tierCapCents: 25000n,
         credit: credit("E", { history: 0 }),
+        hasHistory: false,
         mandate: { ...MANDATE, maxTermDays: 30, eligibleCollateral: ["invoice_link"] },
         collateral: "none",
         invoiceCoverageBps: 10000,
@@ -193,6 +205,7 @@ describe("evaluateApplication (rules pipeline)", () => {
       "insufficient_liquidity",
     ]);
     expect(decision.primary).toBe("amount_out_of_range");
+    expect(decision.approval).toBe("n/a");
     // Pipeline order = notice priority order.
     const order = decision.reasons.map((code) => REASON_PRIORITY.indexOf(code));
     expect(order).toEqual([...order].sort((a, b) => a - b));
@@ -223,9 +236,24 @@ describe("sanctions stub", () => {
     expect(sanctionsHit("agent", "ops", ["evil corp"])).toBe(false);
     expect(sanctionsHit("agent", "ops", [])).toBe(false);
   });
+
+  it("matches whole words only (hyphenated entries included)", () => {
+    expect(sanctionsHit("Sanctioned Bot", "ops", ["sanctioned"])).toBe(true);
+    expect(sanctionsHit("Unsanctioned Bot", "ops", ["sanctioned"])).toBe(false);
+    expect(sanctionsHit("bot", "sanctionedcorp", ["sanctioned"])).toBe(false);
+    expect(sanctionsHit("bot", "Blocked-Entity LLC", ["blocked-entity"])).toBe(true);
+    expect(sanctionsHit("bot", "not-blocked-entityx", ["blocked-entity"])).toBe(false);
+    expect(sanctionsHit("a.b agent", "ops", ["a.b"])).toBe(true);
+    expect(sanctionsHit("axb agent", "ops", ["a.b"])).toBe(false); // regex metacharacters are literal
+  });
 });
 
 describe("reason texts", () => {
+  it("the range texts are derived from PRICING_LIMITS", () => {
+    expect(REASON_TEXT.amount_out_of_range).toContain("$10 to $500");
+    expect(REASON_TEXT.term_out_of_range).toContain("7 to 30 days");
+  });
+
   it("every code has fixed, non-empty human text", () => {
     for (const code of REASON_PRIORITY) {
       expect(REASON_TEXT[code].length).toBeGreaterThan(0);

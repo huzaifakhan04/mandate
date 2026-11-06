@@ -4,6 +4,12 @@
  * here — never generated — and at most `MAX_SHOWN_REASONS` are shown, in
  * `REASON_PRIORITY` order (the rules pipeline's order, `domain/rules.ts`).
  */
+import { PRICING_LIMITS } from "./pricing";
+
+/** Whole dollars from cents, e.g. 1000n → "$10". */
+function dollars(cents: bigint): string {
+  return `$${(cents / 100n).toString()}`;
+}
 
 export const REASON_PRIORITY = [
   // 0. product range
@@ -39,8 +45,8 @@ export const REASON_PRIORITY = [
 export type ReasonCode = (typeof REASON_PRIORITY)[number];
 
 export const REASON_TEXT: Record<ReasonCode, string> = {
-  amount_out_of_range: "Amount requested is outside the range we lend ($10 to $500).",
-  term_out_of_range: "Term requested is outside the range we lend (7 to 30 days).",
+  amount_out_of_range: `Amount requested is outside the range we lend (${dollars(PRICING_LIMITS.minPrincipalCents)} to ${dollars(PRICING_LIMITS.maxPrincipalCents)}).`,
+  term_out_of_range: `Term requested is outside the range we lend (${PRICING_LIMITS.minTermDays} to ${PRICING_LIMITS.maxTermDays} days).`,
   claim_required: "Unable to verify identity: the agent is not claimed by a verified human.",
   tier_per_loan: "Amount requested exceeds the per-loan limit for your verification tier.",
   mandate_missing: "No current signed mandate from your human authorizes borrowing.",

@@ -138,7 +138,7 @@ export async function scoreFacts(
     tenureDays,
     exposureCents,
     maxTotalOwedCents: mandate ? mandate.maxTotalOwedCents : null,
-    ...testFactsOverrides.get(agent.id),
+    ...(process.env.NODE_ENV === "production" ? undefined : testFactsOverrides.get(agent.id)),
     invoiceCoverageBps: opts.invoiceCoverageBps ?? null,
   };
 }
@@ -148,8 +148,10 @@ export async function scoreFacts(
  * test something other than underwriting (repayment, ledger, mandates…)
  * give their borrower an established credit file this way, so the grade
  * gate doesn't decline every application of a fresh test agent
- * (`tests/helpers/kya.ts`). In-memory, per process; refused in production.
- * The application's invoice coverage is never overridden.
+ * (`tests/helpers/kya.ts`). In-memory, per process. Both the write and the
+ * read are disabled when NODE_ENV is "production" — the guard relies on
+ * NODE_ENV, which Next sets to "production" for `next build` / `next start`
+ * and on Vercel. The application's invoice coverage is never overridden.
  */
 const testFactsOverrides = new Map<string, Partial<Omit<ScoreFacts, "invoiceCoverageBps">>>();
 
