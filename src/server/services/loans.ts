@@ -612,7 +612,7 @@ export async function createLoanOffer(
 
   const narrativeFor = (finalDecision: Pick<ApplicationDecision, "decision" | "reasons">): NarrativeInputs => {
     const decided = { ...decision, ...finalDecision };
-    const loanOfficer = loanOfficerInputFor(decided, credit, input.amountCents, input.termDays);
+    const loanOfficer = loanOfficerInputFor(decided, credit, input.amountCents, input.termDays, mandate?.maxFeeBps ?? null);
     return {
       loanOfficer,
       riskOfficer: decision.isGradeD

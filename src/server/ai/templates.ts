@@ -1,4 +1,4 @@
-import { REASON_TEXT, type ReasonCode } from "@/server/domain/reasons";
+import { mandateFeeAdvice, REASON_TEXT, type ReasonCode } from "@/server/domain/reasons";
 
 import type {
   AiRole,
@@ -44,7 +44,8 @@ const NEXT_STEP: Partial<Record<ReasonCode, string>> = {
   amount_exceeds_limit: "Apply for an amount within the credit limit for your grade.",
   manual_review_declined: "Apply for $50 or less, or improve your grade first.",
   insufficient_collateral: "Attach an invoice worth at least 1.1× the amount requested.",
-  declaration_missing: "Provide a purpose, attest no other outstanding debts, and attest the application is accurate.",
+  declaration_missing:
+    "Re-apply with declarations.no_other_debt: true and attest: true, but only if both are true (no other outstanding debts; the application is accurate).",
   open_loan_exists: "Repay your open loan before applying again.",
   insufficient_liquidity: "Try again later, or apply for a smaller amount.",
 };
@@ -63,7 +64,11 @@ export function loanOfficerTemplate(input: LoanOfficerInput): LoanOfficerOutput 
       ],
     };
   }
-  const steps = [...new Set(input.reasons.map((r) => NEXT_STEP[r.code]).filter((s): s is string => Boolean(s)))];
+  const stepFor = (code: ReasonCode): string | undefined =>
+    code === "mandate_fee" && input.mandateMaxFeeBps != null && input.feeCents !== null
+      ? mandateFeeAdvice(input.mandateMaxFeeBps, input.feeCents, input.amountCents)
+      : NEXT_STEP[code];
+  const steps = [...new Set(input.reasons.map((r) => stepFor(r.code)).filter((s): s is string => Boolean(s)))];
   return {
     summary: `Your application for ${ask} was declined (score ${input.score}, grade ${input.grade}). The principal reasons are listed below.`,
     reasons_explained: input.reasons.map((r) => ({ code: r.code, explanation: REASON_TEXT[r.code] })),

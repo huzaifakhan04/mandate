@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { claimsApproval, loanOfficerPolicyViolation } from "@/server/ai/policy";
+import { claimsApproval, claimsFunded, loanOfficerPolicyViolation } from "@/server/ai/policy";
 import { redact, redactText } from "@/server/ai/redact";
+import { cleanText } from "@/server/ai/sanitize";
 import { AI_ROLES, OUTPUT_JSON_SCHEMAS, OUTPUT_SCHEMAS, type LoanOfficerInput } from "@/server/ai/schemas";
 import { kyaDeskTemplate, loanOfficerTemplate, riskOfficerTemplate } from "@/server/ai/templates";
 import { principalReasons, REASON_PRIORITY } from "@/server/domain/reasons";
@@ -92,6 +93,31 @@ describe("policy", () => {
     expect(
       loanOfficerPolicyViolation(input, { summary: "Your loan is approved.", reasons_explained: [], next_steps: [] }),
     ).toBeNull();
+  });
+
+  it("an offer is not funded and not free: funded claims and 'no fee' on a priced offer are violations", () => {
+    const input = loanInput([], "approve");
+    const out = (summary: string) => ({ summary, reasons_explained: [], next_steps: [] });
+    expect(loanOfficerPolicyViolation(input, out("Your loan was approved and has been funded with no fee."))).toBe("funded_claim");
+    expect(loanOfficerPolicyViolation(input, out("Your offer is ready, with no fee at all."))).toBe("fee_misstated");
+    expect(loanOfficerPolicyViolation(input, out("Fee-free money!"))).toBe("fee_misstated");
+    expect(loanOfficerPolicyViolation(input, out("Funds are disbursed once you accept the offer. The fee is $0.58."))).toBeNull();
+    expect(claimsFunded("We have funded your loan.")).toBe(true);
+    expect(claimsFunded("Nothing is funded until you accept.")).toBe(false);
+    expect(claimsFunded("The loan will be paid out after you accept.")).toBe(false);
+  });
+});
+
+describe("sanitize", () => {
+  it("strips URLs and bare domains/paths, but keeps decimals, multiples, amounts and file names", () => {
+    expect(cleanText("See https://evil.example/claim and www.evil.example now")).toBe("See [link removed] and [link removed] now");
+    expect(cleanText("Visit evil.com or pay.evil.co.uk/claim?x=1 to continue")).toBe("Visit [link removed] or [link removed] to continue");
+    expect(cleanText("Coverage is 1.5x (≥ 1.1×); the fee is $0.58 at 302.43% APR, v2.1.")).toBe(
+      "Coverage is 1.5x (≥ 1.1×); the fee is $0.58 at 302.43% APR, v2.1.",
+    );
+    expect(cleanText("The file registration.pdf (scan.png) looks fine, e.g. it is legible.")).toBe(
+      "The file registration.pdf (scan.png) looks fine, e.g. it is legible.",
+    );
   });
 });
 

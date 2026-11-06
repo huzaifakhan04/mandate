@@ -10,9 +10,27 @@ export const MAX_NARRATIVE_TEXT = 200;
 
 const URL_RE = /\b(?:https?:\/\/|www\.)\S*/gi;
 
-/** Removes http(s):// and www. URLs, collapses whitespace, and caps at `max` chars. */
+/**
+ * Bare hosts like `evil.com` or `pay.evil.co.uk/claim`: dot-separated
+ * labels ending in an all-letter, TLD-like label (2–24 letters), with an
+ * optional path. Decimals and amounts ("1.5x", "$0.58", "v2.1") never end
+ * in an all-letter label; one-letter labels ("e.g.") are too short; common
+ * file extensions (a KYA finding naming "registration.pdf") are kept.
+ */
+const BARE_HOST_RE = /(?<![\w@.-])[a-z0-9-]+(?:\.[a-z0-9-]+)*\.([a-z]{2,24})\b(?:\/\S*)?/gi;
+const FILE_EXTENSIONS = new Set([
+  "pdf", "png", "jpg", "jpeg", "gif", "webp", "heic", "svg", "txt", "csv", "json", "md", "doc", "docx", "xls", "xlsx", "zip",
+]);
+
+function stripBareHosts(text: string): string {
+  return text.replace(BARE_HOST_RE, (match: string, tld: string) =>
+    !match.includes("/") && FILE_EXTENSIONS.has(tld.toLowerCase()) ? match : "[link removed]",
+  );
+}
+
+/** Removes URLs (http(s)://, www., bare hosts), collapses whitespace, and caps at `max` chars. */
 export function cleanText(text: string, max: number = MAX_NARRATIVE_TEXT): string {
-  const cleaned = text.replace(URL_RE, "[link removed]").replace(/\s+/g, " ").trim();
+  const cleaned = stripBareHosts(text.replace(URL_RE, "[link removed]")).replace(/\s+/g, " ").trim();
   return cleaned.length <= max ? cleaned : `${cleaned.slice(0, max - 1).trimEnd()}…`;
 }
 

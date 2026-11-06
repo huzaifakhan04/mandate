@@ -210,6 +210,15 @@ describe("Review Focus 1: the LLM never changes a decision", () => {
           .where(eq(aiRuns.id, ((await applicationNarrative(run.declined.applicationId)).ai_run_ids as Data).loan_officer as string));
         expect(row, name).toMatchObject({ fallbackUsed: true, errorCode: "policy_violation" });
       }
+      if (name === "approvalClaim") {
+        // An offer is not a funded loan: the "approved and funded, no fee" claim is a
+        // policy violation on the offered case too → the offered explanation is the template.
+        expect(run.offered.explanation, name).toEqual(baseline.offered.explanation);
+        expect(run.offered.explanation.source, name).toBe("template");
+        const offeredRunId = ((await applicationNarrative(run.offered.applicationId)).ai_run_ids as Data).loan_officer as string;
+        const [offeredRow] = await db.select().from(aiRuns).where(eq(aiRuns.id, offeredRunId));
+        expect(offeredRow, name).toMatchObject({ fallbackUsed: true, errorCode: "policy_violation" });
+      }
     }
   });
 

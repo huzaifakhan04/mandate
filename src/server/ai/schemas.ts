@@ -47,6 +47,8 @@ export const loanOfficerInputSchema = z.object({
   feeCents: z.number().int().nonnegative().nullable(),
   aprBps: z.number().int().nonnegative().nullable(),
   effectiveCapCents: z.number().int().nonnegative(),
+  /** The mandate's `max_fee_bps` (P3 final review C1: the mandate_fee next step quotes it); null without a mandate. */
+  mandateMaxFeeBps: z.number().int().nonnegative().nullable().optional(),
 });
 
 export const riskOfficerInputSchema = z.object({

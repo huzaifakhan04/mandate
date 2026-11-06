@@ -91,3 +91,22 @@ export function principalReasons(codes: readonly string[]): Array<{ code: Reason
     .slice(0, MAX_SHOWN_REASONS)
     .map((code) => ({ code, text: REASON_TEXT[code] }));
 }
+
+/** Basis points as a percent with up to two decimals, e.g. 500 → "5%", 580 → "5.8%". */
+function percentText(bps: number): string {
+  return `${Number((bps / 100).toFixed(2))}%`;
+}
+
+/**
+ * P3 final review C1: the `mandate_fee` next step with the real numbers —
+ * the mandate's current `max_fee_bps` and the fee this request was quoted,
+ * as bps of the principal (rounded up, so a mandate at that value passes).
+ */
+export function mandateFeeAdvice(maxFeeBps: number, feeCents: number, amountCents: number): string {
+  const neededBps = amountCents > 0 ? Math.ceil((feeCents * 10000) / amountCents) : 0;
+  // ≤ 200 chars (the narrative text cap) for any realistic numbers.
+  return (
+    `Ask your human to raise the mandate's max fee (currently ${percentText(maxFeeBps)}) to at least ` +
+    `${percentText(neededBps)} (${neededBps} bps; fee ${feeCents} cents on ${amountCents}) and re-sign it.`
+  );
+}

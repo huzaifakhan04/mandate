@@ -479,6 +479,7 @@ export async function agentDetail(
     },
     and(eq(applications.agentId, agent.id), eq(applications.decision, "declined"))!,
     desc(applications.createdAt),
+    DRAWER_DECLINE_LIMIT,
   );
 
   const key = await activeAgentKey(db, agent.worldId, agent.id);
@@ -557,7 +558,7 @@ export async function agentDetail(
     currentMandate: mandate,
     mandateHistory: history,
     documents,
-    declines: declineRows.slice(0, DRAWER_DECLINE_LIMIT).map(declineView),
+    declines: declineRows.map(declineView),
     signingKey: key ? { fingerprint: keyFingerprint(key.publicKey), createdAt: key.createdAt } : null,
     apiKey: apiKey ? { prefix: apiKey.prefix, createdAt: apiKey.createdAt, lastUsedAt: apiKey.lastUsedAt } : null,
     loans: loanRows,

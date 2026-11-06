@@ -11,7 +11,7 @@ import { createTestDb } from "@/server/db/testing";
 import { simApprove } from "@/server/rail/simHandler";
 import { getCaptureHandler } from "@/server/services/checkouts";
 
-import { call, createSimWorld, createTestAgent, type Data, fundPool } from "../../helpers/world";
+import { call, callRaw, createSimWorld, createTestAgent, type Data, fundPool } from "../../helpers/world";
 
 /**
  * M9 (final review): every `next_actions` entry any tool emits must pass
@@ -147,6 +147,107 @@ describe("M9: every emitted next_action passes its target tool's input schema", 
     }
 
     expect(emitted.length).toBeGreaterThan(20);
+    expectAllValid(emitted);
+  });
+
+  it("P3 final review I2/I5/C1: the newcomer path (no grade E → get_status loop), declaration retry, mandate_fee advice", async () => {
+    const emitted: Emitted[] = [];
+    const run = async (tool: string, key: string, input: Data, raw = false) => {
+      const result = raw ? await callRaw(db, tool, key, input) : await call(db, tool, key, input);
+      collect(`${tool}:${result.envelope.status}`, result.envelope, emitted);
+      return result.envelope;
+    };
+
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 30000);
+    const fresh = await createTestAgent(db, worldId, "newcomer@example.com", { credit: "real" });
+
+    // get_status for a T1 agent with no history: the sample is the invoice-backed newcomer loan.
+    const status = await run("get_status", fresh.key, {});
+    expect(status.next_actions).toContainEqual({
+      tool: "check_eligibility",
+      args: { amount_cents: 1000, term_days: 7, invoice_amount_cents: 1500, collateral: "invoice_link" },
+    });
+
+    // Unsecured check → grade E → the invoice-backed check (amount capped at 5000, invoice ceil(1.5×)), never get_status.
+    const unsecured = await run("check_eligibility", fresh.key, { amount_cents: 8001, term_days: 14 });
+    expect(unsecured.reason_codes).toContain("insufficient_credit_history");
+    expect(unsecured.next_actions).toEqual([
+      {
+        tool: "check_eligibility",
+        args: { amount_cents: 5000, term_days: 14, invoice_amount_cents: 7500, collateral: "invoice_link" },
+      },
+    ]);
+    const odd = await run("check_eligibility", fresh.key, { amount_cents: 1001, term_days: 7 });
+    expect(odd.next_actions[0]!.args).toMatchObject({ amount_cents: 1001, invoice_amount_cents: 1502 });
+
+    // Following it: eligible (grade D) → apply_for_loan carrying an invoice that covers principal + fee.
+    const secured = await run("check_eligibility", fresh.key, unsecured.next_actions[0]!.args as Data);
+    expect(secured.reason_codes).toEqual([]);
+    const applyAction = secured.next_actions[0]!;
+    expect(applyAction.tool).toBe("apply_for_loan");
+    expect(applyAction.args).toMatchObject({
+      amount_cents: 5000,
+      term_days: 14,
+      invoice: { amount_cents: 7500, due_in_days: 14 },
+      declarations: { no_other_debt: true },
+      attest: true,
+    });
+
+    // A declined unsecured application → the same invoice-backed check.
+    const declined = await run("apply_for_loan", fresh.key, { amount_cents: 2000, term_days: 7, purpose: "Working capital" });
+    expect(declined.status).toBe("DECLINED");
+    expect(declined.next_actions).toEqual([
+      {
+        tool: "check_eligibility",
+        args: { amount_cents: 2000, term_days: 7, invoice_amount_cents: 3000, collateral: "invoice_link" },
+      },
+    ]);
+
+    // Only declaration_missing → the same application with E and H, and the summary says "only if true".
+    const invoice = { client_email: "client@example.com", amount_cents: 1500, due_in_days: 7, description: "Work" };
+    const undeclared = await run(
+      "apply_for_loan",
+      fresh.key,
+      { amount_cents: 1000, term_days: 7, purpose: "Working capital", invoice },
+      true,
+    );
+    expect(undeclared.reason_codes).toEqual(["declaration_missing"]);
+    expect(undeclared.summary).toMatch(/ONLY if both are true/);
+    expect(undeclared.next_actions).toEqual([
+      {
+        tool: "apply_for_loan",
+        args: {
+          amount_cents: 1000,
+          term_days: 7,
+          purpose: "Working capital",
+          invoice,
+          declarations: { no_other_debt: true },
+          attest: true,
+        },
+      },
+    ]);
+
+    // mandate_fee at a 5% max fee: the advice quotes the mandate's max fee and the fee needed.
+    const capped = await createTestAgent(db, worldId, "capped@example.com", { credit: "real", limits: { maxFeeBps: 500 } });
+    const feeCheck = await run("check_eligibility", capped.key, {
+      amount_cents: 1000,
+      term_days: 7,
+      invoice_amount_cents: 1500,
+      collateral: "invoice_link",
+    });
+    expect(feeCheck.reason_codes).toEqual(["mandate_fee"]);
+    expect(feeCheck.summary).toContain("max fee (currently 5%) to at least 5.8% (580 bps");
+    const feeDecline = await run("apply_for_loan", capped.key, {
+      amount_cents: 1000,
+      term_days: 7,
+      purpose: "Working capital",
+      invoice,
+    });
+    expect(feeDecline.reason_codes).toEqual(["mandate_fee"]);
+    const explanation = (feeDecline.data as Data).explanation as { next_steps: string[] };
+    expect(explanation.next_steps[0]).toContain("max fee (currently 5%) to at least 5.8% (580 bps");
+
     expectAllValid(emitted);
   });
 });

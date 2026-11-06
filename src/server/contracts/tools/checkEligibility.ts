@@ -6,6 +6,9 @@ import { defineTool } from "../registry";
 import { borrowGate } from "../../services/kya";
 import { creditSchema, creditView } from "../credit";
 import { checkEligibility } from "../../services/loans";
+import { mandateFeeAdvice } from "../../domain/reasons";
+import { type NextAction } from "../envelope";
+import { invoiceBackedCheckArgs, SAMPLE_INVOICE_PLACEHOLDERS } from "../sampleArgs";
 
 /** `apply_for_loan` requires a purpose only the agent can supply; the next action carries this placeholder. */
 export const PURPOSE_PLACEHOLDER = "<describe what the money is for>";
@@ -110,6 +113,56 @@ export const checkEligibilityTool = defineTool({
     const reasons = [...blockers, ...result.reasons];
     const eligible = reasons.length === 0;
 
+    let nextActions: NextAction[];
+    if (eligible && quote) {
+      // An invoice-backed check leads to an invoice-backed application (else it would be scored unsecured).
+      const invoiceCents =
+        input.invoice_amount_cents !== undefined
+          ? Math.max(input.invoice_amount_cents, Number(quote.totalCents))
+          : null;
+      nextActions = [
+        {
+          tool: "apply_for_loan",
+          args: {
+            amount_cents: input.amount_cents,
+            term_days: input.term_days,
+            // Placeholder the agent must replace (5–200 chars).
+            purpose: PURPOSE_PLACEHOLDER,
+            ...(invoiceCents !== null
+              ? {
+                  invoice: {
+                    client_email: SAMPLE_INVOICE_PLACEHOLDERS.client_email,
+                    amount_cents: invoiceCents,
+                    due_in_days: Math.min(input.term_days, 60),
+                    description: SAMPLE_INVOICE_PLACEHOLDERS.description,
+                  },
+                }
+              : {}),
+            // ALA E and H (P3 Task 4): required; the agent declares and attests by sending them.
+            declarations: { no_other_debt: true },
+            attest: true,
+          },
+        },
+      ];
+    } else if (blockers.length > 0) {
+      nextActions = blockerNextActions(blockers, claimUrl);
+    } else if (result.reasons.includes("insufficient_credit_history") || result.reasons.includes("score_too_low")) {
+      // I2: grade E — the way up is a small invoice-backed loan, not get_status (which would loop back here).
+      const newcomer = invoiceBackedCheckArgs(input.amount_cents, input.term_days);
+      const alreadyTried =
+        newcomer.amount_cents === input.amount_cents &&
+        input.invoice_amount_cents !== undefined &&
+        input.invoice_amount_cents >= newcomer.invoice_amount_cents;
+      nextActions = alreadyTried ? [{ tool: "get_bank_guide", args: {} }] : [{ tool: "check_eligibility", args: newcomer }];
+    } else {
+      nextActions = [{ tool: "get_status", args: {} }];
+    }
+
+    const feeAdvice =
+      result.reasons.includes("mandate_fee") && quote && result.mandate
+        ? ` ${mandateFeeAdvice(result.mandate.max_fee_bps, Number(quote.feeCents), input.amount_cents)}`
+        : "";
+
     return ok(
       {
         eligible,
@@ -138,26 +191,10 @@ export const checkEligibilityTool = defineTool({
         summary: eligible && quote
           ? `Eligible (score ${quote.score}, grade ${quote.grade}): fee ${quote.feeCents.toString()} cents, total ${quote.totalCents.toString()} cents.`
           : `Not eligible right now: ${reasons.join(", ")}.` +
-            (blockers.length > 0 ? ` ${blockerInstruction(blockers, claimUrl)}` : ""),
+            (blockers.length > 0 ? ` ${blockerInstruction(blockers, claimUrl)}` : "") +
+            feeAdvice,
         reason_codes: reasons,
-        next_actions: eligible && quote
-          ? [
-              {
-                tool: "apply_for_loan",
-                args: {
-                  amount_cents: input.amount_cents,
-                  term_days: input.term_days,
-                  // Placeholder the agent must replace (5–200 chars).
-                  purpose: PURPOSE_PLACEHOLDER,
-                  // ALA E and H (P3 Task 4): required; the agent declares and attests by sending them.
-                  declarations: { no_other_debt: true },
-                  attest: true,
-                },
-              },
-            ]
-          : blockers.length > 0
-            ? blockerNextActions(blockers, claimUrl)
-            : [{ tool: "get_status", args: {} }],
+        next_actions: nextActions,
       },
     );
   },

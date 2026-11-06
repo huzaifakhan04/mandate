@@ -165,7 +165,7 @@ export function createDocumentHandlers({ getDb, afterResponse }: DocumentHandler
       }
       // The KYA desk (advisory LLM review) runs after the response; it never throws.
       const { worldId, id: documentId } = result.document;
-      afterResponse?.(async () => reviewKyaDocument(await getDb(), worldId, documentId));
+      afterResponse?.(() => reviewKyaDocument(getDb, worldId, documentId));
       return success(request, agentId, 201, "uploaded", { document: toJson(result.document) });
     } catch (err) {
       console.error(`[kya-documents] upload failed: ${err instanceof Error ? err.name : "unknown error"}`);
