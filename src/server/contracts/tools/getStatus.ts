@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ok, type NextAction } from "../envelope";
 import { defineTool } from "../registry";
+import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleArgs";
 import { getAgentStatus } from "../../services/agents";
 
 const outputSchema = z.object({
@@ -82,12 +83,12 @@ export const getStatusTool = defineTool({
       nextActions = [{ tool: "get_loan", args: { loan_id: status.openLoan.loanId } }];
     } else if (status.balances.notesCents === 0n) {
       nextActions = [
-        { tool: "buy_notes", args: {} },
-        { tool: "check_eligibility", args: {} },
+        { tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } },
+        { tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } },
       ];
     } else {
       // Has notes but no open loan: nothing mandates buying more.
-      nextActions = [{ tool: "check_eligibility", args: {} }];
+      nextActions = [{ tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } }];
     }
 
     return ok(data, {

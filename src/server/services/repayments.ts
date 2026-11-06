@@ -822,10 +822,10 @@ registerCaptureHandler("repayment_direct", {
   applyFailure: failureApplier("repayment_direct"),
   retryNextAction: async (db, worldId, linkId): Promise<NextAction> => {
     const link = await scoped(db, worldId).findOne(repaymentLinks, eq(repaymentLinks.id, linkId));
-    return {
-      tool: "repay_loan",
-      args: link ? { loan_id: link.loanId, amount_cents: Number(link.amountCents) } : {},
-    };
+    // M9: repay_loan needs a loan_id; with no link to take it from, point at get_status instead.
+    return link
+      ? { tool: "repay_loan", args: { loan_id: link.loanId, amount_cents: Number(link.amountCents) } }
+      : { tool: "get_status", args: {} };
   },
 });
 

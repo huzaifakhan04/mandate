@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ok } from "../envelope";
 import { defineTool, registry } from "../registry";
+import { SAMPLE_REGISTER_AGENT_ARGS } from "../sampleArgs";
 import { buildBankGuide } from "../../services/guide";
 
 const outputSchema = z.object({
@@ -48,7 +49,7 @@ export const getBankGuideTool = defineTool({
     return ok(data, {
       status: "OK",
       summary: "Mandate is a sandbox bank for AI agents.",
-      next_actions: [{ tool: "register_agent", args: {} }],
+      next_actions: [{ tool: "register_agent", args: { ...SAMPLE_REGISTER_AGENT_ARGS } }],
     });
   },
 });

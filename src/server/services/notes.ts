@@ -19,6 +19,7 @@ import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } 
 import { availableLiquidity } from "../domain/liquidity";
 import { railForWorld } from "./worlds";
 import { registerCaptureHandler, type CaptureApplyResult } from "./checkouts";
+import { SAMPLE_BUY_NOTES_ARGS } from "../contracts/sampleArgs";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
 const MANDATE_POOL_A_NAME = "Mandate Pool A";
@@ -304,7 +305,7 @@ async function notePurchaseRetryNextAction(
   createSourceId: string,
 ): Promise<NextAction> {
   const noteTx = await scoped(db, worldId).findOne(noteTransactions, eq(noteTransactions.id, createSourceId));
-  return { tool: "buy_notes", args: noteTx ? { amount_cents: Number(noteTx.amountCents) } : {} };
+  return { tool: "buy_notes", args: noteTx ? { amount_cents: Number(noteTx.amountCents) } : { ...SAMPLE_BUY_NOTES_ARGS } };
 }
 
 registerCaptureHandler("note_purchase", {

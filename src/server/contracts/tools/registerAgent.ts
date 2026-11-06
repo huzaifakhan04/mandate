@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ok } from "../envelope";
 import { defineTool } from "../registry";
+import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleArgs";
 import { registerAgent as registerAgentService } from "../../services/agents";
 
 const inputSchema = z
@@ -85,8 +86,8 @@ export const registerAgentTool = defineTool({
         "not be shown again.",
       next_actions: [
         { tool: "get_status", args: {} },
-        { tool: "buy_notes", args: {} },
-        { tool: "check_eligibility", args: {} },
+        { tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } },
+        { tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } },
       ],
     });
   },
