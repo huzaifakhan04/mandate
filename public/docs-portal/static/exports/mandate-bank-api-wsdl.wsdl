@@ -1,0 +1,1002 @@
+<?xml version="1.0" encoding="utf-8"?>
+<definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://agentic-bank-mu.vercel.app/schemas" xmlns:wsdl="https://agentic-bank-mu.vercel.app/wsdl" targetNamespace="https://agentic-bank-mu.vercel.app/wsdl" xmlns="http://schemas.xmlsoap.org/wsdl/">
+  <types>
+    <xs:schema xmlns:tns="https://agentic-bank-mu.vercel.app/schemas" targetNamespace="https://agentic-bank-mu.vercel.app/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:element name="POST_get_bank_guide_InputMessage" type="schemas:POST_get_bank_guide_InputMessage" />
+      <xs:element name="POST_get_bank_guide_OutputMessage" type="schemas:POST_get_bank_guide_OutputMessage" />
+      <xs:element name="POST_register_agent_InputMessage" type="schemas:POST_register_agent_InputMessage" />
+      <xs:element name="POST_register_agent_OutputMessage" type="schemas:POST_register_agent_OutputMessage" />
+      <xs:element name="POST_get_status_InputMessage" type="schemas:POST_get_status_InputMessage" />
+      <xs:element name="POST_get_status_OutputMessage" type="schemas:POST_get_status_OutputMessage" />
+      <xs:element name="POST_register_public_key_InputMessage" type="schemas:POST_register_public_key_InputMessage" />
+      <xs:element name="POST_register_public_key_OutputMessage" type="schemas:POST_register_public_key_OutputMessage" />
+      <xs:element name="POST_buy_notes_InputMessage" type="schemas:POST_buy_notes_InputMessage" />
+      <xs:element name="POST_buy_notes_OutputMessage" type="schemas:POST_buy_notes_OutputMessage" />
+      <xs:element name="POST_confirm_checkout_InputMessage" type="schemas:POST_confirm_checkout_InputMessage" />
+      <xs:element name="POST_confirm_checkout_OutputMessage" type="schemas:POST_confirm_checkout_OutputMessage" />
+      <xs:element name="POST_check_eligibility_InputMessage" type="schemas:POST_check_eligibility_InputMessage" />
+      <xs:element name="POST_check_eligibility_OutputMessage" type="schemas:POST_check_eligibility_OutputMessage" />
+      <xs:element name="POST_apply_for_loan_InputMessage" type="schemas:POST_apply_for_loan_InputMessage" />
+      <xs:element name="POST_apply_for_loan_OutputMessage" type="schemas:POST_apply_for_loan_OutputMessage" />
+      <xs:element name="POST_accept_offer_InputMessage" type="schemas:POST_accept_offer_InputMessage" />
+      <xs:element name="POST_accept_offer_OutputMessage" type="schemas:POST_accept_offer_OutputMessage" />
+      <xs:element name="POST_decline_offer_InputMessage" type="schemas:POST_decline_offer_InputMessage" />
+      <xs:element name="POST_decline_offer_OutputMessage" type="schemas:POST_decline_offer_OutputMessage" />
+      <xs:element name="POST_get_application_InputMessage" type="schemas:POST_get_application_InputMessage" />
+      <xs:element name="POST_get_application_OutputMessage" type="schemas:POST_get_application_OutputMessage" />
+      <xs:element name="POST_get_loan_InputMessage" type="schemas:POST_get_loan_InputMessage" />
+      <xs:element name="POST_get_loan_OutputMessage" type="schemas:POST_get_loan_OutputMessage" />
+      <xs:element name="POST_repay_loan_InputMessage" type="schemas:POST_repay_loan_InputMessage" />
+      <xs:element name="POST_repay_loan_OutputMessage" type="schemas:POST_repay_loan_OutputMessage" />
+      <xs:element name="POST_ack_notices_InputMessage" type="schemas:POST_ack_notices_InputMessage" />
+      <xs:element name="POST_ack_notices_OutputMessage" type="schemas:POST_ack_notices_OutputMessage" />
+      <xs:element name="POST_redeem_notes_InputMessage" type="schemas:POST_redeem_notes_InputMessage" />
+      <xs:element name="POST_redeem_notes_OutputMessage" type="schemas:POST_redeem_notes_OutputMessage" />
+      <xs:element name="POST_cancel_redemption_InputMessage" type="schemas:POST_cancel_redemption_InputMessage" />
+      <xs:element name="POST_cancel_redemption_OutputMessage" type="schemas:POST_cancel_redemption_OutputMessage" />
+      <xs:element name="POST_get_statement_InputMessage" type="schemas:POST_get_statement_InputMessage" />
+      <xs:element name="POST_get_statement_OutputMessage" type="schemas:POST_get_statement_OutputMessage" />
+      <xs:complexType name="Envelope">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="status" type="xs:string" />
+          <xs:element minOccurs="1" name="summary" type="xs:string" />
+          <xs:element minOccurs="1" maxOccurs="unbounded" name="reason_codes" type="xs:string" />
+          <xs:element minOccurs="1" name="data">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+          <xs:element minOccurs="1" maxOccurs="unbounded" name="next_actions" type="schemas:NextAction" />
+          <xs:element minOccurs="1" name="docs_url" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1AcceptOfferRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="offer_id" type="xs:string" />
+          <xs:element minOccurs="1" name="disclosure_hash">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1AckNoticesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="0" maxOccurs="unbounded" name="notice_ids" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1ApplyForLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="0" name="identity" type="schemas:Identity" />
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="term_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="purpose">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+                <xs:minLength value="5" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="invoice" type="schemas:Invoice" />
+          <xs:element minOccurs="0" name="declarations" type="schemas:Declarations" />
+          <xs:element minOccurs="0" name="consent_bank_records" type="xs:boolean" />
+          <xs:element minOccurs="0" name="mandate_version">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="attest" type="xs:boolean" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1BuyNotesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="100000" />
+                <xs:minInclusive value="1000" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1CancelRedemptionRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="note_tx_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1CheckEligibilityRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="term_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="collateral" type="schemas:Collateral" />
+          <xs:element minOccurs="0" name="invoice_amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1ConfirmCheckoutRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="checkout_id">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1DeclineOfferRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="offer_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1GetApplicationRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="application_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1GetLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="loan_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RedeemNotesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RegisterAgentRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="name">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="60" />
+                <xs:minLength value="2" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="operator" type="xs:string" />
+          <xs:element minOccurs="0" name="model" type="xs:string" />
+          <xs:element minOccurs="0" name="payout_email">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>The PayPal account (by email) that receives loans and redemptions. Give this or payout_paypal_id.</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="payout_paypal_id">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>The PayPal account (by payer ID) that receives loans and redemptions, instead of payout_email — use it when that account's email is unconfirmed (payouts to an unconfirmed email go UNCLAIMED).</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^[A-Z0-9]{13}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RegisterPublicKeyRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="public_key">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>Your Ed25519 public key, base64: the raw 32 bytes or the SPKI DER encoding.</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="512" />
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RepayLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="loan_id" type="xs:string" />
+          <xs:element minOccurs="0" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:simpleType name="Collateral">
+        <xs:restriction base="xs:string">
+          <xs:enumeration value="invoice_link" />
+          <xs:enumeration value="none" />
+        </xs:restriction>
+      </xs:simpleType>
+      <xs:complexType name="Declarations">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="no_other_debt" type="xs:boolean" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="Identity">
+        <xs:sequence>
+          <xs:element minOccurs="0" name="operator">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="model">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="code_manifest_hash">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="Invoice">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="client_email">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="due_in_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="60" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="description">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="500" />
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="NextAction">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="tool" type="xs:string" />
+          <xs:element minOccurs="1" name="args">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_bank_guide_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_bank_guide_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_register_agent_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RegisterAgentRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_register_agent_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_status_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_status_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_register_public_key_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RegisterPublicKeyRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_register_public_key_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_buy_notes_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1BuyNotesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_buy_notes_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_confirm_checkout_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1ConfirmCheckoutRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_confirm_checkout_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_check_eligibility_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1CheckEligibilityRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_check_eligibility_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_apply_for_loan_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1ApplyForLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_apply_for_loan_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_accept_offer_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1AcceptOfferRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_accept_offer_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_decline_offer_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1DeclineOfferRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_decline_offer_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_application_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1GetApplicationRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_application_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_loan_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1GetLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_loan_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_repay_loan_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RepayLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_repay_loan_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_ack_notices_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1AckNoticesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_ack_notices_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_redeem_notes_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RedeemNotesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_redeem_notes_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_cancel_redemption_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1CancelRedemptionRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_cancel_redemption_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_statement_InputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" fixed="application/json" name="Content-Type" type="xs:string" />
+          <xs:element minOccurs="1" name="body">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="POST_get_statement_OutputMessage">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+    </xs:schema>
+  </types>
+  <message name="POST_get_bank_guide_InputMessage">
+    <part name="POST_get_bank_guide_InputMessage" element="schemas:POST_get_bank_guide_InputMessage" />
+  </message>
+  <message name="POST_get_bank_guide_OutputMessage">
+    <part name="POST_get_bank_guide_OutputMessage" element="schemas:POST_get_bank_guide_OutputMessage" />
+  </message>
+  <message name="POST_register_agent_InputMessage">
+    <part name="POST_register_agent_InputMessage" element="schemas:POST_register_agent_InputMessage" />
+  </message>
+  <message name="POST_register_agent_OutputMessage">
+    <part name="POST_register_agent_OutputMessage" element="schemas:POST_register_agent_OutputMessage" />
+  </message>
+  <message name="POST_get_status_InputMessage">
+    <part name="POST_get_status_InputMessage" element="schemas:POST_get_status_InputMessage" />
+  </message>
+  <message name="POST_get_status_OutputMessage">
+    <part name="POST_get_status_OutputMessage" element="schemas:POST_get_status_OutputMessage" />
+  </message>
+  <message name="POST_register_public_key_InputMessage">
+    <part name="POST_register_public_key_InputMessage" element="schemas:POST_register_public_key_InputMessage" />
+  </message>
+  <message name="POST_register_public_key_OutputMessage">
+    <part name="POST_register_public_key_OutputMessage" element="schemas:POST_register_public_key_OutputMessage" />
+  </message>
+  <message name="POST_buy_notes_InputMessage">
+    <part name="POST_buy_notes_InputMessage" element="schemas:POST_buy_notes_InputMessage" />
+  </message>
+  <message name="POST_buy_notes_OutputMessage">
+    <part name="POST_buy_notes_OutputMessage" element="schemas:POST_buy_notes_OutputMessage" />
+  </message>
+  <message name="POST_confirm_checkout_InputMessage">
+    <part name="POST_confirm_checkout_InputMessage" element="schemas:POST_confirm_checkout_InputMessage" />
+  </message>
+  <message name="POST_confirm_checkout_OutputMessage">
+    <part name="POST_confirm_checkout_OutputMessage" element="schemas:POST_confirm_checkout_OutputMessage" />
+  </message>
+  <message name="POST_check_eligibility_InputMessage">
+    <part name="POST_check_eligibility_InputMessage" element="schemas:POST_check_eligibility_InputMessage" />
+  </message>
+  <message name="POST_check_eligibility_OutputMessage">
+    <part name="POST_check_eligibility_OutputMessage" element="schemas:POST_check_eligibility_OutputMessage" />
+  </message>
+  <message name="POST_apply_for_loan_InputMessage">
+    <part name="POST_apply_for_loan_InputMessage" element="schemas:POST_apply_for_loan_InputMessage" />
+  </message>
+  <message name="POST_apply_for_loan_OutputMessage">
+    <part name="POST_apply_for_loan_OutputMessage" element="schemas:POST_apply_for_loan_OutputMessage" />
+  </message>
+  <message name="POST_accept_offer_InputMessage">
+    <part name="POST_accept_offer_InputMessage" element="schemas:POST_accept_offer_InputMessage" />
+  </message>
+  <message name="POST_accept_offer_OutputMessage">
+    <part name="POST_accept_offer_OutputMessage" element="schemas:POST_accept_offer_OutputMessage" />
+  </message>
+  <message name="POST_decline_offer_InputMessage">
+    <part name="POST_decline_offer_InputMessage" element="schemas:POST_decline_offer_InputMessage" />
+  </message>
+  <message name="POST_decline_offer_OutputMessage">
+    <part name="POST_decline_offer_OutputMessage" element="schemas:POST_decline_offer_OutputMessage" />
+  </message>
+  <message name="POST_get_application_InputMessage">
+    <part name="POST_get_application_InputMessage" element="schemas:POST_get_application_InputMessage" />
+  </message>
+  <message name="POST_get_application_OutputMessage">
+    <part name="POST_get_application_OutputMessage" element="schemas:POST_get_application_OutputMessage" />
+  </message>
+  <message name="POST_get_loan_InputMessage">
+    <part name="POST_get_loan_InputMessage" element="schemas:POST_get_loan_InputMessage" />
+  </message>
+  <message name="POST_get_loan_OutputMessage">
+    <part name="POST_get_loan_OutputMessage" element="schemas:POST_get_loan_OutputMessage" />
+  </message>
+  <message name="POST_repay_loan_InputMessage">
+    <part name="POST_repay_loan_InputMessage" element="schemas:POST_repay_loan_InputMessage" />
+  </message>
+  <message name="POST_repay_loan_OutputMessage">
+    <part name="POST_repay_loan_OutputMessage" element="schemas:POST_repay_loan_OutputMessage" />
+  </message>
+  <message name="POST_ack_notices_InputMessage">
+    <part name="POST_ack_notices_InputMessage" element="schemas:POST_ack_notices_InputMessage" />
+  </message>
+  <message name="POST_ack_notices_OutputMessage">
+    <part name="POST_ack_notices_OutputMessage" element="schemas:POST_ack_notices_OutputMessage" />
+  </message>
+  <message name="POST_redeem_notes_InputMessage">
+    <part name="POST_redeem_notes_InputMessage" element="schemas:POST_redeem_notes_InputMessage" />
+  </message>
+  <message name="POST_redeem_notes_OutputMessage">
+    <part name="POST_redeem_notes_OutputMessage" element="schemas:POST_redeem_notes_OutputMessage" />
+  </message>
+  <message name="POST_cancel_redemption_InputMessage">
+    <part name="POST_cancel_redemption_InputMessage" element="schemas:POST_cancel_redemption_InputMessage" />
+  </message>
+  <message name="POST_cancel_redemption_OutputMessage">
+    <part name="POST_cancel_redemption_OutputMessage" element="schemas:POST_cancel_redemption_OutputMessage" />
+  </message>
+  <message name="POST_get_statement_InputMessage">
+    <part name="POST_get_statement_InputMessage" element="schemas:POST_get_statement_InputMessage" />
+  </message>
+  <message name="POST_get_statement_OutputMessage">
+    <part name="POST_get_statement_OutputMessage" element="schemas:POST_get_statement_OutputMessage" />
+  </message>
+  <portType name="Mandate_x0020_Bank_x0020_API_PortType">
+    <operation name="POST_get_bank_guide">
+      <documentation>Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool.</documentation>
+      <input message="wsdl:POST_get_bank_guide_InputMessage" />
+      <output message="wsdl:POST_get_bank_guide_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_register_agent">
+      <documentation>Creates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow.</documentation>
+      <input message="wsdl:POST_register_agent_InputMessage" />
+      <output message="wsdl:POST_register_agent_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_get_status">
+      <documentation>Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.</documentation>
+      <input message="wsdl:POST_get_status_InputMessage" />
+      <output message="wsdl:POST_get_status_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_register_public_key">
+      <documentation>Registers the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked.</documentation>
+      <input message="wsdl:POST_register_public_key_InputMessage" />
+      <output message="wsdl:POST_register_public_key_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_buy_notes">
+      <documentation>Buys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved.</documentation>
+      <input message="wsdl:POST_buy_notes_InputMessage" />
+      <output message="wsdl:POST_buy_notes_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_confirm_checkout">
+      <documentation>Captures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.</documentation>
+      <input message="wsdl:POST_confirm_checkout_InputMessage" />
+      <output message="wsdl:POST_confirm_checkout_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_check_eligibility">
+      <documentation>Checks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human.</documentation>
+      <input message="wsdl:POST_check_eligibility_InputMessage" />
+      <output message="wsdl:POST_check_eligibility_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_apply_for_loan">
+      <documentation>Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering &lt; 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application.</documentation>
+      <input message="wsdl:POST_apply_for_loan_InputMessage" />
+      <output message="wsdl:POST_apply_for_loan_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_accept_offer">
+      <documentation>Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason).</documentation>
+      <input message="wsdl:POST_accept_offer_InputMessage" />
+      <output message="wsdl:POST_accept_offer_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_decline_offer">
+      <documentation>Declines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.</documentation>
+      <input message="wsdl:POST_decline_offer_InputMessage" />
+      <output message="wsdl:POST_decline_offer_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_get_application">
+      <documentation>Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only.</documentation>
+      <input message="wsdl:POST_get_application_InputMessage" />
+      <output message="wsdl:POST_get_application_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_get_loan">
+      <documentation>Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.</documentation>
+      <input message="wsdl:POST_get_loan_InputMessage" />
+      <output message="wsdl:POST_get_loan_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_repay_loan">
+      <documentation>Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.</documentation>
+      <input message="wsdl:POST_repay_loan_InputMessage" />
+      <output message="wsdl:POST_repay_loan_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_ack_notices">
+      <documentation>Marks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.</documentation>
+      <input message="wsdl:POST_ack_notices_InputMessage" />
+      <output message="wsdl:POST_ack_notices_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_redeem_notes">
+      <documentation>Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it.</documentation>
+      <input message="wsdl:POST_redeem_notes_InputMessage" />
+      <output message="wsdl:POST_redeem_notes_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_cancel_redemption">
+      <documentation>Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).</documentation>
+      <input message="wsdl:POST_cancel_redemption_InputMessage" />
+      <output message="wsdl:POST_cancel_redemption_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+    <operation name="POST_get_statement">
+      <documentation>Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back.</documentation>
+      <input message="wsdl:POST_get_statement_InputMessage" />
+      <output message="wsdl:POST_get_statement_OutputMessage">
+        <documentation>Envelope response</documentation>
+      </output>
+    </operation>
+  </portType>
+  <binding name="Mandate_x0020_Bank_x0020_API_Binding" type="wsdl:Mandate_x0020_Bank_x0020_API_PortType">
+    <soap:binding transport="http://schemas.xmlsoap.org/soap/http" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+    <operation name="POST_get_bank_guide">
+      <soap:operation soapAction="POST_get_bank_guide" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_register_agent">
+      <soap:operation soapAction="POST_register_agent" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_get_status">
+      <soap:operation soapAction="POST_get_status" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_register_public_key">
+      <soap:operation soapAction="POST_register_public_key" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_buy_notes">
+      <soap:operation soapAction="POST_buy_notes" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_confirm_checkout">
+      <soap:operation soapAction="POST_confirm_checkout" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_check_eligibility">
+      <soap:operation soapAction="POST_check_eligibility" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_apply_for_loan">
+      <soap:operation soapAction="POST_apply_for_loan" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_accept_offer">
+      <soap:operation soapAction="POST_accept_offer" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_decline_offer">
+      <soap:operation soapAction="POST_decline_offer" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_get_application">
+      <soap:operation soapAction="POST_get_application" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_get_loan">
+      <soap:operation soapAction="POST_get_loan" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_repay_loan">
+      <soap:operation soapAction="POST_repay_loan" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_ack_notices">
+      <soap:operation soapAction="POST_ack_notices" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_redeem_notes">
+      <soap:operation soapAction="POST_redeem_notes" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_cancel_redemption">
+      <soap:operation soapAction="POST_cancel_redemption" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+    <operation name="POST_get_statement">
+      <soap:operation soapAction="POST_get_statement" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <input>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </input>
+      <output>
+        <soap:body use="literal" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      </output>
+    </operation>
+  </binding>
+  <service name="Mandate_x0020_Bank_x0020_API">
+    <documentation>Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.</documentation>
+    <port name="default_Port" binding="wsdl:Mandate_x0020_Bank_x0020_API_Binding">
+      <soap:address location="https://agentic-bank-mu.vercel.app" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+    </port>
+  </service>
+</definitions>

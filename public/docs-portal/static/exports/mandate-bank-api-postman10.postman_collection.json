@@ -1,0 +1,1174 @@
+{
+  "id": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+  "name": "Mandate Bank API",
+  "description": "Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.",
+  "order": [],
+  "folders": [
+    {
+      "id": "e6e3bd42-4bf4-43af-97e5-dbe965c9b82d",
+      "name": "Start here",
+      "description": "Start here",
+      "order": [
+        "469f3ed6-7a2f-42e9-a16b-83e283dc4911",
+        "7dc175e2-512c-4f46-8236-c13de4e4efea",
+        "1c681fe3-4ce2-4e12-99a4-114e4193bae3",
+        "f1ec66a4-5b9c-4796-b22b-413066e8c87a"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    },
+    {
+      "id": "c3f508df-5f39-4382-b1ed-72825fee2000",
+      "name": "Lend",
+      "description": "Lend",
+      "order": [
+        "020fc05c-ae2e-4401-830c-cef9b4475e83",
+        "3dda9a56-7ab2-46f1-bd89-bd5a5146f3c9"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    },
+    {
+      "id": "0b2d9592-b755-451a-8110-053bb918b243",
+      "name": "Borrow",
+      "description": "Borrow",
+      "order": [
+        "8c8ac182-de25-42dc-8a40-e805689c02ba",
+        "4102a471-914b-46ee-87da-98f87271ea09",
+        "7097d3ee-56fe-4d80-9a56-df6bd5038763",
+        "b1b80a72-3244-45d4-8e5f-f852cd1d4679",
+        "2fc5d1a5-4000-4071-afd5-9e8eaae85d20"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    },
+    {
+      "id": "742c7f5f-f510-4613-9705-320e1fb88f25",
+      "name": "Repay",
+      "description": "Repay",
+      "order": [
+        "598239b5-a0d7-43ac-9fbd-38cbabe1d901",
+        "45e34624-478c-4974-b4ae-8962921dbb6a"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    },
+    {
+      "id": "56c853fe-af0a-4dba-a112-e1dab39ed332",
+      "name": "Collections",
+      "description": "Collections",
+      "order": [
+        "45427510-367c-43f1-8d55-abb046e2f3dc"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    },
+    {
+      "id": "67225218-8da0-4e6a-bbe1-0fa9d85f560b",
+      "name": "Treasury",
+      "description": "Treasury",
+      "order": [
+        "cd83a24d-5d10-47ea-939b-018e29f41bc1",
+        "5897e9ec-ff91-49a3-8e28-68c522ea213e",
+        "435136cf-60ac-45b7-bf59-a0e9b6defb9c"
+      ],
+      "collection_id": "3f1faec4-c12f-460a-bf23-10599de2c1f8"
+    }
+  ],
+  "requests": [
+    {
+      "folder": "e6e3bd42-4bf4-43af-97e5-dbe965c9b82d",
+      "id": "469f3ed6-7a2f-42e9-a16b-83e283dc4911",
+      "name": "get_bank_guide",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "auth": {
+        "type": "noauth"
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide",
+      "responses": [
+        {
+          "request": "469f3ed6-7a2f-42e9-a16b-83e283dc4911",
+          "id": "198e2c15-8dbd-41be-a9ca-f2cfe8e0d933",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "e6e3bd42-4bf4-43af-97e5-dbe965c9b82d",
+      "id": "7dc175e2-512c-4f46-8236-c13de4e4efea",
+      "name": "register_agent",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Creates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "auth": {
+        "type": "noauth"
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_agent",
+      "responses": [
+        {
+          "request": "7dc175e2-512c-4f46-8236-c13de4e4efea",
+          "id": "d8ba385e-2e75-4c06-8578-e728222ea1b6",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"name\":\"Acme Ops Agent\",\"operator\":\"Acme Ops\",\"model\":\"claude-sonnet\",\"payout_email\":\"agent@example.com\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "e6e3bd42-4bf4-43af-97e5-dbe965c9b82d",
+      "id": "1c681fe3-4ce2-4e12-99a4-114e4193bae3",
+      "name": "get_status",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_status",
+      "responses": [
+        {
+          "request": "1c681fe3-4ce2-4e12-99a4-114e4193bae3",
+          "id": "28c73df5-3f27-4587-867f-fae92347d046",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "e6e3bd42-4bf4-43af-97e5-dbe965c9b82d",
+      "id": "f1ec66a4-5b9c-4796-b22b-413066e8c87a",
+      "name": "register_public_key",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Registers the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_public_key",
+      "responses": [
+        {
+          "request": "f1ec66a4-5b9c-4796-b22b-413066e8c87a",
+          "id": "a8fa1a93-e8ea-479e-999d-d1585e6f4f0a",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"public_key\":\"MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "c3f508df-5f39-4382-b1ed-72825fee2000",
+      "id": "020fc05c-ae2e-4401-830c-cef9b4475e83",
+      "name": "buy_notes",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Buys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/buy_notes",
+      "responses": [
+        {
+          "request": "020fc05c-ae2e-4401-830c-cef9b4475e83",
+          "id": "08608f62-398d-46fb-a6b4-6f1a63f65c74",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"amount_cents\":3000}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "c3f508df-5f39-4382-b1ed-72825fee2000",
+      "id": "3dda9a56-7ab2-46f1-bd89-bd5a5146f3c9",
+      "name": "confirm_checkout",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Captures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/confirm_checkout",
+      "responses": [
+        {
+          "request": "3dda9a56-7ab2-46f1-bd89-bd5a5146f3c9",
+          "id": "af22c84d-fa74-427e-9871-cfbf37f40595",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"checkout_id\":\"<checkout_id from buy_notes or repay_loan>\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "0b2d9592-b755-451a-8110-053bb918b243",
+      "id": "8c8ac182-de25-42dc-8a40-e805689c02ba",
+      "name": "check_eligibility",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Checks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/check_eligibility",
+      "responses": [
+        {
+          "request": "8c8ac182-de25-42dc-8a40-e805689c02ba",
+          "id": "ebb5027a-c6e2-48de-b274-5c320a3f4df1",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"amount_cents\":1000,\"term_days\":7,\"collateral\":\"invoice_link\",\"invoice_amount_cents\":1500}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "0b2d9592-b755-451a-8110-053bb918b243",
+      "id": "4102a471-914b-46ee-87da-98f87271ea09",
+      "name": "apply_for_loan",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering < 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/apply_for_loan",
+      "responses": [
+        {
+          "request": "4102a471-914b-46ee-87da-98f87271ea09",
+          "id": "85f27663-6fd9-457b-9f23-84cfbdcbc8ff",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"amount_cents\":1000,\"term_days\":7,\"purpose\":\"Buy materials for invoice INV-1042\",\"identity\":{\"operator\":\"Acme Ops\",\"model\":\"claude-sonnet\"},\"invoice\":{\"client_email\":\"client@example.com\",\"amount_cents\":1500,\"due_in_days\":7,\"description\":\"INV-1042: website build\"},\"declarations\":{\"no_other_debt\":true},\"consent_bank_records\":true,\"attest\":true}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "0b2d9592-b755-451a-8110-053bb918b243",
+      "id": "7097d3ee-56fe-4d80-9a56-df6bd5038763",
+      "name": "accept_offer",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason).",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/accept_offer",
+      "responses": [
+        {
+          "request": "7097d3ee-56fe-4d80-9a56-df6bd5038763",
+          "id": "233e2566-a4f7-46ee-8a06-b1e72a9c73ac",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"offer_id\":\"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11\",\"disclosure_hash\":\"sha256:<disclosure_hash from apply_for_loan>\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "0b2d9592-b755-451a-8110-053bb918b243",
+      "id": "b1b80a72-3244-45d4-8e5f-f852cd1d4679",
+      "name": "decline_offer",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Declines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/decline_offer",
+      "responses": [
+        {
+          "request": "b1b80a72-3244-45d4-8e5f-f852cd1d4679",
+          "id": "fb74cc2f-e5de-46b3-a0c6-eff8cd013512",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"offer_id\":\"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "0b2d9592-b755-451a-8110-053bb918b243",
+      "id": "2fc5d1a5-4000-4071-afd5-9e8eaae85d20",
+      "name": "get_application",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_application",
+      "responses": [
+        {
+          "request": "2fc5d1a5-4000-4071-afd5-9e8eaae85d20",
+          "id": "d0548d1a-696d-4f0a-9f0b-61310fb0fabd",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"application_id\":\"7d3a9e52-1f6b-4b28-8c0d-5e4f1a2b3c22\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "742c7f5f-f510-4613-9705-320e1fb88f25",
+      "id": "598239b5-a0d7-43ac-9fbd-38cbabe1d901",
+      "name": "get_loan",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_loan",
+      "responses": [
+        {
+          "request": "598239b5-a0d7-43ac-9fbd-38cbabe1d901",
+          "id": "572d074f-0d37-41ce-9399-8aa7f49376dd",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"loan_id\":\"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "742c7f5f-f510-4613-9705-320e1fb88f25",
+      "id": "45e34624-478c-4974-b4ae-8962921dbb6a",
+      "name": "repay_loan",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/repay_loan",
+      "responses": [
+        {
+          "request": "45e34624-478c-4974-b4ae-8962921dbb6a",
+          "id": "0def90c8-fe7c-4d12-a31e-2de8834e8564",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"loan_id\":\"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "56c853fe-af0a-4dba-a112-e1dab39ed332",
+      "id": "45427510-367c-43f1-8d55-abb046e2f3dc",
+      "name": "ack_notices",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Marks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/ack_notices",
+      "responses": [
+        {
+          "request": "45427510-367c-43f1-8d55-abb046e2f3dc",
+          "id": "02e5b416-fd02-4c0b-b660-8105eb8c7814",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "67225218-8da0-4e6a-bbe1-0fa9d85f560b",
+      "id": "cd83a24d-5d10-47ea-939b-018e29f41bc1",
+      "name": "redeem_notes",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/redeem_notes",
+      "responses": [
+        {
+          "request": "cd83a24d-5d10-47ea-939b-018e29f41bc1",
+          "id": "cc0fc07e-1354-4df4-a865-627cf2a8c745",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"amount_cents\":1000}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "67225218-8da0-4e6a-bbe1-0fa9d85f560b",
+      "id": "5897e9ec-ff91-49a3-8e28-68c522ea213e",
+      "name": "cancel_redemption",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/cancel_redemption",
+      "responses": [
+        {
+          "request": "5897e9ec-ff91-49a3-8e28-68c522ea213e",
+          "id": "817444f1-8929-47d6-a5ba-afb64381a07e",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{\"note_tx_id\":\"4e8b2c6d-5a1f-4d3e-9b7c-1a2b3c4d5e44\"}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    },
+    {
+      "folder": "67225218-8da0-4e6a-bbe1-0fa9d85f560b",
+      "id": "435136cf-60ac-45b7-bf59-a0e9b6defb9c",
+      "name": "get_statement",
+      "dataMode": "raw",
+      "dataDisabled": false,
+      "descriptionFormat": "markdown",
+      "description": "Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back.",
+      "headers": "Content-Type:application/json\nAccept:application/json\n",
+      "method": "POST",
+      "currentHelper": "bearerAuth",
+      "helperAttributes": {
+        "id": "bearer",
+        "scope": ""
+      },
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "<<token>>",
+            "type": "string"
+          }
+        ]
+      },
+      "pathVariables": {},
+      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_statement",
+      "responses": [
+        {
+          "request": "435136cf-60ac-45b7-bf59-a0e9b6defb9c",
+          "id": "6f944b43-02d6-4bd7-95c2-b580ebd20b69",
+          "name": "Response_200",
+          "status": "Envelope response",
+          "responseCode": {
+            "code": 200,
+            "name": "200",
+            "detail": "Envelope response"
+          },
+          "headers": [
+            {
+              "key": "Content-Type",
+              "value": "application/json"
+            }
+          ],
+          "mime": "application/json",
+          "text": "{\n  \"status\": \"status53\",\n  \"summary\": \"summary36\",\n  \"reason_codes\": [\n    \"reason_codes1\"\n  ],\n  \"data\": {},\n  \"next_actions\": [\n    {\n      \"tool\": \"tool57\",\n      \"args\": {}\n    }\n  ],\n  \"docs_url\": \"docs_url35\"\n}",
+          "language": "Text",
+          "rawDataType": "text"
+        }
+      ],
+      "rawModeData": "{}",
+      "collectionId": "3f1faec4-c12f-460a-bf23-10599de2c1f8",
+      "queryParams": [],
+      "headerData": [
+        {
+          "key": "Content-Type",
+          "value": "application/json",
+          "description": ""
+        },
+        {
+          "key": "Accept",
+          "value": "application/json"
+        }
+      ],
+      "pathVariableData": []
+    }
+  ],
+  "variables": []
+}

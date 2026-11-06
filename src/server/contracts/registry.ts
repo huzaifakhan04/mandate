@@ -240,11 +240,14 @@ export function buildOpenApiDocument(baseUrl?: string): Record<string, unknown> 
     info: {
       title: "Mandate Bank API",
       version: "1.0.0",
+      contact: { name: "Mandate", url: "https://agentic-bank-mu.vercel.app/agents.md" },
       description:
         "Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. " +
         "Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.",
     },
-    ...(baseUrl ? { servers: [{ url: baseUrl.replace(/\/+$/, "") }] } : {}),
+    ...(baseUrl
+      ? { servers: [{ url: baseUrl.replace(/\/+$/, ""), description: "Mandate (PayPal sandbox — no real money)" }] }
+      : {}),
     tags: TOOL_GROUPS.map((name) => ({ name })),
     components: {
       securitySchemes: {

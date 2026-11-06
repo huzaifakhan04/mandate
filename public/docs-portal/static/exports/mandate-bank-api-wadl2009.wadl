@@ -1,0 +1,866 @@
+<?xml version="1.0" encoding="utf-8"?>
+<application xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://agentic-bank-mu.vercel.app/schemas" xmlns="http://wadl.dev.java.net/2009/02">
+  <doc title="Mandate Bank API" xml:lang="en">Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.</doc>
+  <grammars>
+    <xs:schema xmlns:tns="https://agentic-bank-mu.vercel.app/schemas" targetNamespace="https://agentic-bank-mu.vercel.app/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+      <xs:element name="Envelope" type="schemas:Envelope" />
+      <xs:element name="ApiV1AcceptOfferRequest" type="schemas:ApiV1AcceptOfferRequest" />
+      <xs:element name="ApiV1AckNoticesRequest" type="schemas:ApiV1AckNoticesRequest" />
+      <xs:element name="ApiV1ApplyForLoanRequest" type="schemas:ApiV1ApplyForLoanRequest" />
+      <xs:element name="ApiV1BuyNotesRequest" type="schemas:ApiV1BuyNotesRequest" />
+      <xs:element name="ApiV1CancelRedemptionRequest" type="schemas:ApiV1CancelRedemptionRequest" />
+      <xs:element name="ApiV1CheckEligibilityRequest" type="schemas:ApiV1CheckEligibilityRequest" />
+      <xs:element name="ApiV1ConfirmCheckoutRequest" type="schemas:ApiV1ConfirmCheckoutRequest" />
+      <xs:element name="ApiV1DeclineOfferRequest" type="schemas:ApiV1DeclineOfferRequest" />
+      <xs:element name="ApiV1GetApplicationRequest" type="schemas:ApiV1GetApplicationRequest" />
+      <xs:element name="ApiV1GetLoanRequest" type="schemas:ApiV1GetLoanRequest" />
+      <xs:element name="ApiV1RedeemNotesRequest" type="schemas:ApiV1RedeemNotesRequest" />
+      <xs:element name="ApiV1RegisterAgentRequest" type="schemas:ApiV1RegisterAgentRequest" />
+      <xs:element name="ApiV1RegisterPublicKeyRequest" type="schemas:ApiV1RegisterPublicKeyRequest" />
+      <xs:element name="ApiV1RepayLoanRequest" type="schemas:ApiV1RepayLoanRequest" />
+      <xs:element name="Collateral" type="schemas:Collateral" />
+      <xs:element name="Declarations" type="schemas:Declarations" />
+      <xs:element name="Identity" type="schemas:Identity" />
+      <xs:element name="Invoice" type="schemas:Invoice" />
+      <xs:element name="NextAction" type="schemas:NextAction" />
+      <xs:element name="bodyObjectType" type="schemas:bodyObjectType" />
+      <xs:element name="get_bank_guide_Request" type="schemas:get_bank_guide_Request" />
+      <xs:element name="get_bank_guide200_Response0" type="schemas:get_bank_guide200_Response0" />
+      <xs:element name="register_agent_Request" type="schemas:register_agent_Request" />
+      <xs:element name="register_agent200_Response0" type="schemas:register_agent200_Response0" />
+      <xs:element name="get_status_Request" type="schemas:get_status_Request" />
+      <xs:element name="get_status200_Response0" type="schemas:get_status200_Response0" />
+      <xs:element name="register_public_key_Request" type="schemas:register_public_key_Request" />
+      <xs:element name="register_public_key200_Response0" type="schemas:register_public_key200_Response0" />
+      <xs:element name="buy_notes_Request" type="schemas:buy_notes_Request" />
+      <xs:element name="buy_notes200_Response0" type="schemas:buy_notes200_Response0" />
+      <xs:element name="confirm_checkout_Request" type="schemas:confirm_checkout_Request" />
+      <xs:element name="confirm_checkout200_Response0" type="schemas:confirm_checkout200_Response0" />
+      <xs:element name="check_eligibility_Request" type="schemas:check_eligibility_Request" />
+      <xs:element name="check_eligibility200_Response0" type="schemas:check_eligibility200_Response0" />
+      <xs:element name="apply_for_loan_Request" type="schemas:apply_for_loan_Request" />
+      <xs:element name="apply_for_loan200_Response0" type="schemas:apply_for_loan200_Response0" />
+      <xs:element name="accept_offer_Request" type="schemas:accept_offer_Request" />
+      <xs:element name="accept_offer200_Response0" type="schemas:accept_offer200_Response0" />
+      <xs:element name="decline_offer_Request" type="schemas:decline_offer_Request" />
+      <xs:element name="decline_offer200_Response0" type="schemas:decline_offer200_Response0" />
+      <xs:element name="get_application_Request" type="schemas:get_application_Request" />
+      <xs:element name="get_application200_Response0" type="schemas:get_application200_Response0" />
+      <xs:element name="get_loan_Request" type="schemas:get_loan_Request" />
+      <xs:element name="get_loan200_Response0" type="schemas:get_loan200_Response0" />
+      <xs:element name="repay_loan_Request" type="schemas:repay_loan_Request" />
+      <xs:element name="repay_loan200_Response0" type="schemas:repay_loan200_Response0" />
+      <xs:element name="ack_notices_Request" type="schemas:ack_notices_Request" />
+      <xs:element name="ack_notices200_Response0" type="schemas:ack_notices200_Response0" />
+      <xs:element name="redeem_notes_Request" type="schemas:redeem_notes_Request" />
+      <xs:element name="redeem_notes200_Response0" type="schemas:redeem_notes200_Response0" />
+      <xs:element name="cancel_redemption_Request" type="schemas:cancel_redemption_Request" />
+      <xs:element name="cancel_redemption200_Response0" type="schemas:cancel_redemption200_Response0" />
+      <xs:element name="get_statement_Request" type="schemas:get_statement_Request" />
+      <xs:element name="get_statement200_Response0" type="schemas:get_statement200_Response0" />
+      <xs:complexType name="Envelope">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="status" type="xs:string" />
+          <xs:element minOccurs="1" name="summary" type="xs:string" />
+          <xs:element minOccurs="1" maxOccurs="unbounded" name="reason_codes" type="xs:string" />
+          <xs:element minOccurs="1" name="data">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+          <xs:element minOccurs="1" maxOccurs="unbounded" name="next_actions" type="schemas:NextAction" />
+          <xs:element minOccurs="1" name="docs_url" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1AcceptOfferRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="offer_id" type="xs:string" />
+          <xs:element minOccurs="1" name="disclosure_hash">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1AckNoticesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="0" maxOccurs="unbounded" name="notice_ids" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1ApplyForLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="0" name="identity" type="schemas:Identity" />
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="term_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="purpose">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+                <xs:minLength value="5" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="invoice" type="schemas:Invoice" />
+          <xs:element minOccurs="0" name="declarations" type="schemas:Declarations" />
+          <xs:element minOccurs="0" name="consent_bank_records" type="xs:boolean" />
+          <xs:element minOccurs="0" name="mandate_version">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="attest" type="xs:boolean" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1BuyNotesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="100000" />
+                <xs:minInclusive value="1000" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1CancelRedemptionRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="note_tx_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1CheckEligibilityRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="term_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="collateral" type="schemas:Collateral" />
+          <xs:element minOccurs="0" name="invoice_amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1ConfirmCheckoutRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="checkout_id">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1DeclineOfferRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="offer_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1GetApplicationRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="application_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1GetLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="loan_id" type="xs:string" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RedeemNotesRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RegisterAgentRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="name">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="60" />
+                <xs:minLength value="2" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="operator" type="xs:string" />
+          <xs:element minOccurs="0" name="model" type="xs:string" />
+          <xs:element minOccurs="0" name="payout_email">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>The PayPal account (by email) that receives loans and redemptions. Give this or payout_paypal_id.</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="payout_paypal_id">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>The PayPal account (by payer ID) that receives loans and redemptions, instead of payout_email — use it when that account's email is unconfirmed (payouts to an unconfirmed email go UNCLAIMED).</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^[A-Z0-9]{13}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RegisterPublicKeyRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="public_key">
+            <xs:simpleType>
+              <xs:annotation>
+                <xs:documentation>Your Ed25519 public key, base64: the raw 32 bytes or the SPKI DER encoding.</xs:documentation>
+              </xs:annotation>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="512" />
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ApiV1RepayLoanRequest">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="loan_id" type="xs:string" />
+          <xs:element minOccurs="0" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:simpleType name="Collateral">
+        <xs:restriction base="xs:string">
+          <xs:enumeration value="invoice_link" />
+          <xs:enumeration value="none" />
+        </xs:restriction>
+      </xs:simpleType>
+      <xs:complexType name="Declarations">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="no_other_debt" type="xs:boolean" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="Identity">
+        <xs:sequence>
+          <xs:element minOccurs="0" name="operator">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="model">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="0" name="code_manifest_hash">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="200" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="Invoice">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="client_email">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:pattern value="^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="amount_cents">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="9007199254740991" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="due_in_days">
+            <xs:simpleType>
+              <xs:restriction base="xs:integer">
+                <xs:maxInclusive value="60" />
+                <xs:minInclusive value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+          <xs:element minOccurs="1" name="description">
+            <xs:simpleType>
+              <xs:restriction base="xs:string">
+                <xs:maxLength value="500" />
+                <xs:minLength value="1" />
+              </xs:restriction>
+            </xs:simpleType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="NextAction">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="tool" type="xs:string" />
+          <xs:element minOccurs="1" name="args">
+            <xs:complexType>
+              <xs:sequence>
+                <xs:any />
+              </xs:sequence>
+            </xs:complexType>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="bodyObjectType">
+        <xs:sequence>
+          <xs:any />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_bank_guide_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:bodyObjectType" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_bank_guide200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="register_agent_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RegisterAgentRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="register_agent200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_status_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:bodyObjectType" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_status200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="register_public_key_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RegisterPublicKeyRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="register_public_key200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="buy_notes_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1BuyNotesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="buy_notes200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="confirm_checkout_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1ConfirmCheckoutRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="confirm_checkout200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="check_eligibility_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1CheckEligibilityRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="check_eligibility200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="apply_for_loan_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1ApplyForLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="apply_for_loan200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="accept_offer_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1AcceptOfferRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="accept_offer200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="decline_offer_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1DeclineOfferRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="decline_offer200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_application_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1GetApplicationRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_application200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_loan_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1GetLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_loan200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="repay_loan_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RepayLoanRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="repay_loan200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ack_notices_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1AckNoticesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="ack_notices200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="redeem_notes_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1RedeemNotesRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="redeem_notes200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="cancel_redemption_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:ApiV1CancelRedemptionRequest" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="cancel_redemption200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_statement_Request">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="body" type="schemas:bodyObjectType" />
+        </xs:sequence>
+      </xs:complexType>
+      <xs:complexType name="get_statement200_Response0">
+        <xs:sequence>
+          <xs:element minOccurs="1" name="response200" type="schemas:Envelope">
+            <xs:annotation>
+              <xs:documentation>Envelope response</xs:documentation>
+            </xs:annotation>
+          </xs:element>
+        </xs:sequence>
+      </xs:complexType>
+    </xs:schema>
+  </grammars>
+  <resources base="https://agentic-bank-mu.vercel.app">
+    <resource id="_apiv1get_bank_guide" path="/api/v1/get_bank_guide">
+      <method id="get_bank_guide" name="POST">
+        <doc title="get_bank_guide" xml:lang="en">Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:get_bank_guide_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:get_bank_guide200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1register_agent" path="/api/v1/register_agent">
+      <method id="register_agent" name="POST">
+        <doc title="register_agent" xml:lang="en">Creates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:register_agent_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:register_agent200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1get_status" path="/api/v1/get_status">
+      <method id="get_status" name="POST">
+        <doc title="get_status" xml:lang="en">Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:get_status_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:get_status200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1register_public_key" path="/api/v1/register_public_key">
+      <method id="register_public_key" name="POST">
+        <doc title="register_public_key" xml:lang="en">Registers the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:register_public_key_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:register_public_key200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1buy_notes" path="/api/v1/buy_notes">
+      <method id="buy_notes" name="POST">
+        <doc title="buy_notes" xml:lang="en">Buys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:buy_notes_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:buy_notes200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1confirm_checkout" path="/api/v1/confirm_checkout">
+      <method id="confirm_checkout" name="POST">
+        <doc title="confirm_checkout" xml:lang="en">Captures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:confirm_checkout_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:confirm_checkout200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1check_eligibility" path="/api/v1/check_eligibility">
+      <method id="check_eligibility" name="POST">
+        <doc title="check_eligibility" xml:lang="en">Checks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:check_eligibility_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:check_eligibility200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1apply_for_loan" path="/api/v1/apply_for_loan">
+      <method id="apply_for_loan" name="POST">
+        <doc title="apply_for_loan" xml:lang="en">Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering &lt; 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:apply_for_loan_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:apply_for_loan200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1accept_offer" path="/api/v1/accept_offer">
+      <method id="accept_offer" name="POST">
+        <doc title="accept_offer" xml:lang="en">Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason).</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:accept_offer_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:accept_offer200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1decline_offer" path="/api/v1/decline_offer">
+      <method id="decline_offer" name="POST">
+        <doc title="decline_offer" xml:lang="en">Declines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:decline_offer_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:decline_offer200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1get_application" path="/api/v1/get_application">
+      <method id="get_application" name="POST">
+        <doc title="get_application" xml:lang="en">Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:get_application_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:get_application200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1get_loan" path="/api/v1/get_loan">
+      <method id="get_loan" name="POST">
+        <doc title="get_loan" xml:lang="en">Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:get_loan_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:get_loan200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1repay_loan" path="/api/v1/repay_loan">
+      <method id="repay_loan" name="POST">
+        <doc title="repay_loan" xml:lang="en">Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:repay_loan_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:repay_loan200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1ack_notices" path="/api/v1/ack_notices">
+      <method id="ack_notices" name="POST">
+        <doc title="ack_notices" xml:lang="en">Marks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:ack_notices_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:ack_notices200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1redeem_notes" path="/api/v1/redeem_notes">
+      <method id="redeem_notes" name="POST">
+        <doc title="redeem_notes" xml:lang="en">Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:redeem_notes_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:redeem_notes200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1cancel_redemption" path="/api/v1/cancel_redemption">
+      <method id="cancel_redemption" name="POST">
+        <doc title="cancel_redemption" xml:lang="en">Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:cancel_redemption_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:cancel_redemption200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+    <resource id="_apiv1get_statement" path="/api/v1/get_statement">
+      <method id="get_statement" name="POST">
+        <doc title="get_statement" xml:lang="en">Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back.</doc>
+        <request>
+          <param name="Content-Type" style="header" type="xsd:string" default="application/json" required="true" fixed="application/json">
+            <doc title="Content-Type" xml:lang="en" />
+          </param>
+          <representation element="schemas:get_statement_Request" mediaType="application/json" />
+        </request>
+        <response status="200">
+          <doc title="200" xml:lang="en">Envelope response</doc>
+          <representation element="schemas:get_statement200_Response0" mediaType="application/json" />
+        </response>
+      </method>
+    </resource>
+  </resources>
+</application>

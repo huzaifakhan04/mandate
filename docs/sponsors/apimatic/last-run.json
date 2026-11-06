@@ -1,0 +1,33 @@
+{
+  "ranAt": "2026-11-06T23:52:01.047Z",
+  "source": "local registry (buildOpenApiDocument)",
+  "apiEntityId": "6aee6789e22d0fa63a89ffa8",
+  "validation": {
+    "isSuccess": true,
+    "errors": 0,
+    "warnings": 0,
+    "lintWarnings": 87
+  },
+  "sdks": [
+    {
+      "template": "TS_GENERIC_LIB",
+      "codegenId": "6aee6826e22d0fa63a8a0cd9",
+      "success": true,
+      "zipBytes": 61847,
+      "dir": "sdks/typescript"
+    },
+    {
+      "template": "PYTHON_GENERIC_LIB",
+      "codegenId": "6aee6829e22d0fa63a8a0ef3",
+      "success": true,
+      "zipBytes": 84964,
+      "dir": "sdks/python"
+    }
+  ],
+  "portal": {
+    "attempted": true,
+    "ok": true,
+    "detail": "portal 01a1b346-ebf1-70a1-99d7-20105265cdf6: 702581-byte zip → public/docs-portal/ (served at /docs-portal/index.html)"
+  },
+  "contextPlugin": "PayPal Context Plugin (APIMatic ContextMatic) is an MCP server for coding agents (https://chatbotapi.apimatic.io/mcp/plugins; Claude Code: /plugin marketplace add apimatic/context-matic) — it is not part of the Platform API, so it is not called here."
+}

@@ -60,7 +60,7 @@ describe("tool metadata (P7 agent DX)", () => {
 
   it("puts examples, tags and bearer security in the OpenAPI document", () => {
     const doc = buildOpenApiDocument("https://bank.example/");
-    expect(doc.servers).toEqual([{ url: "https://bank.example" }]);
+    expect(doc.servers).toMatchObject([{ url: "https://bank.example" }]);
     const paths = doc.paths as Record<string, { post: Record<string, unknown> }>;
     const apply = paths["/api/v1/apply_for_loan"]!.post;
     expect(apply.tags).toEqual(["Borrow"]);
