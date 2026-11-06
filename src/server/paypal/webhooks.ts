@@ -1,0 +1,187 @@
+import { randomUUID } from "crypto";
+
+import { eq } from "drizzle-orm";
+
+import type { Db } from "../db/client";
+import { webhookEvents } from "../db/schema";
+import { PayPalConfigError } from "./config";
+import { PayPalNetworkError, paypalFetch } from "./fetch";
+import { redact } from "./redact";
+
+/**
+ * Task 8: PayPal webhook signature verification and the `webhook_events`
+ * store. Lives in `paypal/` (allowlisted) because it calls `paypalFetch`
+ * directly — verification moves no money and is not an operation — and
+ * because `webhook_events.world_id` is nullable (an event for a resource
+ * no world knows is still stored), which `scoped()` can't express.
+ *
+ * Never call `verifyWebhookSignature` inside a DB transaction.
+ */
+
+/** The transmission headers PayPal signs a delivery with (lower-case, as `Headers` returns them). */
+const TRANSMISSION_HEADERS = {
+  auth_algo: "paypal-auth-algo",
+  cert_url: "paypal-cert-url",
+  transmission_id: "paypal-transmission-id",
+  transmission_sig: "paypal-transmission-sig",
+  transmission_time: "paypal-transmission-time",
+} as const;
+
+/**
+ * Fix round 1 (M8): verification gets its own short deadline (the route's
+ * `maxDuration` is 30 s and PayPal expects a quick answer); past it the
+ * result is `error` → 503, and PayPal redelivers.
+ */
+const VERIFY_DEADLINE_MS = 8_000;
+
+export type WebhookVerification =
+  /** PayPal answered `verification_status: SUCCESS`. */
+  | { outcome: "verified" }
+  /** Definitely not verified: missing headers / webhook id, `FAILURE`, or a 4xx from PayPal. */
+  | { outcome: "unverified"; reason: string }
+  /** Couldn't ask PayPal (network, 5xx, credentials): the sender should retry later. */
+  | { outcome: "error"; reason: string };
+
+/**
+ * Verifies a delivery with `POST /v1/notifications/verify-webhook-signature`
+ * (PayPal's postback verification), passing the transmission headers,
+ * `PAYPAL_WEBHOOK_ID` and the parsed event. Fix round 1 (M5): the event is
+ * re-serialized from its parsed form (`JSON.stringify` in `paypalFetch`),
+ * not forwarded byte-for-byte — that's what PayPal's own SDKs do, and the
+ * postback API verifies the event's content, not a signature over our raw
+ * bytes. (Number formatting quirks in a re-serialized event are the one
+ * known way this could fail; such a delivery is 400 and PayPal redelivers.)
+ * Missing headers or an unset
+ * `PAYPAL_WEBHOOK_ID` are `unverified` without calling PayPal (fail
+ * closed).
+ */
+export async function verifyWebhookSignature(headers: Headers, event: unknown): Promise<WebhookVerification> {
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+  if (!webhookId) {
+    return { outcome: "unverified", reason: "webhook_id_not_configured" };
+  }
+  const transmission: Record<string, string> = {};
+  for (const [field, header] of Object.entries(TRANSMISSION_HEADERS)) {
+    const value = headers.get(header);
+    if (!value) {
+      return { outcome: "unverified", reason: `missing_header:${header}` };
+    }
+    transmission[field] = value;
+  }
+
+  let response;
+  try {
+    response = await paypalFetch({
+      method: "POST",
+      path: "/v1/notifications/verify-webhook-signature",
+      body: { ...transmission, webhook_id: webhookId, webhook_event: event },
+      requestId: randomUUID(),
+      deadlineMs: VERIFY_DEADLINE_MS,
+    });
+  } catch (err) {
+    if (err instanceof PayPalNetworkError || err instanceof PayPalConfigError) {
+      return { outcome: "error", reason: err.name };
+    }
+    throw err;
+  }
+
+  if (response.httpStatus >= 500 || response.httpStatus === 429 || response.httpStatus === 401) {
+    return { outcome: "error", reason: `verify_http_${response.httpStatus}` };
+  }
+  if (response.httpStatus < 200 || response.httpStatus >= 300) {
+    return { outcome: "unverified", reason: `verify_http_${response.httpStatus}` };
+  }
+  const status =
+    response.body !== null && typeof response.body === "object"
+      ? (response.body as Record<string, unknown>).verification_status
+      : undefined;
+  return status === "SUCCESS" ? { outcome: "verified" } : { outcome: "unverified", reason: "verification_failure" };
+}
+
+export type WebhookEventRow = typeof webhookEvents.$inferSelect;
+
+export interface RecordWebhookEventInput {
+  paypalEventId: string;
+  type: string;
+  verified: boolean;
+  payload: unknown;
+  worldId: string | null;
+}
+
+/**
+ * M4 (final review): what is persisted as `webhook_events.payload`.
+ * An UNVERIFIED delivery is attacker-controlled input — anyone can POST to
+ * the endpoint — so only its identifiers are kept, never its body. A
+ * verified payload is stored through `redact()` (the same masking applied
+ * to PayPal bodies in `paypal_operations`: emails, tokens, secrets).
+ */
+export function storedWebhookPayload(input: Pick<RecordWebhookEventInput, "paypalEventId" | "type" | "verified" | "payload">): object {
+  if (!input.verified) {
+    return { event_type: input.type, paypal_event_id: input.paypalEventId, verified: false };
+  }
+  return redact(input.payload) as object;
+}
+
+/**
+ * Stores a delivery, keyed by PayPal's event id (unique), and returns the
+ * row to act on plus whether this call should process it:
+ * - new id → inserted; `process` = `verified`;
+ * - known id, stored unverified, now verified → upgraded in place (the
+ *   verified payload and world replace a possibly forged earlier copy);
+ *   `process` = true;
+ * - known id, verified, not yet processed (an earlier attempt crashed or
+ *   threw) → `process` = true again (every effect is idempotent);
+ * - otherwise (already processed, or unverified again) → `process` = false.
+ */
+export async function recordWebhookEvent(
+  db: Db,
+  input: RecordWebhookEventInput,
+): Promise<{ row: WebhookEventRow; process: boolean; duplicate: boolean }> {
+  const payload = storedWebhookPayload(input);
+  const [inserted] = await db
+    .insert(webhookEvents)
+    .values({
+      paypalEventId: input.paypalEventId,
+      type: input.type,
+      verified: input.verified,
+      payload,
+      worldId: input.worldId,
+    })
+    .onConflictDoNothing({ target: webhookEvents.paypalEventId })
+    .returning();
+  if (inserted) {
+    return { row: inserted, process: input.verified, duplicate: false };
+  }
+
+  if (input.verified) {
+    const [upgraded] = await db
+      .update(webhookEvents)
+      .set({ verified: true, type: input.type, payload, worldId: input.worldId })
+      .where(eq(webhookEvents.paypalEventId, input.paypalEventId))
+      .returning();
+    if (!upgraded) {
+      throw new Error(`webhook_events row ${input.paypalEventId} vanished`);
+    }
+    return { row: upgraded, process: upgraded.processedAt === null, duplicate: upgraded.processedAt !== null };
+  }
+
+  const [existing] = await db
+    .select()
+    .from(webhookEvents)
+    .where(eq(webhookEvents.paypalEventId, input.paypalEventId));
+  if (!existing) {
+    throw new Error(`webhook_events row ${input.paypalEventId} vanished`);
+  }
+  return { row: existing, process: false, duplicate: true };
+}
+
+/** The stored event with PayPal event id `paypalEventId`, or `undefined`. */
+export async function getWebhookEvent(db: Db, paypalEventId: string): Promise<WebhookEventRow | undefined> {
+  const [row] = await db.select().from(webhookEvents).where(eq(webhookEvents.paypalEventId, paypalEventId));
+  return row;
+}
+
+/** Marks a stored event processed (its effects were applied, or it needed none). */
+export async function markWebhookEventProcessed(db: Db, id: string): Promise<void> {
+  await db.update(webhookEvents).set({ processedAt: new Date() }).where(eq(webhookEvents.id, id));
+}

@@ -1,178 +1,89 @@
-import { randomUUID } from "crypto";
+import { describe, expect, it } from "vitest";
 
-import { http, HttpResponse } from "msw";
-import { setupServer } from "msw/node";
+import { InvalidAmountError } from "@/server/paypal/orders";
 import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-} from "vitest";
+  batchIdFromPath,
+  buildCancelPayoutItemRequest,
+  parseCancelPayoutItemResponse,
+  payoutItemIdFromCancelPath,
+  buildGetPayoutRequest,
+  buildSendPayoutRequest,
+  parseGetPayoutResponse,
+  parseSendPayoutResponse,
+  withSenderBatchId,
+} from "@/server/paypal/payouts";
 
-import type { Db } from "@/server/db/client";
-import { worlds } from "@/server/db/schema";
-import { createTestDb } from "@/server/db/testing";
-import * as payouts from "@/server/paypal/payouts";
-import { __resetTokenCacheForTests } from "@/server/paypal/token";
+const sendParams = {
+  receiver: "ok@example.com",
+  receiverType: "EMAIL" as const,
+  amountCents: 500n,
+  senderItemId: "item-1",
+};
 
-const BASE_URL = "https://api-m.paypal.test";
-const server = setupServer();
-
-beforeAll(() => server.listen({ onUnhandledFrame: "error" }));
-afterEach(() => server.resetHandlers());
-afterAll(() => server.close());
-
-describe("payouts.send", () => {
-  let db: Db;
-  let worldId: string;
-
-  beforeEach(async () => {
-    process.env.PAYPAL_BASE_URL = BASE_URL;
-    process.env.PAYPAL_CLIENT_ID = "test-client-id";
-    process.env.PAYPAL_CLIENT_SECRET = "test-client-secret-value";
-    __resetTokenCacheForTests();
-
-    server.use(
-      http.post(`${BASE_URL}/v1/oauth2/token`, () =>
-        HttpResponse.json({
-          access_token: `token-${randomUUID()}`,
-          expires_in: 32400,
-        }),
-      ),
-    );
-
-    db = await createTestDb();
-    const [world] = await db
-      .insert(worlds)
-      .values({ slug: `world-${randomUUID()}`, name: "World", railMode: "paypal" })
-      .returning();
-    if (!world) {
-      throw new Error("expected a world to be inserted");
-    }
-    worldId = world.id;
-  });
-
-  it("uses a generated operationId as both PayPal-Request-Id and sender_batch_id when none is supplied", async () => {
-    let capturedRequestId: string | null = null;
-    let capturedSenderBatchId: string | undefined;
-
-    server.use(
-      http.post(`${BASE_URL}/v1/payments/payouts`, async ({ request }) => {
-        capturedRequestId = request.headers.get("PayPal-Request-Id");
-        const body = (await request.json()) as {
-          sender_batch_header: { sender_batch_id: string };
-        };
-        capturedSenderBatchId = body.sender_batch_header.sender_batch_id;
-        return HttpResponse.json({
-          batch_header: {
-            payout_batch_id: "BATCH-1",
-            batch_status: "SUCCESS",
+describe("payouts request builders / response parsers", () => {
+  it("builds a single-item USD batch; sender_batch_id is stamped separately", () => {
+    const request = withSenderBatchId(buildSendPayoutRequest(sendParams), "op-1");
+    expect(request).toMatchObject({
+      method: "POST",
+      path: "/v1/payments/payouts",
+      body: {
+        sender_batch_header: { sender_batch_id: "op-1" },
+        items: [
+          {
+            recipient_type: "EMAIL",
+            amount: { value: "5.00", currency: "USD" },
+            receiver: "ok@example.com",
+            sender_item_id: "item-1",
           },
-        });
-      }),
-    );
-
-    const result = await payouts.send(db, {
-      worldId,
-      receiver: "ok@example.com",
-      receiverType: "EMAIL",
-      amountCents: 500n,
-      senderItemId: "item-1",
+        ],
+      },
     });
-
-    expect(capturedRequestId).toBe(result.operationId);
-    expect(capturedSenderBatchId).toBe(result.operationId);
   });
 
-  it("uses a caller-supplied operationId as both PayPal-Request-Id and sender_batch_id", async () => {
-    let capturedRequestId: string | null = null;
-    let capturedSenderBatchId: string | undefined;
-
-    server.use(
-      http.post(`${BASE_URL}/v1/payments/payouts`, async ({ request }) => {
-        capturedRequestId = request.headers.get("PayPal-Request-Id");
-        const body = (await request.json()) as {
-          sender_batch_header: { sender_batch_id: string };
-        };
-        capturedSenderBatchId = body.sender_batch_header.sender_batch_id;
-        return HttpResponse.json({
-          batch_header: {
-            payout_batch_id: "BATCH-2",
-            batch_status: "SUCCESS",
-          },
-        });
-      }),
+  it("rejects a zero/negative amountCents when building", () => {
+    expect(() => buildSendPayoutRequest({ ...sendParams, amountCents: 0n })).toThrow(
+      InvalidAmountError,
     );
+  });
 
-    const operationId = randomUUID();
-    const result = await payouts.send(db, {
-      worldId,
-      receiver: "ok@example.com",
-      receiverType: "EMAIL",
-      amountCents: 500n,
-      senderItemId: "item-2",
-      operationId,
+  it("URL-encodes the batch id in get paths and round-trips it", () => {
+    const request = buildGetPayoutRequest("B/1");
+    expect(request).toEqual({ method: "GET", path: "/v1/payments/payouts/B%2F1" });
+    expect(batchIdFromPath(request.path)).toBe("B/1");
+  });
+
+  it("parses a live-style send response with no items", () => {
+    expect(
+      parseSendPayoutResponse({ batch_header: { payout_batch_id: "B1", batch_status: "PENDING" } }),
+    ).toEqual({ batchId: "B1", batchStatus: "PENDING", item: null, feeCents: null });
+  });
+
+  it("parses a get response's items", () => {
+    expect(
+      parseGetPayoutResponse({
+        batch_header: { payout_batch_id: "B1", batch_status: "SUCCESS" },
+        items: [{ payout_item_id: "I1", transaction_status: "UNCLAIMED" }],
+      }),
+    ).toEqual({
+      batchId: "B1",
+      batchStatus: "SUCCESS",
+      items: [{ itemId: "I1", transactionStatus: "UNCLAIMED" }],
+      feeCents: null,
     });
-
-    expect(result.operationId).toBe(operationId);
-    expect(capturedRequestId).toBe(operationId);
-    expect(capturedSenderBatchId).toBe(operationId);
   });
 
-  it("replays the original batch on a retried call with the same operationId, without sending money twice", async () => {
-    let callCount = 0;
-    server.use(
-      http.post(`${BASE_URL}/v1/payments/payouts`, () => {
-        callCount += 1;
-        return HttpResponse.json({
-          batch_header: {
-            payout_batch_id: "BATCH-3",
-            batch_status: "SUCCESS",
-          },
-        });
-      }),
-    );
-
-    const operationId = randomUUID();
-    const params = {
-      worldId,
-      receiver: "ok@example.com",
-      receiverType: "EMAIL" as const,
-      amountCents: 500n,
-      senderItemId: "item-3",
-      operationId,
-    };
-
-    const first = await payouts.send(db, params);
-    const second = await payouts.send(db, params);
-
-    expect(callCount).toBe(1);
-    expect(second.batchId).toBe(first.batchId);
+  it("throws on a response without a batch header", () => {
+    expect(() => parseSendPayoutResponse({})).toThrow(/batch_header/);
   });
 
-  it("rejects a zero/negative amountCents before any request is sent", async () => {
-    let called = false;
-    server.use(
-      http.post(`${BASE_URL}/v1/payments/payouts`, () => {
-        called = true;
-        return HttpResponse.json({
-          batch_header: { payout_batch_id: "x", batch_status: "SUCCESS" },
-        });
-      }),
-    );
-
-    await expect(
-      payouts.send(db, {
-        worldId,
-        receiver: "ok@example.com",
-        receiverType: "EMAIL",
-        amountCents: 0n,
-        senderItemId: "item-4",
-      }),
-    ).rejects.toThrow();
-    expect(called).toBe(false);
+  it("builds and parses a payout item cancel (Ruling R)", () => {
+    const request = buildCancelPayoutItemRequest("ITEM 1");
+    expect(request).toEqual({ method: "POST", path: "/v1/payments/payouts-item/ITEM%201/cancel" });
+    expect(payoutItemIdFromCancelPath(request.path)).toBe("ITEM 1");
+    expect(() => payoutItemIdFromCancelPath("/v1/payments/payouts/X")).toThrow();
+    expect(
+      parseCancelPayoutItemResponse({ payout_item_id: "ITEM1", transaction_status: "RETURNED", payout_batch_id: "B" }),
+    ).toEqual({ itemId: "ITEM1", transactionStatus: "RETURNED" });
+    expect(() => parseCancelPayoutItemResponse({})).toThrow();
   });
 });

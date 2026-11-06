@@ -1,4 +1,4 @@
-import { and, eq, type SQL } from "drizzle-orm";
+import { and, desc, eq, type SQL } from "drizzle-orm";
 import type { AnyPgColumn, PgTable } from "drizzle-orm/pg-core";
 
 import type { Db } from "./client";
@@ -31,15 +31,55 @@ type WorldScopedTable = PgTable & {
  * strongly typed against the caller's own table type `T`.
  */
 export function scoped(db: Db, worldId: string) {
+  /** `where?` is always ANDed with the world filter, never OR'd/replacing it. */
+  function worldCondition<T extends WorldScopedTable>(table: T, where?: SQL): SQL {
+    return where ? and(eq(table.worldId, worldId), where)! : eq(table.worldId, worldId);
+  }
+
   return {
-    select<T extends WorldScopedTable>(table: T): Promise<T["$inferSelect"][]> {
+    select<T extends WorldScopedTable>(
+      table: T,
+      where?: SQL,
+    ): Promise<T["$inferSelect"][]> {
       const anyTable = table as unknown as PgTable;
       return db
         .select()
         .from(anyTable)
-        .where(eq(table.worldId, worldId)) as unknown as Promise<
+        .where(worldCondition(table, where)) as unknown as Promise<
         T["$inferSelect"][]
       >;
+    },
+
+    async findOne<T extends WorldScopedTable>(
+      table: T,
+      where: SQL,
+    ): Promise<T["$inferSelect"] | undefined> {
+      const anyTable = table as unknown as PgTable;
+      const rows = (await db
+        .select()
+        .from(anyTable)
+        .where(worldCondition(table, where))
+        .limit(1)) as T["$inferSelect"][];
+      return rows[0];
+    },
+
+    /**
+     * The newest matching row by `orderBy` (descending), or `undefined` —
+     * one row, never a scan into memory.
+     */
+    async findLatest<T extends WorldScopedTable>(
+      table: T,
+      where: SQL,
+      orderBy: AnyPgColumn,
+    ): Promise<T["$inferSelect"] | undefined> {
+      const anyTable = table as unknown as PgTable;
+      const rows = (await db
+        .select()
+        .from(anyTable)
+        .where(worldCondition(table, where))
+        .orderBy(desc(orderBy))
+        .limit(1)) as T["$inferSelect"][];
+      return rows[0];
     },
 
     async insert<T extends WorldScopedTable>(
@@ -54,15 +94,34 @@ export function scoped(db: Db, worldId: string) {
       return rows as T["$inferSelect"][];
     },
 
+    /**
+     * Like `insert`, but resolves conflicts on `target` (the unique
+     * constraint/index's columns) by doing nothing instead of throwing.
+     * Returns the inserted rows via `RETURNING` — empty when the row
+     * already existed (Postgres's `ON CONFLICT DO NOTHING` returns no row
+     * for a skipped insert, so callers must not assume one row back).
+     */
+    async insertOnConflictDoNothing<T extends WorldScopedTable>(
+      table: T,
+      values: Omit<T["$inferInsert"], "worldId">,
+      target: AnyPgColumn | AnyPgColumn[],
+    ): Promise<T["$inferSelect"][]> {
+      const anyTable = table as unknown as PgTable;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = await (db.insert(anyTable) as any)
+        .values({ ...values, worldId })
+        .onConflictDoNothing({ target })
+        .returning();
+      return rows as T["$inferSelect"][];
+    },
+
     async update<T extends WorldScopedTable>(
       table: T,
       set: Partial<Omit<T["$inferInsert"], "worldId">>,
       where?: SQL,
     ): Promise<T["$inferSelect"][]> {
       const anyTable = table as unknown as PgTable;
-      const condition = where
-        ? and(eq(table.worldId, worldId), where)
-        : eq(table.worldId, worldId);
+      const condition = worldCondition(table, where);
       // Defensively strip any caller-supplied `worldId`, even though the
       // public type above already excludes it: a cast (`as any`/`as
       // unknown`) around the type could otherwise slip a `worldId` into
@@ -79,6 +138,40 @@ export function scoped(db: Db, worldId: string) {
         .where(condition)
         .returning();
       return rows as T["$inferSelect"][];
+    },
+
+    async delete<T extends WorldScopedTable>(
+      table: T,
+      where: SQL,
+    ): Promise<T["$inferSelect"][]> {
+      const anyTable = table as unknown as PgTable;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const rows = await (db.delete(anyTable) as any)
+        .where(worldCondition(table, where))
+        .returning();
+      return rows as T["$inferSelect"][];
+    },
+
+    /**
+     * `SELECT ... FOR UPDATE`, row-locking the matching rows until the
+     * current transaction commits or rolls back. This is only meaningful
+     * when `db` (the handle this `scoped()` was constructed with) is
+     * itself a transaction — e.g. `scoped(tx, worldId)` inside a
+     * `db.transaction(async (tx) => ...)` callback, which is exactly how
+     * `runTool` wires mutating tools (see `ToolCtx.scoped`). Called
+     * against a non-transactional `db` it still runs, but the lock is
+     * released the instant the statement finishes, so it buys nothing.
+     */
+    forUpdate<T extends WorldScopedTable>(
+      table: T,
+      where: SQL,
+    ): Promise<T["$inferSelect"][]> {
+      const anyTable = table as unknown as PgTable;
+      return db
+        .select()
+        .from(anyTable)
+        .where(worldCondition(table, where))
+        .for("update") as unknown as Promise<T["$inferSelect"][]>;
     },
   };
 }

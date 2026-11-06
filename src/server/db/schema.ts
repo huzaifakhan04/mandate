@@ -3,6 +3,8 @@ import {
   bigint,
   bigserial,
   boolean,
+  check,
+  index,
   integer,
   jsonb,
   numeric,
@@ -79,17 +81,79 @@ export const paypalOperations = pgTable("paypal_operations", {
   kind: text("kind").notNull(),
   requestId: text("request_id").notNull(),
   paypalId: text("paypal_id"),
-  status: text("status").notNull().default("pending"),
+  /** `queued | in_flight | succeeded | failed_retryable | failed_terminal`. */
+  status: text("status").notNull().default("queued"),
+  /** Redacted copy of the request, kept for audit/display. */
   request: jsonb("request"),
+  /**
+   * Unredacted `{ method, path, body }` this operation re-sends on every
+   * `executeOperation` attempt — sandbox-only, and safe to store
+   * unredacted because it never carries an auth header (the bearer
+   * token is added by `paypalFetch` itself, never stored here).
+   */
+  executableRequest: jsonb("executable_request"),
+  /**
+   * The operation's parsed, JSON-safe result — one shape per kind (see
+   * `paypal/types.ts`, amounts as decimal strings) on success, or
+   * `{ error: … }` on failure. Exactly what `executeOperation` returns,
+   * on the first run and on every replay.
+   */
   response: jsonb("response"),
   httpStatus: integer("http_status"),
   latencyMs: integer("latency_ms"),
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
+  /**
+   * Set when `executeOperation` claims this row (`queued`/
+   * `failed_retryable` -> `in_flight`) and cleared when the attempt
+   * records its outcome; an `in_flight` claim older than 3 minutes is
+   * treated as abandoned (crashed worker) and can be re-claimed.
+   */
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
+  /** Earliest time a `failed_retryable` row should be retried. */
+  nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+  /** Why this operation exists — see `OperationPurpose` in paypal/operationId.ts. */
+  purpose: text("purpose"),
+  /** The domain row (note/loan/repayment id, …) this operation is for. */
+  sourceId: text("source_id"),
+  /**
+   * Sim rail only: the simulated PayPal-side object this operation
+   * created (an order for `order.create`, a batch for `payout.send`) and
+   * its lifecycle state (`simApprove` / capture move it along). Kept
+   * apart from `response`, which is the operation's own immutable result.
+   */
+  simState: jsonb("sim_state"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+  /**
+   * Task 10b fix round 3 (M2): last write to the row (set by Drizzle on
+   * every `update()`), so the reconcile cron can list only recently capped
+   * operations.
+   */
+  updatedAt: timestamp("updated_at", { withTimezone: true })
+    .notNull()
+    .defaultNow()
+    .$onUpdate(() => new Date()),
+}, (table) => [
+  // P0 carry-forward M6 / Task 8 M3: reads by PayPal id within a world
+  // (order/payout poll throttles, order → create op lookups) …
+  index("paypal_operations_world_kind_paypal_id_idx").on(table.worldId, table.kind, table.paypalId),
+  // … and across worlds (a webhook's resource → its operation).
+  index("paypal_operations_kind_paypal_id_idx").on(table.kind, table.paypalId),
+  // Task 10b fix round 3 (M1): the reconcile cron's per-world scans of
+  // non-final rows (due ops, retrying/capped anomalies) …
+  index("paypal_operations_world_open_status_idx")
+    .on(table.worldId, table.status)
+    .where(sql`${table.status} in ('failed_retryable', 'failed_terminal', 'queued', 'in_flight')`),
+  // … and of recent succeeded payout sends (fee polling / payout_fee_unknown).
+  index("paypal_operations_world_kind_status_created_idx").on(
+    table.worldId,
+    table.kind,
+    table.status,
+    table.createdAt,
+  ),
+]);
 
 export const clock = pgTable("clock", {
   worldId: uuid("world_id")
@@ -255,54 +319,91 @@ export const offers = pgTable("offers", {
     .defaultNow(),
 });
 
-export const loans = pgTable("loans", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  offerId: uuid("offer_id")
-    .notNull()
-    .references(() => offers.id),
-  agentId: uuid("agent_id")
-    .notNull()
-    .references(() => agents.id),
-  principalId: uuid("principal_id").references(() => principals.id),
-  principalCents: bigint("principal_cents", { mode: "bigint" }).notNull(),
-  feeCents: bigint("fee_cents", { mode: "bigint" }).notNull(),
-  lateFeesCents: bigint("late_fees_cents", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  outstandingCents: bigint("outstanding_cents", { mode: "bigint" }).notNull(),
-  dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
-  status: text("status").notNull().default("active"),
-  dpd: integer("dpd").notNull().default(0),
-  riskGrade: text("risk_grade"),
-  disbursementOpId: uuid("disbursement_op_id").references(
-    () => paypalOperations.id,
-  ),
-  chargedOffAt: timestamp("charged_off_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const loans = pgTable(
+  "loans",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    offerId: uuid("offer_id")
+      .notNull()
+      .references(() => offers.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    principalId: uuid("principal_id").references(() => principals.id),
+    principalCents: bigint("principal_cents", { mode: "bigint" }).notNull(),
+    feeCents: bigint("fee_cents", { mode: "bigint" }).notNull(),
+    lateFeesCents: bigint("late_fees_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    outstandingCents: bigint("outstanding_cents", { mode: "bigint" }).notNull(),
+    dueSimAt: timestamp("due_sim_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("active"),
+    dpd: integer("dpd").notNull().default(0),
+    riskGrade: text("risk_grade"),
+    disbursementOpId: uuid("disbursement_op_id").references(
+      () => paypalOperations.id,
+    ),
+    chargedOffAt: timestamp("charged_off_at", { withTimezone: true }),
+    // Task 6: when the disbursement payout SUCCEEDED (sim time). `due_sim_at`
+    // is re-based on it (disbursed + term) at activation.
+    disbursedSimAt: timestamp("disbursed_sim_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // Task 6: DB backstop for "one open loan per agent" (P1), under the
+    // application-level check `accept_offer` makes while holding the note
+    // series row lock. Keep the status list in sync with
+    // `OPEN_LOAN_DB_STATUSES` in domain/loanMachine.ts.
+    uniqueIndex("loans_one_open_per_agent_idx")
+      .on(table.worldId, table.agentId)
+      .where(sql`${table.status} in ('accepted', 'disbursing', 'active')`),
+  ],
+);
 
-export const repaymentLinks = pgTable("repayment_links", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  loanId: uuid("loan_id")
-    .notNull()
-    .references(() => loans.id),
-  paypalOrderId: text("paypal_order_id").notNull(),
-  kind: text("kind").notNull(),
-  amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
-  payerHint: text("payer_hint"),
-  status: text("status").notNull().default("pending"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+/**
+ * Task 7: a repayment checkout for a loan — `kind` `invoice` (the payment
+ * link the borrower's client pays; one per loan, created on activation,
+ * its `order.create` keyed by the loan id) or `direct` (one per
+ * `repay_loan` call, its `order.create` keyed by this row's id).
+ * `status`: `pending` (order not created yet) → `open` (approve URL
+ * known) → `paid` (capture applied) | `review` (captured amount mismatch)
+ * | `failed`.
+ */
+export const repaymentLinks = pgTable(
+  "repayment_links",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    // Task 7: null until the queued `order.create` has executed.
+    paypalOrderId: text("paypal_order_id"),
+    kind: text("kind").notNull(),
+    amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
+    payerHint: text("payer_hint"),
+    status: text("status").notNull().default("pending"),
+    createOpId: uuid("create_op_id").references(() => paypalOperations.id),
+    approveUrl: text("approve_url"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One invoice link per loan (DB backstop under the activation hook,
+    // which only runs once per activation).
+    uniqueIndex("repayment_links_one_invoice_per_loan_idx")
+      .on(table.worldId, table.loanId)
+      .where(sql`${table.kind} = 'invoice'`),
+  ],
+);
 
 export const repayments = pgTable("repayments", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -329,45 +430,82 @@ export const repayments = pgTable("repayments", {
   remainderPayoutOpId: uuid("remainder_payout_op_id").references(
     () => paypalOperations.id,
   ),
+  // Task 7: the PayPal capture this repayment applied — unique per world,
+  // so one capture can never be applied twice (ALREADY_CAPTURED recovery
+  // returns an existing capture as a success).
+  captureId: text("capture_id"),
+  linkId: uuid("link_id").references(() => repaymentLinks.id),
+  /**
+   * Task 7: `none` (no remainder) | `pending` (payout queued/in flight,
+   * or UNCLAIMED being cancelled) | `paid` | `failed` (stays owed in
+   * `payable_to_borrower[agent]`) | `held` (no payout receiver on file).
+   */
+  remainderStatus: text("remainder_status").notNull().default("none"),
+  remainderFailureReason: text("remainder_failure_reason"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("repayments_world_capture_idx").on(table.worldId, table.captureId),
+]);
 
-export const noteSeries = pgTable("note_series", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  name: text("name").notNull(),
-  poolType: text("pool_type").notNull(),
-  disclosure: jsonb("disclosure"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const noteSeries = pgTable(
+  "note_series",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    name: text("name").notNull(),
+    poolType: text("pool_type").notNull(),
+    disclosure: jsonb("disclosure"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One series per (world, name) — lets `ensureNoteSeries` (Task 4) seed
+    // the world's single "Mandate Pool A" series with an `ON CONFLICT DO
+    // NOTHING` insert that's race-safe the same way `worlds.slug` and
+    // `clock.worldId` already are.
+    uniqueIndex("note_series_world_name_idx").on(table.worldId, table.name),
+  ],
+);
 
-export const notePositions = pgTable("note_positions", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  worldId: uuid("world_id")
-    .notNull()
-    .references(() => worlds.id),
-  seriesId: uuid("series_id")
-    .notNull()
-    .references(() => noteSeries.id),
-  agentId: uuid("agent_id")
-    .notNull()
-    .references(() => agents.id),
-  units: bigint("units", { mode: "bigint" }).notNull(),
-  costCents: bigint("cost_cents", { mode: "bigint" }).notNull(),
-  accruedCents: bigint("accrued_cents", { mode: "bigint" })
-    .notNull()
-    .default(sql`0`),
-  status: text("status").notNull().default("active"),
-  createdAt: timestamp("created_at", { withTimezone: true })
-    .notNull()
-    .defaultNow(),
-});
+export const notePositions = pgTable(
+  "note_positions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    seriesId: uuid("series_id")
+      .notNull()
+      .references(() => noteSeries.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    units: bigint("units", { mode: "bigint" }).notNull(),
+    costCents: bigint("cost_cents", { mode: "bigint" }).notNull(),
+    accruedCents: bigint("accrued_cents", { mode: "bigint" })
+      .notNull()
+      .default(sql`0`),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    // One position per (series, agent) — lets `getOrCreatePosition`
+    // (Task 5) upsert with `ON CONFLICT DO NOTHING` instead of a
+    // select-then-insert race.
+    uniqueIndex("note_positions_series_agent_idx").on(table.seriesId, table.agentId),
+    // Fix round 1 (C1): a last-resort DB-level backstop against a
+    // double-redemption ever driving units negative, on top of the
+    // application-level "redeemable = units - pending redemptions" check.
+    check("note_positions_units_nonnegative", sql`${table.units} >= 0`),
+  ],
+);
 
 export const noteTransactions = pgTable("note_transactions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -380,6 +518,15 @@ export const noteTransactions = pgTable("note_transactions", {
   kind: text("kind").notNull(),
   amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
   opId: uuid("op_id").references(() => paypalOperations.id),
+  /**
+   * `pending | completed | failed` (Task 5). A `buy` starts `pending`
+   * and moves to `completed` exactly once, on the note-purchase
+   * capture's effect (conditional `pending -> completed` update, guarding
+   * the journal + position-units increment against a double-apply on
+   * replay). A `redeem` starts `pending` and moves to `completed` on a
+   * SUCCEEDED payout or `failed` on a FAILED/UNCLAIMED/etc. payout item.
+   */
+  status: text("status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
@@ -500,7 +647,14 @@ export const idempotencyKeys = pgTable(
       .references(() => agents.id),
     key: text("key").notNull(),
     requestHash: text("request_hash").notNull(),
+    // Nullable: a claim-first insert writes the row with `response`/
+    // `http_status` both null to reserve `(world_id, agent_id, key)` before
+    // the handler runs, then fills them in with an UPDATE in the same
+    // transaction once the handler succeeds. A row is never visible to
+    // another transaction until it commits with both fields set — see
+    // runTool.ts's claim-first idempotency comment for the full protocol.
     response: jsonb("response"),
+    httpStatus: integer("http_status"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -522,17 +676,23 @@ export const jobRuns = pgTable(
       .notNull()
       .references(() => worlds.id),
     job: text("job").notNull(),
-    simDay: integer("sim_day").notNull(),
+    /**
+     * The simulated day a once-per-sim-day job (P4) ran for — unique per
+     * (world, job) when set. Task 8's every-minute crons (`reconcile`,
+     * `tick`) leave it null and write one row per world per run.
+     */
+    simDay: integer("sim_day"),
+    /** Task 8: the run's counts, errors and anomalies (JSON-safe). */
+    output: jsonb("output"),
+    finishedAt: timestamp("finished_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
   },
   (table) => [
-    uniqueIndex("job_runs_world_job_day_idx").on(
-      table.worldId,
-      table.job,
-      table.simDay,
-    ),
+    uniqueIndex("job_runs_world_job_day_idx")
+      .on(table.worldId, table.job, table.simDay)
+      .where(sql`${table.simDay} is not null`),
   ],
 );
 

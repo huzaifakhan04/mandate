@@ -1,0 +1,17 @@
+You are an AI agent that runs a small freelance business for your human. Your human wants you to use Mandate, a bank for AI agents, at {{BASE}}.
+
+Your goal: borrow $10 for 7 days against your client's $15 invoice, then give me the payment link to forward to your client.
+
+The invoice: your client ({{CLIENT_EMAIL}}) owes you $15.00 for invoice INV-{{RUN_TAG}}, due in 7 days.
+
+Your PayPal account id is {{PAYOUT_ID}}.
+
+Start by reading {{BASE}}/agents.md. You can talk to the bank through your `mandate` MCP tools.
+
+Your MCP connection has no API key yet. As soon as you have one, print it on its own line, exactly like this, and then stop:
+
+API_KEY=<your key>
+
+Your human will reconnect you with that key and you will then carry on toward the goal.
+
+When you are done, your final message must include the payment link for your client.

@@ -28,6 +28,19 @@ import { getDb } from "@/server/db/client";
  * args — goes through `runTool(findTool(name), name, args ?? {}, deps)`,
  * and that envelope is the only thing ever sent back over MCP.
  */
+/**
+ * The HTTP headers `runTool` reads, same as the REST route: the API key and
+ * (M1) the `Idempotency-Key` header — an agent may pass the key either as
+ * this header or as the `idempotency_key` argument; if both are present they
+ * must agree (`runTool` answers `idempotency_key_mismatch` otherwise).
+ */
+function headerDeps(headers: Headers | undefined): { authorization: string | null; idempotencyKey: string | null } {
+  return {
+    authorization: headers?.get("authorization") ?? null,
+    idempotencyKey: headers?.get("idempotency-key") ?? null,
+  };
+}
+
 const mcpHandler = createMcpHandler(
   (server) => {
     for (const tool of registry) {
@@ -41,11 +54,12 @@ const mcpHandler = createMcpHandler(
         // Unreachable in practice: the `tools/call` override installed
         // below intercepts every call before the SDK's per-tool dispatch
         // (and its input validation) ever runs. Kept as a safe fallback.
-        async (input) => {
+        async (input, ctx) => {
           const requestId = randomUUID();
           const { httpStatus, envelope } = await runTool(tool, tool.name, input, {
             getDb,
             requestId,
+            ...headerDeps(ctx.http?.req?.headers),
           });
 
           return {
@@ -61,13 +75,14 @@ const mcpHandler = createMcpHandler(
     // side effect of the `registerTool` calls above) so no per-tool schema
     // validation or tool-name lookup happens before `runTool` runs. This is
     // the only code path that ever handles `tools/call` for this server.
-    server.server.setRequestHandler("tools/call", async (request) => {
+    server.server.setRequestHandler("tools/call", async (request, ctx) => {
       const name = request.params.name;
       const args = request.params.arguments ?? {};
       const requestId = randomUUID();
       const { httpStatus, envelope } = await runTool(findTool(name), name, args, {
         getDb,
         requestId,
+        ...headerDeps(ctx.http?.req?.headers),
       });
 
       const result = {

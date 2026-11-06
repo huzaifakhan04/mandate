@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 
 import { fail } from "@/server/contracts/envelope";
+import { queryParamsToInput } from "@/server/contracts/queryInput";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import "@/server/contracts/tools";
@@ -29,14 +30,26 @@ async function readJsonBody(req: Request): Promise<unknown> {
  * (lazy) Neon/dev resolver.
  */
 export function createRestHandler({ getDb }: RestHandlerDeps) {
-  async function dispatch(toolName: string, rawInput: unknown, requestId: string): Promise<NextResponse> {
+  async function dispatch(
+    toolName: string,
+    rawInput: unknown,
+    requestId: string,
+    req: Request,
+  ): Promise<NextResponse> {
     const tool = findTool(toolName);
-    const { httpStatus, envelope } = await runTool(tool, toolName, rawInput, { getDb, requestId });
+    const authorization = req.headers.get("authorization");
+    const idempotencyKey = req.headers.get("idempotency-key");
+    const { httpStatus, envelope } = await runTool(tool, toolName, rawInput, {
+      getDb,
+      requestId,
+      authorization,
+      idempotencyKey,
+    });
     return NextResponse.json(envelope, { status: httpStatus });
   }
 
   return {
-    async GET(_req: Request, { params }: RouteParams): Promise<NextResponse> {
+    async GET(req: Request, { params }: RouteParams): Promise<NextResponse> {
       const { tool } = await params;
       const requestId = randomUUID();
 
@@ -46,14 +59,17 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
           status: 404,
         });
       }
-      if (tool !== "get_bank_guide") {
+      if (!found.readOnly) {
         return NextResponse.json(
           fail("METHOD_NOT_ALLOWED", `GET is not supported for tool: ${tool}`, [tool]),
           { status: 405 },
         );
       }
 
-      return dispatch(tool, {}, requestId);
+      // M2: query params become the input (digit strings → numbers only
+      // where the tool's schema expects a number).
+      const rawInput = queryParamsToInput(found.input, new URL(req.url).searchParams);
+      return dispatch(tool, rawInput, requestId, req);
     },
 
     async POST(req: Request, { params }: RouteParams): Promise<NextResponse> {
@@ -70,7 +86,7 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
         );
       }
 
-      return dispatch(tool, rawInput, requestId);
+      return dispatch(tool, rawInput, requestId, req);
     },
   };
 }

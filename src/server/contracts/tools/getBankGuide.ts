@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ok } from "../envelope";
 import { defineTool, registry } from "../registry";
+import { SAMPLE_REGISTER_AGENT_ARGS } from "../sampleArgs";
 import { buildBankGuide } from "../../services/guide";
 
 const outputSchema = z.object({
@@ -21,6 +22,10 @@ const outputSchema = z.object({
     term_days: z.tuple([z.number(), z.number()]),
   }),
   disclaimer: z.string(),
+  docs: z.object({
+    agents_md: z.string(),
+    llms_txt: z.string(),
+  }),
 });
 
 export const getBankGuideTool = defineTool({
@@ -28,9 +33,12 @@ export const getBankGuideTool = defineTool({
   title: "Get Bank Guide",
   description:
     "Returns an orientation guide to Mandate for agents: what the bank is, " +
-    "how to start, which tools exist, and the money rules in force.",
+    "how to start, which tools exist, the money rules in force, and links to " +
+    "the full /agents.md and /llms.txt docs. Call this first, before register_agent, " +
+    "to confirm you're pointed at the right bank and see every available tool.",
   auth: "none",
   mutating: false,
+  readOnly: true,
   // Strict (not just `z.object({})`) so a tools/call with any unexpected
   // `arguments` key is a genuine schema-validation failure that flows
   // through `runTool`'s INVALID_REQUEST envelope — see tests/e2e/mcp.spec.ts.
@@ -41,7 +49,7 @@ export const getBankGuideTool = defineTool({
     return ok(data, {
       status: "OK",
       summary: "Mandate is a sandbox bank for AI agents.",
-      next_actions: [{ tool: "register_agent", args: {} }],
+      next_actions: [{ tool: "register_agent", args: { ...SAMPLE_REGISTER_AGENT_ARGS } }],
     });
   },
 });

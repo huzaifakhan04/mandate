@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "note_series_world_name_idx" ON "note_series" USING btree ("world_id","name");

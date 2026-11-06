@@ -1,0 +1,2 @@
+CREATE INDEX "paypal_operations_world_kind_paypal_id_idx" ON "paypal_operations" USING btree ("world_id","kind","paypal_id");--> statement-breakpoint
+CREATE INDEX "paypal_operations_kind_paypal_id_idx" ON "paypal_operations" USING btree ("kind","paypal_id");

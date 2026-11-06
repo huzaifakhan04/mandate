@@ -1,4 +1,12 @@
-/** Shared payment-rail abstraction over the PayPal rail and the deterministic sim rail. */
+/**
+ * Shared payment-rail facade over the PayPal rail and the deterministic
+ * sim rail. Every method is `enqueueOperation` + `executeOperation` (see
+ * `rail/operationRail.ts`) — there is no second path to PayPal. Services
+ * don't use this facade (they enqueue in their transaction and execute
+ * after commit); it exists for scripts, tests and bots.
+ */
+
+import type { OperationPurpose } from "../paypal/operationId";
 
 export type RailName = "paypal" | "sim";
 
@@ -10,8 +18,9 @@ export interface CreateCheckoutParams {
   payeeEmail?: string;
   returnUrl: string;
   cancelUrl: string;
-  /** Optional caller-supplied idempotency id — see `orders.CreateOrderParams.operationId`. */
-  operationId?: string;
+  /** With `sourceId`, derives the operation id (and `PayPal-Request-Id`) — see `deriveOperationId`. */
+  purpose: OperationPurpose;
+  sourceId: string;
 }
 
 export interface RailCheckoutResult {
@@ -25,11 +34,17 @@ export interface RailCheckoutResult {
 export interface CaptureCheckoutParams {
   worldId: string;
   orderId: string;
+  /** With `sourceId`, derives the operation id — a retried capture reuses the same `PayPal-Request-Id`. */
+  purpose: OperationPurpose;
+  sourceId: string;
 }
 
 export interface RailCaptureResult {
   rail: RailName;
   operationId: string;
+  orderId: string;
+  /** True when the order was already captured and the existing capture was returned. */
+  recovered: boolean;
   status: string;
   captureStatus: string;
   captureId: string;
@@ -55,16 +70,18 @@ export interface SendPayoutParams {
   amountCents: bigint;
   note?: string;
   senderItemId: string;
-  /** Optional caller-supplied idempotency id — see `payouts.SendPayoutParams.operationId`. */
-  operationId?: string;
+  /** With `sourceId`, derives the operation id, which is also the batch's `sender_batch_id`. */
+  purpose: OperationPurpose;
+  sourceId: string;
 }
 
 export interface RailPayoutSendResult {
   rail: RailName;
   operationId: string;
   batchId: string;
-  itemId?: string;
   batchStatus: string;
+  /** The item, when already reported (sim: always; live PayPal POST: usually not). */
+  item: { itemId: string | null; transactionStatus: string } | null;
 }
 
 export interface GetPayoutParams {
@@ -76,7 +93,7 @@ export interface RailPayoutGetResult {
   rail: RailName;
   operationId: string;
   batchStatus: string;
-  items: { itemId?: string; transactionStatus: string }[];
+  items: { itemId: string | null; transactionStatus: string }[];
 }
 
 export interface PaymentRail {

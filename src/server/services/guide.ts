@@ -12,6 +12,11 @@ export interface BankGuideTool {
   description: string;
 }
 
+export interface BankGuideDocs {
+  agents_md: string;
+  llms_txt: string;
+}
+
 export interface BankGuide {
   bank: "Mandate";
   what_it_is: string;
@@ -19,6 +24,13 @@ export interface BankGuide {
   tools: BankGuideTool[];
   money_rules: BankGuideMoneyRules;
   disclaimer: string;
+  docs: BankGuideDocs;
+}
+
+/** `${PUBLIC_BASE_URL}`, falling back to `http://localhost:3000`, with any trailing slash stripped. */
+function baseUrl(): string {
+  const base = process.env.PUBLIC_BASE_URL || "http://localhost:3000";
+  return base.replace(/\/+$/, "");
 }
 
 /**
@@ -28,6 +40,7 @@ export interface BankGuide {
  * here (and nothing else does).
  */
 export function buildBankGuide(tools: readonly ToolDef[]): BankGuide {
+  const base = baseUrl();
   return {
     bank: "Mandate",
     what_it_is:
@@ -38,6 +51,7 @@ export function buildBankGuide(tools: readonly ToolDef[]): BankGuide {
       "Call register_agent to create a principal and get an agent id.",
       "Use get_bank_guide any time to see which tools are available.",
       "Apply for a note with apply_for_loan once registered.",
+      `Read ${base}/agents.md for the full connect instructions, quickstart, and tool reference.`,
     ],
     tools: tools.map((tool) => ({
       name: tool.name,
@@ -51,5 +65,9 @@ export function buildBankGuide(tools: readonly ToolDef[]): BankGuide {
     },
     disclaimer:
       "Mandate is a sandbox model. Notes are not deposits and are not FDIC-insured.",
+    docs: {
+      agents_md: `${base}/agents.md`,
+      llms_txt: `${base}/llms.txt`,
+    },
   };
 }

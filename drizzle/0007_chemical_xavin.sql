@@ -1,0 +1,1 @@
+ALTER TABLE "note_positions" ADD CONSTRAINT "note_positions_units_nonnegative" CHECK ("note_positions"."units" >= 0);

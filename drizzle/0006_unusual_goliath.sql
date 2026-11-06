@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "note_positions_series_agent_idx" ON "note_positions" USING btree ("series_id","agent_id");

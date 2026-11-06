@@ -1,0 +1,1 @@
+ALTER TABLE "note_transactions" ADD COLUMN "status" text DEFAULT 'pending' NOT NULL;

@@ -9,7 +9,7 @@
  */
 import { chromium } from "@playwright/test";
 
-import * as orders from "@/server/paypal/orders";
+import { paypalRail } from "@/server/rail/paypalRail";
 import { paypalConfig } from "@/server/paypal/config";
 import { getAccessToken } from "@/server/paypal/token";
 import { spikeDb, requireEnv, safeJson } from "./_helpers";
@@ -69,8 +69,12 @@ async function main() {
   const baseUrl = requireEnv("PUBLIC_BASE_URL");
   const { db, worldId } = await spikeDb();
 
-  const created = await orders.create(db, {
+  const rail = paypalRail(db);
+  const runId = `spike-${Date.now()}`;
+  const created = await rail.createCheckout({
     worldId,
+    purpose: "note_purchase",
+    sourceId: runId,
     amountCents: 1n,
     description: "Spike: verify-with-paypal",
     customId: "spike-verify-with-paypal",
@@ -87,7 +91,12 @@ async function main() {
     return;
   }
 
-  const captured = await orders.capture(db, { worldId, orderId: created.orderId });
+  const captured = await rail.captureCheckout({
+    worldId,
+    orderId: created.orderId,
+    purpose: "note_purchase_capture",
+    sourceId: runId,
+  });
   console.log("captured:", safeJson(captured));
 
   const raw = (await getRawOrder(created.orderId)) as {
