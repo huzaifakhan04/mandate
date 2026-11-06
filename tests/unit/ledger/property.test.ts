@@ -1,6 +1,7 @@
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
+import type { Db } from "@/server/db/client";
 import { worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { ACCOUNT_CODES, ensureChartOfAccounts } from "@/server/ledger/accounts";
@@ -41,12 +42,19 @@ const balancedEntries = fc.array(balancedAmounts, {
 });
 
 describe("ledger property: any set of balanced entries nets to zero", () => {
+  // One PGlite database for the whole property (migrating a fresh one per
+  // run made this take > 20 s under load); each run posts into its own new
+  // world, and the trial balance is per world, so runs stay independent.
+  let db: Db;
+  beforeAll(async () => {
+    db = await createTestDb();
+  }, 60_000);
+
   it(
     "keeps trialBalance().totalCents at 0n after posting randomly generated balanced entries",
     async () => {
       await fc.assert(
         fc.asyncProperty(balancedEntries, async (entries) => {
-          const db = await createTestDb();
           const [world] = await db
             .insert(worlds)
             .values({
