@@ -14,7 +14,6 @@ import {
   noteSeries,
   notePositions,
   offers,
-  paypalOperations,
   postings,
   repaymentLinks,
   repayments,
@@ -26,7 +25,6 @@ import { holdersShare, waterfall } from "../domain/waterfall";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { postJournal } from "../ledger/postJournal";
 import {
-  amountToCents,
   buildCreateOrderRequest,
   buildSendPayoutRequest,
   deriveOperationId,
@@ -517,7 +515,11 @@ async function appliedResult(db: Db, worldId: string, repayment: RepaymentRow): 
  * pending remainder payout along).
  *
  * The captured amount must equal the link's amount, else the link goes
- * to `review` and nothing is applied (`mismatch`).
+ * to `review` and nothing is applied (`mismatch`; accepted P1 gap — booked
+ * by hand on review). Fix round 2: a capture that is NOT for the link's
+ * current open issue (superseded issue, link already paid or failed) is
+ * still booked — applied to the loan without touching the link, its
+ * excess refunded by the remainder payout (see the "stray" comment below).
  *
  * In the transaction (series → loan → positions locks): the waterfall
  * on the loan's CURRENT outstanding (fee first), the repayment row, the
@@ -544,31 +546,24 @@ export async function applyRepaymentCapture(
     await settlePendingRemainder(db, existing);
     return appliedResult(db, worldId, (await reloadRepayment(db, worldId, existing.id)) ?? existing);
   }
-  // P4-F: a capture of a superseded guarantee issue (the owner paid an
-  // older link) — the row now describes a newer issue, so check the amount
-  // against the old order and apply it as a recovery without touching the row.
+  // Fix round 2: PayPal has already taken this money, so it is ALWAYS
+  // booked. A "stray" capture — of a superseded issue of the link (P4-F
+  // guarantee re-issue, Task 8 invoice re-issue), or landing on a link that
+  // is already `paid` by another capture or was marked `failed` — leaves the
+  // link row alone and is applied to the loan like any payment: a recovery
+  // on a charged-off/recovered loan, the waterfall on an owing one (never a
+  // quote), and whatever the loan doesn't owe is excess → remainder payout
+  // to the borrower (the existing refund path). Exactly once via the
+  // capture-id-keyed repayment row and journal key.
   const createOperationId = deriveOperationId(worldId, args.purpose, args.createSourceId);
-  const staleOutside = args.purpose === "guarantee" && link.createOpId !== createOperationId;
-  if (staleOutside) {
-    const expected = await orderAmountCents(db, worldId, createOperationId);
-    if (expected === null || expected !== capturedCents) {
-      console.error(
-        `[repayments] capture ${captureId} of a superseded guarantee order ${args.orderId} captured ${capturedCents.toString()} cents, expected ${String(expected)} — nothing applied`,
-      );
-      return { outcome: "mismatch", reason: `captured ${capturedCents.toString()} cents, expected ${String(expected)}` };
-    }
-  } else if (link.status === "review") {
+  const staleOutside = link.createOpId !== null && link.createOpId !== createOperationId;
+  const openOutside = OPEN_LINK_STATUSES.includes(link.status);
+  if (!staleOutside && link.status === "review") {
+    // An earlier capture of this order mismatched (accepted P1 gap: booked by hand on review).
     return { outcome: "mismatch", reason: `captured ${capturedCents.toString()} cents, expected ${link.amountCents.toString()}` };
   }
-  if (link.status === "failed") {
-    return { outcome: "failed", reason: "this repayment checkout previously failed" };
-  }
-  if (link.status === "paid") {
-    // Paid by a capture we can't find — never apply a second one.
-    return { outcome: "failed", reason: "this repayment checkout was already paid" };
-  }
 
-  if (!staleOutside && capturedCents !== link.amountCents) {
+  if (!staleOutside && openOutside && capturedCents !== link.amountCents) {
     await scoped(db, worldId).update(
       repaymentLinks,
       { status: "review" },
@@ -595,13 +590,13 @@ export async function applyRepaymentCapture(
       throw new Error(`loan ${link.loanId} not found for repayment link ${link.id}`);
     }
 
-    // P4-F: re-check under the loan lock (a re-issue holds it too) whether
-    // this capture is for the guarantee link's current issue.
-    let stale = staleOutside;
-    if (!stale && args.purpose === "guarantee") {
-      const [current] = await scoped(tx, worldId).forUpdate(repaymentLinks, eq(repaymentLinks.id, link.id));
-      stale = current?.createOpId !== createOperationId;
-    }
+    // Re-check under the loan → link locks (a re-issue takes them in the
+    // same order) whether this capture is for the link's current, open issue.
+    const [current] = await scoped(tx, worldId).forUpdate(repaymentLinks, eq(repaymentLinks.id, link.id));
+    const stale =
+      !current ||
+      (current.createOpId !== null && current.createOpId !== createOperationId) ||
+      !OPEN_LINK_STATUSES.includes(current.status);
     if (!stale) {
       const marked = await scoped(tx, worldId).update(
         repaymentLinks,
@@ -609,10 +604,12 @@ export async function applyRepaymentCapture(
         and(eq(repaymentLinks.id, link.id), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
       );
       if (marked.length !== 1) {
-        return null; // Lost a race with another settlement of this checkout.
+        throw new Error(`repayment link ${link.id} changed under its row lock`);
       }
-    } else if (lockedLoan.status !== "charged_off" && lockedLoan.status !== "recovered") {
-      throw new Error(`superseded guarantee capture ${captureId} on loan ${lockedLoan.id} that isn't charged off`);
+    } else {
+      console.warn(
+        `[repayments] capture ${captureId} (order ${args.orderId}) is stray for link ${link.id} (${current?.status ?? "missing"}) — applied to the loan, excess refunded`,
+      );
     }
 
     if (lockedLoan.status === "charged_off" || lockedLoan.status === "recovered") {
@@ -641,10 +638,10 @@ export async function applyRepaymentCapture(
     // (under the loan lock, so it can't race processDue's accrual). Ruling
     // P4-C: for a quoted link only up to the quote's sim time, and whatever
     // was assessed or accrued after the quote is waived when it is paid as quoted.
-    const accrueTo =
-      link.quoteSimAt && link.quoteSimAt.getTime() < simNow.getTime() ? link.quoteSimAt : simNow;
+    const quoteAt = stale ? null : link.quoteSimAt;
+    const accrueTo = quoteAt && quoteAt.getTime() < simNow.getTime() ? quoteAt : simNow;
     const accrued = await accruePenaltyLocked(tx, worldId, lockedLoan, accrueTo);
-    const loan = await waivePostQuoteChargesLocked(tx, worldId, simNow, accrued, link, capturedCents);
+    const loan = stale ? accrued : await waivePostQuoteChargesLocked(tx, worldId, simNow, accrued, link, capturedCents);
     const owed = outstandingParts(loan);
     const split = waterfall({
       grossCents: capturedCents,
@@ -1298,14 +1295,6 @@ export function loanIdFromGuaranteeSourceId(sourceId: string): string {
   return sourceId.replace(/:g\d+$/, "");
 }
 
-/** The amount (cents) a queued/executed `order.create` asked for, or `null`. */
-async function orderAmountCents(db: Db, worldId: string, createOperationId: string): Promise<bigint | null> {
-  const row = await scoped(db, worldId).findOne(paypalOperations, eq(paypalOperations.id, createOperationId));
-  const body = (row?.executableRequest as { body?: { purchase_units?: { amount?: { value?: unknown } }[] } } | null | undefined)?.body;
-  const value = body?.purchase_units?.[0]?.amount?.value;
-  return typeof value === "string" ? amountToCents(value) : null;
-}
-
 export type ReissueGuaranteeOutcome =
   | { outcome: "reissued"; issue: number; link: LinkRow }
   | { outcome: "not_needed" }
@@ -1321,7 +1310,7 @@ export type ReissueGuaranteeOutcome =
  * the recoverable amount, `quote_sim_at` = now. At most
  * `MAX_GUARANTEE_LINK_ISSUES` issues. Locks loan → link (the capture
  * path's order). An owner paying an OLDER issue afterwards is still
- * applied — as a recovery (any excess refunded) — see
+ * applied — as a stray capture: a recovery, any excess refunded — see
  * `applyRepaymentCapture`. Executes the create after commit. Never call
  * inside a transaction.
  */

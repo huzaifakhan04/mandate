@@ -707,6 +707,95 @@ describe("charge-off fix round 1 (P4-D deferred holder loss, P4-F re-issue, M5, 
   });
 });
 
+describe("charge-off fix round 2: every completed capture is booked", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  async function journalFor(db: Db, worldId: string, captureId: string) {
+    return db
+      .select()
+      .from(journalEntries)
+      .where(and(eq(journalEntries.worldId, worldId), eq(journalEntries.idempotencyKey, `repayment_capture:${captureId}`)));
+  }
+
+  it("re-issued guarantee paid first, then the superseded order is captured: booked and refunded in full, once", async () => {
+    const worldId = (await createWorld(db, { name: "Stray", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    const l1 = await fundPool(db, worldId, 30000, "l1@example.com");
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveClockTo(db, worldId, at(due, 10));
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    const total = (await loanRow(db, borrower.loanId)).chargeOffTotalCents;
+    const firstIssue = (await link(db, borrower.loanId, "guarantee"))!;
+    await repay(db, borrower.key, borrower.loanId, 9000);
+
+    // The re-issued link (total − 9000) is paid first → RECOVERED, the link row is `paid`.
+    const fresh = await payLink(db, worldId, borrower.loanId, "guarantee");
+    expect(fresh.data).toMatchObject({ loan_status: "RECOVERED", applied_recovery_cents: Number(total - 9000n), remainder_cents: 0 });
+    expect((await link(db, borrower.loanId, "guarantee"))!.status).toBe("paid");
+    await expectBalanced(db, worldId);
+
+    // Then the owner's older order (total) is captured: nothing left to recover, all of it refunded.
+    await simApprove(db, firstIssue.paypalOrderId!);
+    const stray = await settleCheckoutByOrderId(db, worldId, firstIssue.paypalOrderId!);
+    expect(stray.status).toBe("COMPLETED");
+    expect(stray.data).toMatchObject({ loan_status: "RECOVERED", applied_recovery_cents: 0, remainder_cents: Number(total) });
+    const captureId = (stray.data as Data).repayment_id as string;
+    const [row] = await db.select().from(repayments).where(eq(repayments.id, captureId));
+    expect(await journalFor(db, worldId, row!.captureId!)).toHaveLength(1);
+    expect(row!.remainderStatus).toBe("paid");
+    // Settling it again changes nothing.
+    await settleCheckoutByOrderId(db, worldId, firstIssue.paypalOrderId!);
+    const rows = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
+    expect(rows).toHaveLength(3);
+    expect(rows.reduce((sum, r) => sum + r.appliedRecoveryCents, 0n)).toBe(total);
+    expect(rows.reduce((sum, r) => sum + r.remainderCents, 0n)).toBe(total);
+    expect(await units(db, l1.agentId)).toBe(30000n);
+    expect(await getAccountBalance(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+  });
+
+  it("a direct repayment captured after its link was marked failed is still booked (waterfall), link left failed", async () => {
+    const worldId = (await createWorld(db, { name: "Failed", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000, "l1@example.com");
+    const borrower = await borrow(db, worldId);
+    const started = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: 5000 });
+    const checkoutId = (started.envelope.data as Data).checkout_id as string;
+    await simApprove(db, checkoutId);
+    await db.update(repaymentLinks).set({ status: "failed" }).where(eq(repaymentLinks.paypalOrderId, checkoutId));
+    const confirmed = (await call(db, "confirm_checkout", borrower.key, { checkout_id: checkoutId })).envelope;
+    expect(confirmed.status).toBe("COMPLETED");
+    expect(confirmed.data).toMatchObject({ loan_status: "ACTIVE", applied_fee_cents: 333, applied_principal_cents: 5000 - 333 });
+    const [row] = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
+    expect(await journalFor(db, worldId, row!.captureId!)).toHaveLength(1);
+    expect((await db.select().from(repaymentLinks).where(eq(repaymentLinks.paypalOrderId, checkoutId)))[0]!.status).toBe("failed");
+    expect((await loanRow(db, borrower.loanId)).outstandingCents).toBe(25333n - 5000n);
+    await expectBalanced(db, worldId);
+  });
+
+  it("an invoice link already marked paid, captured on a repaid loan: booked, all of it refunded", async () => {
+    const worldId = (await createWorld(db, { name: "Paid", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000, "l1@example.com");
+    const borrower = await borrow(db, worldId, { invoice: true });
+    expect((await repay(db, borrower.key, borrower.loanId)).loan_status).toBe("REPAID");
+    const invoice = (await link(db, borrower.loanId, "invoice"))!;
+    await db.update(repaymentLinks).set({ status: "paid" }).where(eq(repaymentLinks.id, invoice.id));
+    const settled = await payLink(db, worldId, borrower.loanId, "invoice");
+    expect(settled.data).toMatchObject({ loan_status: "REPAID", remainder_cents: 40000, remainder_status: "PAID" });
+    await expectBalanced(db, worldId);
+    expect(await getAccountBalance(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
+  });
+});
+
 function daysLateAt(due: Date, simNow: Date): number {
   return Math.min(Math.floor((simNow.getTime() - due.getTime()) / DAY_MS), 10);
 }
