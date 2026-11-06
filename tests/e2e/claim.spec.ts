@@ -30,7 +30,7 @@ test("P2: a fresh claim link asks the human to verify with PayPal, returning to 
   await expect(page.locator('form[action="/verify/start"] input[name="return_to"]')).toHaveValue(path);
   await expect(page.getByRole("button", { name: "Verify with PayPal to claim E2E Claimer" })).toBeVisible();
   await expect(page.getByText("not deposits and not FDIC-insured")).toBeVisible();
-  await expect(page.locator('meta[name="referrer"]')).toHaveAttribute("content", "no-referrer");
+  await expect(page.locator('meta[name="referrer"]')).toHaveAttribute("content", "same-origin");
 
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
   expect(overflow).toBeLessThanOrEqual(0);

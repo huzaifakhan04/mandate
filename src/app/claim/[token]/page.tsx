@@ -11,13 +11,15 @@ import { claimView, type ClaimAgentSummary, type ClaimView } from "@/server/serv
  * link (P2 Task 2, path A). States: invalid / expired link; not signed in
  * (Verify with PayPal, returning here); signed in (agent details + "Claim
  * agent"); claimed by you; claimed by someone else. The token is a
- * bearer secret: it is never logged, and `no-referrer` keeps it out of
- * the Referer sent to PayPal or anywhere else.
+ * bearer secret: it is never logged, and `Referrer-Policy: same-origin`
+ * keeps it out of the Referer sent to PayPal or any other site, while the
+ * page's own form POSTs (Verify / Claim) still carry a real `Origin`
+ * header for the same-origin CSRF check (P2 final review, M1).
  */
 export const metadata: Metadata = {
   title: "Mandate · Claim your agent",
   robots: { index: false, follow: false },
-  referrer: "no-referrer",
+  referrer: "same-origin",
 };
 
 const LEGAL = "Sandbox model · simulated money · notes are not deposits and not FDIC-insured";

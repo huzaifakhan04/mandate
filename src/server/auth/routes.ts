@@ -74,11 +74,17 @@ function errorRedirect(request: Request, reason: VerifyErrorReason, cookies: str
  * `Sec-Fetch-Site` must be `same-origin` or `none`. With neither header the
  * request is refused (fail closed — browsers send at least one on a POST).
  *
- * `Origin: null` counts as absent: browsers send it for a form POST from a
- * page with `Referrer-Policy: no-referrer` — the claim page, which keeps its
- * token out of every Referer — so there `Sec-Fetch-Site` (set by the
- * browser, not by scripts) decides. Found by the real-browser sandbox e2e
- * (P2 Task 7): the claim page's Verify / Claim buttons were refused.
+ * `Origin: null` counts as absent, and then `Sec-Fetch-Site` (set by the
+ * browser, never by page scripts) decides. Browsers send `Origin: null`
+ * for a form POST from a page with `Referrer-Policy: no-referrer` — found
+ * by the real-browser sandbox e2e (P2 Task 7), when the claim page used
+ * that policy and its Verify / Claim buttons were refused. The claim page
+ * is now `same-origin` (M1), so it sends a real Origin; the relaxation
+ * stays because a user agent or privacy extension can still force
+ * `no-referrer` (or strip Origin) on any of our pages, and Sec-Fetch-Site
+ * is an equally unforgeable same-origin signal for those requests. A
+ * cross-site POST with `Origin: null` still fails: its Sec-Fetch-Site is
+ * `cross-site`.
  */
 export function isSameOriginPost(request: Request): boolean {
   const origin = request.headers.get("origin");
