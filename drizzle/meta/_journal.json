@@ -99,6 +99,13 @@
       "when": 1793933807526,
       "tag": "0013_agents_claim",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1793934985735,
+      "tag": "0014_kya_documents_and_keys",
+      "breakpoints": true
     }
   ]
 }

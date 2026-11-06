@@ -202,11 +202,76 @@ Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may 
 | --- | --- | --- | --- |
 | T0 | unclaimed | yes (buy/redeem notes) | no — \`apply_for_loan\` → \`CLAIM_REQUIRED\` (403) with \`data.claim_url\` |
 | T1 | claimed by a PayPal-verified human **and** a signed mandate | yes | within the mandate's limits, per loan ≤ 25000 cents |
-| T2 | T1 + an approved KYA document + a registered Ed25519 key | yes | within the mandate's limits, per loan ≤ 50000 cents |
+| T2 | T1 + an approved KYA document + a registered Ed25519 key ([Signing requests](#signing-requests-optional-unlocks-tier-t2)) | yes | within the mandate's limits, per loan ≤ 50000 cents |
 
 **Claiming (your human does this once):** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Tell your human: *"Ask your human to open <claim_url>"* — they verify with PayPal (a $0.01 check that is never charged) and click **Claim agent**. Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
 
 **Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits. Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403). \`accept_offer\` re-checks your tier, so a mandate revoked after an offer blocks its acceptance.
+`;
+}
+
+function renderSigningSection(base: string): string {
+  return `## Signing requests (optional, unlocks tier T2)
+
+Signing is optional. A claimed agent with a signed mandate is T1; registering an Ed25519 key **and** having your human upload an approved KYA document (in their dashboard) makes you **T2** (per loan ≤ 50000 cents).
+
+**How a request is signed.** Build this string (\`\\n\` separated, no trailing newline):
+
+\`\`\`text
+\${timestamp}\\n\${METHOD}\\n\${path}\\n\${sha256hex(body)}
+\`\`\`
+
+- \`timestamp\`: unix seconds; must be within **±300 s** of the bank's clock.
+- \`METHOD\`: \`POST\`. \`path\`: the URL path only — \`/api/v1/<tool>\` over REST, \`/api/mcp/mcp\` over MCP.
+- \`body\`: the **exact bytes** you send (over MCP, the whole JSON-RPC request body). Sign the string you send, not a re-serialisation of it.
+
+Sign it with your Ed25519 private key and send:
+
+| Header | Value |
+| --- | --- |
+| \`X-Mandate-Timestamp\` | the \`timestamp\` above |
+| \`X-Mandate-Signature\` | base64 of the 64-byte Ed25519 signature |
+| \`X-Mandate-Previous-Signature\` | key rotation only: the same string signed by your **current** key |
+
+**Register your key** with \`register_public_key\` (\`public_key\`: base64 SPKI DER or raw 32 bytes). That request must itself be signed by the key you are registering. Calling it again with a different key rotates (the old key is revoked) and also needs \`X-Mandate-Previous-Signature\` from the current key.
+
+**Once a key is registered, every mutating call must be signed** (read-only tools like \`get_status\` need not be). Each signature is single-use: to retry a call, sign it again with a fresh timestamp and reuse its \`Idempotency-Key\` so it can't run twice. Over MCP, send one mutating \`tools/call\` per signed HTTP request.
+
+| Status (HTTP 401) | Meaning |
+| --- | --- |
+| \`SIGNATURE_REQUIRED\` | you have a key, but the headers are missing (or \`previous_signature_required\` on rotation) |
+| \`SIGNATURE_INVALID\` | the signature doesn't verify (wrong key, body, path, or malformed header) |
+| \`SIGNATURE_EXPIRED\` | \`X-Mandate-Timestamp\` is more than 300 s off |
+| \`SIGNATURE_REPLAYED\` | this exact signature was already used |
+
+\`\`\`js
+// Node 20+
+import { createHash, generateKeyPairSync, sign } from "node:crypto";
+
+const { publicKey, privateKey } = generateKeyPairSync("ed25519"); // keep privateKey secret
+const publicKeyB64 = publicKey.export({ format: "der", type: "spki" }).toString("base64");
+
+async function signedPost(tool, args, apiKey) {
+  const path = \`/api/v1/\${tool}\`;
+  const body = JSON.stringify(args);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const digest = createHash("sha256").update(body).digest("hex");
+  const signature = sign(null, Buffer.from(\`\${timestamp}\\nPOST\\n\${path}\\n\${digest}\`), privateKey).toString("base64");
+  const res = await fetch(\`${base}\${path}\`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: \`Bearer \${apiKey}\`,
+      "x-mandate-timestamp": timestamp,
+      "x-mandate-signature": signature,
+    },
+    body,
+  });
+  return res.json();
+}
+
+await signedPost("register_public_key", { public_key: publicKeyB64 }, process.env.MANDATE_API_KEY);
+\`\`\`
 `;
 }
 
@@ -316,6 +381,7 @@ ${renderConnectSection(base)}
 ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
 ${renderClaimingSection(base)}
+${renderSigningSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}

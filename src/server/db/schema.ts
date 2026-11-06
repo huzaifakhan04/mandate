@@ -4,6 +4,7 @@ import {
   bigserial,
   boolean,
   check,
+  customType,
   index,
   integer,
   jsonb,
@@ -15,6 +16,20 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+
+/**
+ * Postgres `bytea` (P2 Ruling P2-A: KYA documents live in Postgres, ≤ 2 MB).
+ * Drivers hand back a `Buffer` (node-postgres/Neon) or a `Uint8Array`
+ * (PGlite); both are normalised to a `Buffer`.
+ */
+const bytea = customType<{ data: Buffer; driverData: Buffer | Uint8Array }>({
+  dataType() {
+    return "bytea";
+  },
+  fromDriver(value) {
+    return Buffer.isBuffer(value) ? value : Buffer.from(value);
+  },
+});
 
 // -----------------------------------------------------------------------
 // Root / unscoped tables
@@ -194,7 +209,6 @@ export const agents = pgTable("agents", {
   operator: text("operator").notNull(),
   model: text("model").notNull(),
   codeManifestHash: text("code_manifest_hash").notNull(),
-  ed25519Pubkey: text("ed25519_pubkey"),
   kyaTier: integer("kya_tier").notNull().default(0),
   status: text("status").notNull().default("pending"),
   /** sha256 hex of the claim token (P2 Task 2). Kept after the claim so the link resolves to "already claimed". */
@@ -243,14 +257,77 @@ export const kyaDocuments = pgTable("kya_documents", {
     .notNull()
     .references(() => principals.id),
   kind: text("kind").notNull(),
-  blobUrl: text("blob_url").notNull(),
+  /** Legacy P0 (Vercel Blob); unused since Ruling P2-A stores `content` inline. */
+  blobUrl: text("blob_url"),
   sha256: text("sha256").notNull(),
+  /** The file itself (P2 Task 3): pdf/png/jpg, ≤ 2 MB, type checked by magic bytes. */
+  content: bytea("content"),
+  /** The detected (magic-byte) media type: application/pdf, image/png or image/jpeg. */
+  contentType: text("content_type"),
+  sizeBytes: integer("size_bytes"),
+  fileName: text("file_name"),
   aiReview: jsonb("ai_review"),
   reviewStatus: text("review_status").notNull().default("pending"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
 });
+
+/**
+ * An agent's Ed25519 request-signing key (P2 Task 3). At most one active
+ * (unrevoked) key per agent; registering another revokes the old one.
+ * Having an active key is one of the T2 requirements, and once one exists
+ * every mutating call from that agent must be signed by it.
+ */
+export const agentKeys = pgTable(
+  "agent_keys",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** The raw 32-byte public key, base64. */
+    publicKey: text("public_key").notNull(),
+    alg: text("alg").notNull().default("ed25519"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("agent_keys_one_active_idx")
+      .on(table.agentId)
+      .where(sql`${table.revokedAt} is null`),
+  ],
+);
+
+/**
+ * Seen request signatures (P2 Task 3, replay protection). A signature is
+ * valid for ±300 s around its timestamp, so a row only has to outlive
+ * that 10-minute window; the reconcile cron prunes older rows.
+ */
+export const agentSignatureNonces = pgTable(
+  "agent_signature_nonces",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** The signature bytes, re-encoded as standard base64. */
+    signature: text("signature").notNull(),
+    seenAt: timestamp("seen_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    uniqueIndex("agent_signature_nonces_agent_signature_idx").on(table.agentId, table.signature),
+    index("agent_signature_nonces_seen_at_idx").on(table.seenAt),
+  ],
+);
 
 export const mandates = pgTable("mandates", {
   id: uuid("id").primaryKey().defaultRandom(),

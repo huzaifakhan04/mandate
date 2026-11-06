@@ -6,6 +6,7 @@ import { fail } from "@/server/contracts/envelope";
 import { queryParamsToInput } from "@/server/contracts/queryInput";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
+import { signedRequestFrom } from "@/server/auth/signatures";
 import "@/server/contracts/tools";
 import { getDb as defaultGetDb, type Db } from "@/server/db/client";
 
@@ -15,9 +16,8 @@ export interface RestHandlerDeps {
   getDb: () => Promise<Db>;
 }
 
-/** Reads a request body as JSON, treating an empty body as `{}`. */
-async function readJsonBody(req: Request): Promise<unknown> {
-  const text = await req.text();
+/** Parses a raw request body as JSON, treating an empty body as `{}`. */
+function parseJsonBody(text: string): unknown {
   if (text.length === 0) {
     return {};
   }
@@ -35,6 +35,7 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
     rawInput: unknown,
     requestId: string,
     req: Request,
+    rawBody: string,
   ): Promise<NextResponse> {
     const tool = findTool(toolName);
     const authorization = req.headers.get("authorization");
@@ -44,6 +45,9 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
       requestId,
       authorization,
       idempotencyKey,
+      // P2 Task 3: what a request signature covers — method, path and the
+      // exact body bytes as received (never a re-serialisation).
+      request: signedRequestFrom(req.headers, req.method.toUpperCase(), new URL(req.url).pathname, rawBody),
     });
     return NextResponse.json(envelope, { status: httpStatus });
   }
@@ -69,16 +73,17 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
       // M2: query params become the input (digit strings → numbers only
       // where the tool's schema expects a number).
       const rawInput = queryParamsToInput(found.input, new URL(req.url).searchParams);
-      return dispatch(tool, rawInput, requestId, req);
+      return dispatch(tool, rawInput, requestId, req, "");
     },
 
     async POST(req: Request, { params }: RouteParams): Promise<NextResponse> {
       const { tool } = await params;
       const requestId = randomUUID();
 
+      const rawBody = await req.text();
       let rawInput: unknown;
       try {
-        rawInput = await readJsonBody(req);
+        rawInput = parseJsonBody(rawBody);
       } catch {
         return NextResponse.json(
           fail("INVALID_REQUEST", "Request body must be valid JSON.", ["body"]),
@@ -86,7 +91,7 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
         );
       }
 
-      return dispatch(tool, rawInput, requestId, req);
+      return dispatch(tool, rawInput, requestId, req, rawBody);
     },
   };
 }

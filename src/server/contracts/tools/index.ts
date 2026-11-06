@@ -7,6 +7,7 @@
 import "./getBankGuide";
 import "./registerAgent";
 import "./getStatus";
+import "./registerPublicKey";
 import "../../services/notes"; // registers the note_purchase capture handler before confirm_checkout can dispatch to it
 import "../../services/repayments"; // registers the repayment_link/repayment_direct capture handlers and the invoice-link activation hook
 import "./buyNotes";

@@ -4,6 +4,7 @@ import type { Db } from "../db/client";
 import { agents, kyaDocuments, mandates, principals } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { computeTier, type KyaMandateFacts, type TierResult } from "../domain/kya";
+import { activeAgentKey } from "../auth/agentKeys";
 import { claimLinkForAgent, type ClaimLink } from "./claims";
 
 type AgentRow = typeof agents.$inferSelect;
@@ -42,12 +43,13 @@ export async function tierForAgent(db: Db, worldId: string, agent: AgentRow, now
         and(eq(kyaDocuments.agentId, agent.id), eq(kyaDocuments.principalId, agent.principalId))!,
       )
     : [];
+  const key = await activeAgentKey(db, worldId, agent.id);
   return computeTier(
     { principalId: agent.principalId, claimedAt: agent.claimedAt },
     principal ? { id: principal.id, verifiedAt: principal.verifiedAt } : null,
     mandate,
     docs,
-    agent.ed25519Pubkey ? {} : null,
+    key ? { revokedAt: key.revokedAt } : null,
     now,
   );
 }

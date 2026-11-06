@@ -161,3 +161,23 @@ describe("GET /llms.txt route", () => {
     expect(body).toMatch(/\/openapi\.json/);
   });
 });
+
+describe("agents.md signing section (P2 Task 3)", () => {
+  it("documents the signing headers, the canonical string, the 401 statuses and a runnable Node example", async () => {
+    const { renderAgentsMd } = await import("@/server/contracts/docs");
+    const { knownStatusTable } = await import("@/server/contracts/envelope");
+    const { registry } = await import("@/server/contracts/registry");
+    await import("@/server/contracts/tools");
+    const md = renderAgentsMd(registry, "https://mandate.example", knownStatusTable());
+    const section = md.slice(md.indexOf("## Signing requests (optional, unlocks tier T2)"), md.indexOf("## Human approval"));
+    expect(section.length).toBeGreaterThan(100);
+    for (const text of ["X-Mandate-Timestamp", "X-Mandate-Signature", "X-Mandate-Previous-Signature", "register_public_key", "SIGNATURE_REPLAYED", 'generateKeyPairSync("ed25519")']) {
+      expect(section).toContain(text);
+    }
+    expect(section).toContain("${timestamp}\\n${METHOD}\\n${path}\\n${sha256hex(body)}");
+    expect(section).toContain("const path = `/api/v1/${tool}`;");
+    expect(section).toContain("Buffer.from(`${timestamp}\\nPOST\\n${path}\\n${digest}`)");
+    expect(section).toContain("fetch(`https://mandate.example${path}`");
+    expect(md).toMatch(/\| `SIGNATURE_REQUIRED` \| 401 \|/);
+  });
+});

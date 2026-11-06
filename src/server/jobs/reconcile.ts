@@ -17,6 +17,7 @@ import {
   type TroubledOperation,
   type PayoutSendResult,
 } from "../paypal/operations";
+import { pruneSignatureNonces } from "../auth/agentKeys";
 import { failCheckoutWithTerminalCreate, settleCheckoutByOrderId } from "../services/checkouts";
 import {
   dispatchPayoutOutcome,
@@ -120,6 +121,8 @@ export interface ReconcileReport extends Counts {
   worlds: number;
   /** True when the run stopped early (item limit or deadline). */
   truncated: boolean;
+  /** P2 Task 3: expired request-signature nonces deleted this run. */
+  noncesPruned: number;
   errors: ReconcileError[];
   anomalies: Anomaly[];
 }
@@ -205,6 +208,13 @@ export async function runReconcile(db: Db, options: ReconcileOptions = {}): Prom
     runErrors.push({ worldId: null, item: "list_due_operations", message: errorMessage(err) });
   }
 
+  let noncesPruned = 0;
+  try {
+    noncesPruned = await pruneSignatureNonces(db, run.now);
+  } catch (err) {
+    runErrors.push({ worldId: null, item: "signature_nonces", message: errorMessage(err) });
+  }
+
   for (const worldId of worldIds) {
     await run.item(worldId, "payout_sources", () => pollPayouts(run, worldId));
     await run.item(worldId, "checkouts", () => pollCheckouts(run, worldId));
@@ -217,6 +227,7 @@ export async function runReconcile(db: Db, options: ReconcileOptions = {}): Prom
     items: run.used,
     worlds: worldIds.length,
     truncated: run.truncated,
+    noncesPruned,
     errors: [...runErrors],
     anomalies: [],
   };

@@ -92,6 +92,15 @@ export interface ToolDef<
    * lands in `idempotency_keys`, and a retry after claiming proceeds.
    */
   requiresBorrowTier?: boolean;
+  /**
+   * P2 Task 3 (`register_public_key` only): the base64 public key, taken
+   * from the validated input, that this call's request signature must
+   * verify against — proof of possession of the key being registered —
+   * instead of the agent's current key. When the agent already has a
+   * different active key, `runTool` also requires
+   * `X-Mandate-Previous-Signature` from that current key (rotation).
+   */
+  signingKeyFromInput?: (input: z.infer<Input>) => string;
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;

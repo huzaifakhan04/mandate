@@ -50,6 +50,23 @@ export function scoped(db: Db, worldId: string) {
       >;
     },
 
+    /**
+     * Like `select`, but only the given columns (e.g. document metadata
+     * without its bytea `content`). Same world filter.
+     */
+    selectFields<T extends WorldScopedTable, F extends Record<string, AnyPgColumn>>(
+      table: T,
+      fields: F,
+      where?: SQL,
+      orderBy?: SQL | AnyPgColumn,
+    ): Promise<Array<{ [K in keyof F]: F[K]["_"]["notNull"] extends true ? F[K]["_"]["data"] : F[K]["_"]["data"] | null }>> {
+      const anyTable = table as unknown as PgTable;
+      const query = db.select(fields).from(anyTable).where(worldCondition(table, where));
+      return (orderBy ? query.orderBy(orderBy) : query) as unknown as Promise<
+        Array<{ [K in keyof F]: F[K]["_"]["notNull"] extends true ? F[K]["_"]["data"] : F[K]["_"]["data"] | null }>
+      >;
+    },
+
     async findOne<T extends WorldScopedTable>(
       table: T,
       where: SQL,

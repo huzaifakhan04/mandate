@@ -109,6 +109,11 @@ const STATUS_HTTP: Record<string, number> = {
   // P2 Task 2 (KYA tiers): borrowing needs a claim, then a signed mandate.
   CLAIM_REQUIRED: 403,
   MANDATE_REQUIRED: 403,
+  // P2 Task 3 (Ed25519 request signing).
+  SIGNATURE_REQUIRED: 401,
+  SIGNATURE_INVALID: 401,
+  SIGNATURE_EXPIRED: 401,
+  SIGNATURE_REPLAYED: 401,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */
