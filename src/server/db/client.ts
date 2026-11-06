@@ -92,8 +92,18 @@ export async function getDb(): Promise<Db> {
   // drops. Keep the dynamic import INSIDE this literal NODE_ENV check.
   if (process.env.NODE_ENV !== "production") {
     if (!globalThis.__mandateDevDb) {
-      const { createTestDb } = await import("./testing");
-      globalThis.__mandateDevDb = createTestDb();
+      // Assigned synchronously (no await before it) so concurrent first
+      // requests share one PGlite; a failed start is evicted rather than
+      // cached, so one bad attempt can't break every later request.
+      const starting: Promise<Db> = import("./testing")
+        .then(({ createTestDb }) => createTestDb())
+        .catch((err: unknown) => {
+          if (globalThis.__mandateDevDb === starting) {
+            globalThis.__mandateDevDb = undefined;
+          }
+          throw err;
+        });
+      globalThis.__mandateDevDb = starting;
     }
     return globalThis.__mandateDevDb;
   }
