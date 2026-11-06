@@ -269,7 +269,7 @@ A **mandate** is the standing permission your human signs for you: the limits wi
 |---|---|
 | \`max_per_loan_cents\` | the principal of any one loan |
 | \`max_total_owed_cents\` | what your human may owe in total **across all their agents**: what they owe on every open loan + this loan's principal + fee |
-| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal) |
+| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal; a new agent's grade D invoice-backed loans need about 600 — see [The newcomer path](#the-newcomer-path)) |
 | \`max_term_days\` | the loan's term |
 | \`eligible_collateral\` | \`invoice_link\` (you pass an \`invoice\` the bank collects) and/or \`none\` (unsecured) |
 | \`expires_at\` | optional; after it the mandate is no longer in force |
@@ -496,8 +496,26 @@ function newcomerExample() {
   const secured = computeScore({ ...facts, invoiceCoverageBps: Number((invoice * 10000n) / principal) });
   const unsecured = computeScore({ ...facts, invoiceCoverageBps: null });
   const grade = secured.grade === "E" ? "D" : secured.grade;
-  const price = priceLoan({ principalCents: principal, termDays: term, grade, coverageBps: Number((invoice * 10000n) / principal) });
-  return { principal, invoice, term, secured, unsecured, price };
+  const coverageBps = Number((invoice * 10000n) / principal);
+  const price = priceLoan({ principalCents: principal, termDays: term, grade, coverageBps });
+  // The grade C route: a T2 agent (signing key + approved KYA document) with the same 1.5× invoice.
+  const verified = computeScore({ ...facts, hasSigningKey: true, hasApprovedDocument: true, invoiceCoverageBps: coverageBps });
+  const verifiedPrice = priceLoan({
+    principalCents: principal,
+    termDays: term,
+    grade: verified.grade === "E" ? "D" : verified.grade,
+    coverageBps,
+  });
+  // The highest fee (bps of principal) a grade D invoice-backed newcomer loan can cost, over every amount up to the auto-approval limit and every term.
+  let maxNewcomerFeeBps = 0;
+  for (const p of [PRICING_LIMITS.minPrincipalCents, GRADE_D_AUTO_APPROVE_MAX_CENTS]) {
+    for (let t = PRICING_LIMITS.minTermDays; t <= PRICING_LIMITS.maxTermDays; t++) {
+      const fee = priceLoan({ principalCents: p, termDays: t, grade: "D", coverageBps: 15000 }).feeCents;
+      maxNewcomerFeeBps = Math.max(maxNewcomerFeeBps, Number((fee * 10000n + p - 1n) / p));
+    }
+  }
+  const neededMaxFeeBps = Math.ceil(maxNewcomerFeeBps / 100) * 100;
+  return { principal, invoice, term, secured, unsecured, price, verified, verifiedPrice, maxNewcomerFeeBps, neededMaxFeeBps };
 }
 
 function renderUnderwritingSection(): string {
@@ -549,6 +567,12 @@ Your effective per-loan cap is the smallest of your grade's limit, your tier's c
 ### The newcomer path
 
 A brand-new, claimed agent has no repayment history, so an **unsecured** first loan scores ${ex.unsecured.score} (grade ${ex.unsecured.grade}) and is declined with \`insufficient_credit_history\`. Start with a **small invoice-backed loan**: an invoice of at least **1.5×** the amount adds ${COMPONENT_MAX.collateral} points — ${ex.secured.score}, grade ${ex.secured.grade} — and grade D is auto-approved up to ${usd(GRADE_D_AUTO_APPROVE_MAX_CENTS)} (${GRADE_D_AUTO_APPROVE_MAX_CENTS.toString()} cents). (An invoice of only 1.1× adds 12 — still grade E. The invoice must also cover principal + fee.) Every such loan of ≥ ${usd(PRICING_LIMITS.minPrincipalCents)} repaid on time adds ${ON_TIME_LOAN_POINTS} points of history, which is how you climb to C and above.
+
+**Your human's mandate must allow the grade D fee.** A grade D invoice-backed loan costs ${pct(Number((ex.price.feeCents * 10000n) / ex.principal))} of the principal for ${ex.term} days (${ex.price.feeCents.toString()} cents on ${ex.principal.toString()}) and up to ${pct(ex.maxNewcomerFeeBps)} for ${PRICING_LIMITS.maxTermDays} days, so the mandate's \`max_fee_bps\` must be at least **~${pct(ex.neededMaxFeeBps)} (${ex.neededMaxFeeBps} bps)** — below that every newcomer loan is declined with \`mandate_fee\` (the next step then names the mandate's current max fee and the fee you were quoted). The dashboard's mandate form defaults to 10%. A signed mandate never changes by itself: if your human signed one at a lower max fee (e.g. 5%), they must sign a new version with a higher one.
+
+**The grade C route.** With a registered signing key (\`register_public_key\`) and an approved KYA document (tier 2: +${IDENTITY_POINTS.signingKey + IDENTITY_POINTS.approvedDocument} identity points), the same 1.5× invoice-backed loan scores ${ex.verified.score} — grade ${ex.verified.grade} — and costs ${pct(Number((ex.verifiedPrice.feeCents * 10000n) / ex.principal))} for ${ex.term} days (${ex.verifiedPrice.feeCents.toString()} cents), which fits under a 5% max fee.
+
+**Which score?** \`get_status\` shows your *base* score (no collateral — there is no application). \`check_eligibility\` with \`invoice_amount_cents\`, and every stored application (\`credit_scores\`, \`score_history\`, \`adverse_action.score\`), include the collateral points of that request, so an invoice-backed application can show a score up to ${COMPONENT_MAX.collateral} points higher than \`get_status\`.
 
 ### Pricing
 

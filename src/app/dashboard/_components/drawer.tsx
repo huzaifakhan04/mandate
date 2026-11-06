@@ -236,7 +236,7 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
                 name="max_fee_pct"
                 inputMode="decimal"
                 required
-                defaultValue={current ? String(current.maxFeeBps / 100) : "5"}
+                defaultValue={current ? String(current.maxFeeBps / 100) : "10"}
                 aria-describedby={describedBy("max_fee_bps") ?? "hint-fee"}
               />
               <span className="after" aria-hidden="true">
@@ -244,7 +244,8 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
               </span>
             </div>
             <span className="hint" id="hint-fee">
-              Of the amount borrowed
+              Of the amount borrowed. New agents start at grade D: invoice-backed loans cost ~5.8% for 7 days; set ≥ 6% or
+              the bank will decline with mandate_fee
             </span>
             {err("max_fee_bps")}
           </div>
