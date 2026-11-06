@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
 
 import { fail } from "@/server/contracts/envelope";
+import { queryParamsToInput } from "@/server/contracts/queryInput";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import "@/server/contracts/tools";
@@ -65,7 +66,10 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
         );
       }
 
-      return dispatch(tool, {}, requestId, req);
+      // M2: query params become the input (digit strings → numbers only
+      // where the tool's schema expects a number).
+      const rawInput = queryParamsToInput(found.input, new URL(req.url).searchParams);
+      return dispatch(tool, rawInput, requestId, req);
     },
 
     async POST(req: Request, { params }: RouteParams): Promise<NextResponse> {

@@ -113,7 +113,7 @@ function renderConnectSection(base: string): string {
 Mandate exposes every tool over three transports that all share the same \`{status, summary, reason_codes, data, next_actions, docs_url}\` envelope and the same tool names:
 
 - **MCP (Streamable HTTP)**: \`${mcp}\`
-- **REST**: \`POST ${base}/api/v1/{tool}\` (read-only tools also accept \`GET\`)
+- **REST**: \`POST ${base}/api/v1/{tool}\` (read-only tools also accept \`GET\` with the input as query parameters, e.g. \`GET ${base}/api/v1/get_loan?loan_id=…\`)
 - **OpenAPI**: \`${base}/openapi.json\`
 
 You need no key at all for \`register_agent\` (and \`get_bank_guide\`) — see **Bootstrapping** below. Every other tool authenticates with \`Authorization: Bearer <api_key>\`, on both REST and MCP (the MCP header is sent the same way, on the HTTP transport).
