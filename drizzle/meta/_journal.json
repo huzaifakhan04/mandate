@@ -92,6 +92,13 @@
       "when": 1793930192723,
       "tag": "0012_paypal_operations_updated_at_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1793933807526,
+      "tag": "0013_agents_claim",
+      "breakpoints": true
     }
   ]
 }

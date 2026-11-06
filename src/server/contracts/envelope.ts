@@ -106,6 +106,9 @@ const STATUS_HTTP: Record<string, number> = {
   OPEN_LOAN_EXISTS: 409,
   // Task 7 (repayment).
   AMOUNT_EXCEEDS_OUTSTANDING: 400,
+  // P2 Task 2 (KYA tiers): borrowing needs a claim, then a signed mandate.
+  CLAIM_REQUIRED: 403,
+  MANDATE_REQUIRED: 403,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

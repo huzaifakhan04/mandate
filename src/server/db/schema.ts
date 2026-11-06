@@ -197,14 +197,22 @@ export const agents = pgTable("agents", {
   ed25519Pubkey: text("ed25519_pubkey"),
   kyaTier: integer("kya_tier").notNull().default(0),
   status: text("status").notNull().default("pending"),
+  /** sha256 hex of the claim token (P2 Task 2). Kept after the claim so the link resolves to "already claimed". */
   claimTokenHash: text("claim_token_hash"),
+  /**
+   * Random per-token seed: the token is HMAC(secret, agent id + seed), so
+   * `get_status` can show the claim URL again without storing the token.
+   * Nulled once claimed.
+   */
+  claimTokenSeed: text("claim_token_seed"),
   claimExpiresAt: timestamp("claim_expires_at", { withTimezone: true }),
+  claimedAt: timestamp("claimed_at", { withTimezone: true }),
   payoutReceiver: text("payout_receiver"),
   payoutReceiverType: text("payout_receiver_type"),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [uniqueIndex("agents_claim_token_hash_idx").on(table.claimTokenHash)]);
 
 export const apiKeys = pgTable("api_keys", {
   id: uuid("id").primaryKey().defaultRandom(),

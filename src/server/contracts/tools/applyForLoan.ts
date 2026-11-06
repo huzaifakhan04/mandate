@@ -58,9 +58,15 @@ export const applyForLoanTool = defineTool({
     "will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, " +
     "i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with " +
     "a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then " +
-    "call accept_offer with offer_id and disclosure_hash, or decline_offer.",
+    "call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: " +
+    "an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a " +
+    "claimed agent without a signed mandate gets 403 MANDATE_REQUIRED.",
   auth: "agent",
   mutating: true,
+  // KYA tier gate (runTool): unclaimed → 403 CLAIM_REQUIRED with the
+  // claim_url (only ever to the agent itself); claimed with no current
+  // mandate → 403 MANDATE_REQUIRED.
+  requiresBorrowTier: true,
   readOnly: false,
   input: inputSchema,
   output: outputSchema,

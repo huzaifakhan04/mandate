@@ -9,6 +9,7 @@ import type { Db } from "@/server/db/client";
 import { agents, apiKeys, journalEntries, loans, repaymentLinks } from "@/server/db/schema";
 import { simApprove } from "@/server/rail/simHandler";
 import { createWorld } from "@/server/services/worlds";
+import { claimAndMandate } from "../../helpers/kya";
 
 /**
  * Shared Task 8 fixtures (sim rail): worlds, agents, a funded pool, and
@@ -44,6 +45,8 @@ export async function createTestAgent(
     .returning();
   const generated = generateApiKey();
   await db.insert(apiKeys).values({ worldId, agentId: agent!.id, prefix: generated.prefix, keyHash: generated.hash });
+  // P2: borrowing needs KYA tier 1 (claimed + signed mandate).
+  await claimAndMandate(db, agent!.id);
   return { agentId: agent!.id, key: generated.key };
 }
 

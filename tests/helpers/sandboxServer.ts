@@ -133,6 +133,23 @@ export async function ledgerReport(base: string): Promise<LedgerReport> {
   return ((await res.json()) as { report: LedgerReport }).report;
 }
 
+/**
+ * TEST-ONLY claim + mandate (`POST /api/test/claim`, served only with
+ * MANDATE_TEST_ENDPOINTS=1): lifts a main-world agent to KYA tier 1 so it
+ * can borrow without a human in a browser. Task 7 replaces this with the
+ * real claim page + mandate flow driven by Playwright.
+ */
+export async function testClaim(base: string, agentId: string): Promise<void> {
+  const res = await fetch(`${base}/api/test/claim`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ agent_id: agentId }),
+  });
+  if (res.status !== 200) {
+    throw new Error(`/api/test/claim → HTTP ${res.status}`);
+  }
+}
+
 export function assertApproved(result: ApproveResult, who: string): void {
   if (result.blocked) {
     throw new Error(

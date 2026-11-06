@@ -51,6 +51,16 @@ describe("renderAgentsMd", () => {
     }
   });
 
+  it("documents claiming and the KYA tiers (P2 Task 2)", () => {
+    expect(md).toContain("## Claiming and KYA tiers");
+    expect(md).toContain(`${BASE_URL}/claim/<token>`);
+    expect(md).toContain("Ask your human to open <claim_url>");
+    expect(md).toContain("`CLAIM_REQUIRED` (403)");
+    expect(md).toContain("`MANDATE_REQUIRED` (403)");
+    expect(md).toContain("per loan ≤ 25000 cents");
+    expect(md).not.toContain("ALLOW_INSTANT_ACTIVATION");
+  });
+
   it("explains human_approval's url/who/then shape", () => {
     expect(md).toContain("human_approval");
     expect(md).toContain('"who": "payer"');

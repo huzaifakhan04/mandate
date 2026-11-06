@@ -14,6 +14,7 @@ import {
   reconcile as runReconcile,
   requireEnv,
   startLocalServer,
+  testClaim,
 } from "../helpers/sandboxServer";
 
 /**
@@ -180,6 +181,12 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
       const borrowerKey = borrower.data.api_key as string;
       summary.agents = { lender: lender.data.agent_id, borrower: borrower.data.agent_id };
       mark("agents_registered");
+      // P2: borrowing needs KYA tier 1. The borrower's human claims it and
+      // signs a mandate — via the test-only shortcut until Task 7 drives
+      // the real claim page in the browser.
+      expect(borrower.data.claim_url).toMatch(/\/claim\/[A-Za-z0-9_-]{43}$/);
+      await testClaim(BASE, borrower.data.agent_id as string);
+      mark("borrower_claimed");
 
       // 2. buy_notes 3000 → the lender approves → confirm_checkout.
       const buy = await ok("buy_notes", { amount_cents: NOTES_CENTS }, lenderKey);

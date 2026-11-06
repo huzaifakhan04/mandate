@@ -39,7 +39,10 @@ describe("session cookie", () => {
       JSON.stringify({ typ: "session", pid: "00000000-0000-4000-8000-000000000000", exp: 9_999_999_999 }),
     ).toString("base64url");
     expect(readSession(`${version}.${forged}.${signature}`)).toBeNull();
-    const flipped = signature.slice(0, -1) + (signature.endsWith("A") ? "B" : "A");
+    // Flip the FIRST character: the last base64url char of a 32-byte MAC
+    // carries 2 ignored bits, so flipping A↔B there can decode to the same
+    // bytes (a 1-in-32 flake).
+    const flipped = (signature.startsWith("A") ? "B" : "A") + signature.slice(1);
     expect(readSession(`${version}.${payload}.${flipped}`)).toBeNull();
     expect(readSession(`${version}.${payload}.`)).toBeNull();
     expect(readSession(`${version}.${payload}`)).toBeNull();

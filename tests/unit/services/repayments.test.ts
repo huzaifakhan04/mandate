@@ -27,6 +27,7 @@ import { invoiceLinkDescription } from "@/server/services/repayments";
 import { createWorld } from "@/server/services/worlds";
 
 import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
+import { claimAndMandate } from "../../helpers/kya";
 
 type Data = Record<string, unknown>;
 
@@ -51,6 +52,8 @@ async function createTestAgent(db: Db, worldId: string, payoutReceiver: string, 
     .returning();
   const generated = generateApiKey();
   await db.insert(apiKeys).values({ worldId, agentId: agent!.id, prefix: generated.prefix, keyHash: generated.hash });
+  // P2: borrowing needs KYA tier 1 (claimed + signed mandate).
+  await claimAndMandate(db, agent!.id);
   return { agentId: agent!.id, key: generated.key };
 }
 

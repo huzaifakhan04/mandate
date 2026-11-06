@@ -38,6 +38,7 @@ import {
   requireEnv,
   type SandboxAccount,
   startLocalServer,
+  testClaim,
 } from "../helpers/sandboxServer";
 
 type Json = Record<string, unknown>;
@@ -456,6 +457,18 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     const status = await tool(base, "get_status", {}, apiKey);
     record.agentId = String((status.data.agent as Json).id);
     mark(`${role}_registered`);
+    if (role === "borrower") {
+      // P2: borrowing needs KYA tier 1 (claimed by a human + a signed
+      // mandate). Locally the harness plays the human via the test-only
+      // shortcut; Task 7 replaces it with the real claim page + mandate
+      // flow in the browser (which a remote --base needs).
+      if (ctx.server) {
+        await testClaim(base, record.agentId);
+        mark("borrower_claimed");
+      } else {
+        result.notes.push("remote base: /api/test/claim is not served — the borrower stays unclaimed (tier 0) until Task 7's browser claim flow");
+      }
+    }
 
     const keyConfig = writeMcpConfig(`${role}-key`, apiKey);
     turn = await say(template("continue.md", {}), keyConfig, turn.sessionId);

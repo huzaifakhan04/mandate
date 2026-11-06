@@ -47,6 +47,8 @@ async function createTestAgent(db: Db, worldId: string, payoutReceiver: string |
 
   const generated = generateApiKey();
   await db.insert(apiKeys).values({ worldId, agentId: agent!.id, prefix: generated.prefix, keyHash: generated.hash });
+  // P2: borrowing needs KYA tier 1 (claimed + signed mandate).
+  await claimAndMandate(db, agent!.id);
   return { agentId: agent!.id, key: generated.key };
 }
 
@@ -65,6 +67,7 @@ async function call(
 }
 
 import { SIM_PAYOUT_FEE, simCaptureFee } from "../../helpers/simFees";
+import { claimAndMandate } from "../../helpers/kya";
 
 /** Funds the world's pool by `amountCents` via a lender's sim note purchase. */
 async function fundPool(db: Db, worldId: string, amountCents: number) {

@@ -184,12 +184,29 @@ Over MCP, call \`register_agent\` with no \`Authorization\` header at all (point
 function renderQuickstartSection(): string {
   return `## Quickstart
 
-1. **\`register_agent\`** — create the agent and get an \`api_key\`.
+1. **\`register_agent\`** — create the agent and get an \`api_key\` and a \`claim_url\`. You start at tier 0: you can lend now; to borrow, give your human the \`claim_url\` (see [Claiming and KYA tiers](#claiming-and-kya-tiers)).
 2. **\`buy_notes\`** — buy lender notes, funded by a PayPal checkout your human approves (you get back a \`human_approval\` next action with the \`approve_url\`), then \`confirm_checkout\` once they have approved.
-3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything.
+3. **\`check_eligibility\`** — quote a loan's fee/APR/total before committing to anything (needs tier ≥ 1: claimed by your human, who has signed a mandate).
 4. **\`apply_for_loan\`** — apply for the amount and term you checked; if \`OFFERED\`, keep the \`offer_id\` and \`disclosure_hash\`.
 5. **\`accept_offer\`** — accept with the same \`disclosure_hash\` the offer returned; the loan disburses to your payout receiver (\`payout_email\`, or \`payout_paypal_id\` if that account's email is unconfirmed).
 6. **Forward the repayment link, or call \`repay_loan\`** — \`get_loan\` returns an invoice \`repayment_link\` your client can pay directly, or call \`repay_loan\` yourself for a human-approved PayPal checkout, then \`confirm_checkout\`.
+`;
+}
+
+function renderClaimingSection(base: string): string {
+  return `## Claiming and KYA tiers
+
+Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may do depends on your tier, which the bank computes (\`get_status\` → \`data.kya\`):
+
+| Tier | Requirement | May lend | May borrow |
+| --- | --- | --- | --- |
+| T0 | unclaimed | yes (buy/redeem notes) | no — \`apply_for_loan\` → \`CLAIM_REQUIRED\` (403) with \`data.claim_url\` |
+| T1 | claimed by a PayPal-verified human **and** a signed mandate | yes | within the mandate's limits, per loan ≤ 25000 cents |
+| T2 | T1 + an approved KYA document + a registered Ed25519 key | yes | within the mandate's limits, per loan ≤ 50000 cents |
+
+**Claiming (your human does this once):** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Tell your human: *"Ask your human to open <claim_url>"* — they verify with PayPal (a $0.01 check that is never charged) and click **Claim agent**. Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
+
+**Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits. Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403). \`accept_offer\` re-checks your tier, so a mandate revoked after an offer blocks its acceptance.
 `;
 }
 
@@ -209,7 +226,9 @@ Several tools (\`buy_notes\`, \`repay_loan\`, \`confirm_checkout\`, \`accept_off
 }
 \`\`\`
 
-\`human_approval\` is not a real tool you call — it is a signal: a human (\`who\` says which one — the \`payer\` funding a checkout, or the \`client\` paying an invoice) must open \`url\` and approve the PayPal checkout before anything else can happen. Tell your human exactly that: what they are approving and why, then show them the \`url\`. Once they confirm they approved it, call the tool named in \`then.tool\` with \`then.args\` (always \`confirm_checkout\`) to capture it. If the response comes back \`PENDING\` or \`AWAITING_APPROVAL\` again, that capture is still settling — call \`confirm_checkout\` again with the same \`checkout_id\`.
+\`human_approval\` is not a real tool you call — it is a signal: a human (\`who\` says which one — the \`payer\` funding a checkout, or the \`client\` paying an invoice) must open \`url\` and approve the PayPal checkout before anything else can happen. Tell your human exactly that: what they are approving and why, then show them the \`url\`. Once they confirm they approved it, call the tool named in \`then.tool\` with \`then.args\` (\`confirm_checkout\` for a checkout) to capture it. If the response comes back \`PENDING\` or \`AWAITING_APPROVAL\` again, that capture is still settling — call \`confirm_checkout\` again with the same \`checkout_id\`.
+
+With \`"who": "owner"\` the \`url\` is not a checkout: it is your claim link or your owner's dashboard (to sign a mandate) — see [Claiming and KYA tiers](#claiming-and-kya-tiers). Show it to your human; once they are done, \`then\` is \`get_status\`.
 `;
 }
 
@@ -296,6 +315,7 @@ Mandate is a sandbox bank built for AI agents: it issues short-term lender notes
 ${renderConnectSection(base)}
 ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
+${renderClaimingSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}
@@ -313,7 +333,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, human-approval handling, the full tool reference, errors, and money rules.
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

@@ -19,6 +19,8 @@ import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } fr
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
+import { borrowGate } from "./kya";
+import type { BorrowBlocker } from "../domain/kya";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
 const MANDATE_POOL_A_NAME = "Mandate Pool A";
@@ -420,6 +422,8 @@ export type AcceptOfferOutcome =
   | { outcome: "open_loan_exists" }
   | { outcome: "insufficient_liquidity"; availableLiquidityCents: bigint }
   | { outcome: "payout_receiver_missing" }
+  /** P2 Task 2: the agent's KYA tier no longer allows borrowing (e.g. the mandate was revoked). */
+  | { outcome: "borrow_blocked"; blockers: BorrowBlocker[] }
   | { outcome: "disbursing"; loanId: string; payoutOperationId: string };
 
 /**
@@ -468,6 +472,14 @@ export async function beginAcceptOffer(
   if (simNow.getTime() >= offer.expiresSimAt.getTime()) {
     await expireOffer(tx, worldId, offer, simNow, "expired");
     return { outcome: "offer_expired" };
+  }
+
+  // P2 Task 2: re-check the KYA tier at acceptance, under the series lock
+  // — a mandate can be revoked between offer and acceptance. No claim link:
+  // this outcome is stored under the call's idempotency key.
+  const gate = await borrowGate(tx, worldId, agentId, { withClaimLink: false });
+  if (gate.tier.borrowBlockers.length > 0) {
+    return { outcome: "borrow_blocked", blockers: gate.tier.borrowBlockers };
   }
 
   if (await hasOpenLoan(tx, worldId, agentId)) {

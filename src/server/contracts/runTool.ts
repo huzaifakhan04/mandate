@@ -12,6 +12,8 @@ import { idempotencyKeys } from "../db/schema";
 import { ensureMainWorldOnce } from "../services/worlds";
 import type { Envelope } from "./envelope";
 import { docsUrlForTool, fail, httpStatusForEnvelope } from "./envelope";
+import { borrowBlockedEnvelope } from "./kyaActions";
+import { borrowGate } from "../services/kya";
 import type { ToolDef } from "./registry";
 
 export interface RunToolDeps {
@@ -245,6 +247,15 @@ export async function runTool(
 
     if (tool.mutating && agent && agent.status !== "active") {
       return respond(fail("AGENT_NOT_ACTIVE", "This agent is not active.", ["agent_not_active"]), toolName);
+    }
+
+    // P2 Task 2: KYA tier gate for borrowing tools — never stored under an
+    // idempotency key (the 403 carries the agent's claim URL).
+    if (tool.requiresBorrowTier && agent) {
+      const gate = await borrowGate(db, worldId, agent.agentId);
+      if (gate.tier.borrowBlockers.length > 0) {
+        return respond(borrowBlockedEnvelope(gate.tier.borrowBlockers, gate.claimLink?.url ?? null), toolName);
+      }
     }
 
     const afterCommitCallbacks: Array<() => Promise<void> | void> = [];

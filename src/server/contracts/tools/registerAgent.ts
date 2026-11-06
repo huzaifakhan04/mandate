@@ -1,8 +1,9 @@
 import { z } from "zod";
 
 import { ok } from "../envelope";
+import { claimNextAction } from "../kyaActions";
 import { defineTool } from "../registry";
-import { SAMPLE_BUY_NOTES_ARGS, SAMPLE_CHECK_ELIGIBILITY_ARGS } from "../sampleArgs";
+import { SAMPLE_BUY_NOTES_ARGS } from "../sampleArgs";
 import { registerAgent as registerAgentService } from "../../services/agents";
 
 const inputSchema = z
@@ -33,6 +34,9 @@ const outputSchema = z.object({
   agent_id: z.string(),
   api_key: z.string(),
   status: z.literal("ACTIVE"),
+  tier: z.literal(0),
+  claim_url: z.string(),
+  claim_expires_at: z.string(),
   world: z.literal("main"),
   mcp: z.object({
     url: z.string(),
@@ -53,7 +57,10 @@ export const registerAgentTool = defineTool({
     "Creates a new agent and an API key for it. Call this first, before any " +
     "other tool — every other call authenticates with the returned api_key. " +
     "Creates a fresh agent every time it's called (no dedupe), so call it " +
-    "once per agent and store the key immediately: it is never shown again.",
+    "once per agent and store the key immediately: it is never shown again. " +
+    "The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. " +
+    "Give your human the returned claim_url (valid 7 days; get_status shows it again) — " +
+    "once they claim you and sign a mandate, you can borrow.",
   auth: "none",
   mutating: true,
   readOnly: false,
@@ -72,6 +79,9 @@ export const registerAgentTool = defineTool({
       agent_id: result.agentId,
       api_key: result.apiKey,
       status: "ACTIVE" as const,
+      tier: 0 as const,
+      claim_url: result.claimUrl,
+      claim_expires_at: result.claimExpiresAt.toISOString(),
       world: "main" as const,
       mcp: {
         url: mcpUrl(),
@@ -82,12 +92,13 @@ export const registerAgentTool = defineTool({
     return ok(data, {
       status: "OK",
       summary:
-        "Agent registered and activated. Store this API key now; it will " +
-        "not be shown again.",
+        "Agent registered and active at tier 0 (you can lend now). Store this API key now; it will " +
+        `not be shown again. To borrow, ask your human to open ${result.claimUrl} to claim you ` +
+        "(they verify with PayPal, then click Claim) and then sign a borrowing mandate.",
       next_actions: [
+        claimNextAction(result.claimUrl),
         { tool: "get_status", args: {} },
         { tool: "buy_notes", args: { ...SAMPLE_BUY_NOTES_ARGS } },
-        { tool: "check_eligibility", args: { ...SAMPLE_CHECK_ELIGIBILITY_ARGS } },
       ],
     });
   },
