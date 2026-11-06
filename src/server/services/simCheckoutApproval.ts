@@ -2,8 +2,6 @@ import { and, eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { paypalOperations } from "../db/schema";
-import { PayPalApiError } from "../paypal/fetch";
-import { simApprove } from "../rail/simHandler";
 import { ownedPrivateWorld } from "./privateWorldAccess";
 
 /**
@@ -11,7 +9,9 @@ import { ownedPrivateWorld } from "./privateWorldAccess";
  * private world. Sim orders there carry a `payer-action` link to
  * `/dashboard/worlds/<worldId>/checkouts/<orderId>/approve`; the signed-in
  * owner of that (active, private) world opens it and approves, which is
- * `simApprove` — then the agent's `confirm_checkout` captures as usual.
+ * `simApprove` (called by the route, `auth/simApproveRoutes.ts` — services
+ * never import the rails) — then the agent's `confirm_checkout` captures
+ * as usual.
  *
  * Only the world's owner, only an order created in that world on the sim
  * rail: anything else (another principal, the main world, an archived
@@ -92,37 +92,4 @@ export async function findOwnedSimCheckout(
     status: (state.status as SimCheckoutStatus) ?? "PAYER_ACTION_REQUIRED",
     returnPath: returnPathOf(row.executableRequest, world.id, orderId),
   };
-}
-
-export type ApproveSimCheckoutOutcome =
-  | { outcome: "approved"; checkout: SimCheckoutView }
-  | { outcome: "already"; checkout: SimCheckoutView }
-  | { outcome: "not_found" };
-
-/**
- * Approves the owner's sim order (`PAYER_ACTION_REQUIRED → APPROVED`).
- * Approving twice, or after capture, is harmless (`already`).
- */
-export async function approveOwnedSimCheckout(
-  db: Db,
-  principalId: string,
-  worldId: string,
-  orderId: string,
-): Promise<ApproveSimCheckoutOutcome> {
-  const checkout = await findOwnedSimCheckout(db, principalId, worldId, orderId);
-  if (!checkout) {
-    return { outcome: "not_found" };
-  }
-  if (checkout.status !== "PAYER_ACTION_REQUIRED") {
-    return { outcome: "already", checkout };
-  }
-  try {
-    await simApprove(db, orderId);
-  } catch (err) {
-    if (err instanceof PayPalApiError && err.status === 422) {
-      return { outcome: "already", checkout };
-    }
-    throw err;
-  }
-  return { outcome: "approved", checkout: { ...checkout, status: "APPROVED" } };
 }

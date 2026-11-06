@@ -662,6 +662,45 @@ export const RETRY_CAP_AGE_MS = 24 * 60 * 60 * 1000;
 /** `last_error` (and the stored error's `issue`) of an operation given up on by the cap. */
 export const RETRY_CAP_EXCEEDED = "retry_cap_exceeded";
 
+/** `last_error` (and the stored error's `issue`) of an operation given up on because its world was archived (M6). */
+export const WORLD_ARCHIVED_OPERATION_ERROR = "world_archived";
+
+/**
+ * P2 final review (M6): when a private world is archived (reset), its
+ * operations that haven't finished (`queued`, `failed_retryable`,
+ * `in_flight`) become `failed_terminal` / `world_archived` in one
+ * statement, inside the caller's archiving transaction — so no cron keeps
+ * retrying them and nothing stays queued for a world nobody can act in. A
+ * worker still holding an `in_flight` claim can't overwrite this: its
+ * outcome write requires `status = 'in_flight'`. Returns how many rows.
+ */
+export async function failWorldOperations(tx: Db, worldId: string): Promise<number> {
+  const failed = await tx
+    .update(paypalOperations)
+    .set({
+      status: "failed_terminal",
+      lastError: WORLD_ARCHIVED_OPERATION_ERROR,
+      claimedAt: null,
+      nextAttemptAt: null,
+      response: {
+        error: {
+          name: "WORLD_ARCHIVED",
+          issue: WORLD_ARCHIVED_OPERATION_ERROR,
+          message: "The sandbox world was reset or archived before this operation finished.",
+        },
+      },
+      updatedAt: new Date(),
+    })
+    .where(
+      and(
+        eq(paypalOperations.worldId, worldId),
+        inArray(paypalOperations.status, ["queued", "failed_retryable", "in_flight"]),
+      ),
+    )
+    .returning();
+  return failed.length;
+}
+
 /**
  * Task 10b (Rulings U, V): an operation of a `RETRY_CAPPED_KINDS` kind
  * (only `order.create`) whose outcome would be `failed_retryable` becomes

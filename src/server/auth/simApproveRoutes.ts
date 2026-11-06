@@ -1,7 +1,8 @@
 import type { Db } from "../db/client";
 import { centsToAmount } from "../paypal/orders";
-import { privateWorldApprovePath } from "../rail/simHandler";
-import { approveOwnedSimCheckout, findOwnedSimCheckout, type SimCheckoutView } from "../services/simCheckoutApproval";
+import { privateWorldApprovePath, simApprove } from "../rail/simHandler";
+import { PayPalApiError } from "../paypal/fetch";
+import { findOwnedSimCheckout, type SimCheckoutView } from "../services/simCheckoutApproval";
 import { principalFromRequest, signInPath } from "./guard";
 import { isUuid } from "./ownership";
 import { failure, gate, json, seeOther, wantsHtml } from "./ownerRoutes";
@@ -89,6 +90,40 @@ function checkoutPage(checkout: SimCheckoutView): Response {
 <form method="post" action="${escapeHtml(simApprovePath(checkout.worldId, checkout.orderId))}"><button type="submit">Approve ${amount}</button></form>
 <a href="/dashboard?world=${checkout.worldId}">Back to the dashboard</a>`,
   );
+}
+
+export type ApproveSimCheckoutOutcome =
+  | { outcome: "approved"; checkout: SimCheckoutView }
+  | { outcome: "already"; checkout: SimCheckoutView }
+  | { outcome: "not_found" };
+
+/**
+ * Approves the owner's sim order (`PAYER_ACTION_REQUIRED → APPROVED`).
+ * Approving twice, or after capture, is harmless (`already`). No
+ * transaction is open here (`simApprove` is one conditional update).
+ */
+export async function approveOwnedSimCheckout(
+  db: Db,
+  principalId: string,
+  worldId: string,
+  orderId: string,
+): Promise<ApproveSimCheckoutOutcome> {
+  const checkout = await findOwnedSimCheckout(db, principalId, worldId, orderId);
+  if (!checkout) {
+    return { outcome: "not_found" };
+  }
+  if (checkout.status !== "PAYER_ACTION_REQUIRED") {
+    return { outcome: "already", checkout };
+  }
+  try {
+    await simApprove(db, orderId);
+  } catch (err) {
+    if (err instanceof PayPalApiError && err.status === 422) {
+      return { outcome: "already", checkout };
+    }
+    throw err;
+  }
+  return { outcome: "approved", checkout: { ...checkout, status: "APPROVED" } };
 }
 
 function errorName(err: unknown): string {

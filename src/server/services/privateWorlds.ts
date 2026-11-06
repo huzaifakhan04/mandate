@@ -1,13 +1,14 @@
-import { and, count, eq, inArray } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 
 import { advanceClock, getSimDay } from "../clock/clock";
 import { insertBots, runBotsCatchUp, seedBots } from "../bots/runner";
 import type { Db } from "../db/client";
-import { agents, events, loans, notePositions, paypalOperations, principals, worlds } from "../db/schema";
+import { agents, events, loans, notePositions, principals, worlds } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { availableLiquidity } from "../domain/liquidity";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { trialBalance } from "../ledger/trialBalance";
+import { failWorldOperations } from "../paypal/operations";
 import { listOwnedPrivateWorlds, ownedPrivateWorld, type WorldRow } from "./privateWorldAccess";
 import { createWorldInTx } from "./worlds";
 
@@ -157,41 +158,13 @@ export async function advancePrivateWorld(
   return { outcome: "advanced", simDay: day, simNow };
 }
 
-/** `last_error` of an operation given up on because its world was archived (M6). */
-export const WORLD_ARCHIVED_OPERATION_ERROR = "world_archived";
-
-/**
- * P2 final review (M6): an archived world's operations that haven't
- * finished (`queued`, `failed_retryable`, `in_flight`) become
- * `failed_terminal` / `world_archived` in one statement, so no cron keeps
- * retrying them and nothing stays queued for a world nobody can act in.
- */
-async function failOpenOperations(tx: Db, worldId: string): Promise<void> {
-  await scoped(tx, worldId).update(
-    paypalOperations,
-    {
-      status: "failed_terminal",
-      lastError: WORLD_ARCHIVED_OPERATION_ERROR,
-      claimedAt: null,
-      nextAttemptAt: null,
-      response: {
-        error: {
-          name: "WORLD_ARCHIVED",
-          issue: WORLD_ARCHIVED_OPERATION_ERROR,
-          message: "The sandbox world was reset or archived before this operation finished.",
-        },
-      },
-    },
-    inArray(paypalOperations.status, ["queued", "failed_retryable", "in_flight"]),
-  );
-}
-
 export type ResetOutcome = { outcome: "reset"; worldId: string } | { outcome: "not_found" };
 
 /**
  * Archives the owner's world (its agents stop: `WORLD_ARCHIVED`; crons
  * and the dashboard skip it) and opens a fresh one with the same name.
- * The old world is archived, never deleted — its ledger stays.
+ * The old world is archived, never deleted — its ledger stays; its
+ * unfinished operations become `failed_terminal` / `world_archived` (M6).
  */
 export async function resetPrivateWorld(db: Db, principalId: string, worldId: string, now: Date = new Date()): Promise<ResetOutcome> {
   const created = await db.transaction(async (tx): Promise<ResetOutcome> => {
@@ -208,7 +181,7 @@ export async function resetPrivateWorld(db: Db, principalId: string, worldId: st
     if (archived.length !== 1) {
       return { outcome: "not_found" };
     }
-    await failOpenOperations(tx, world.id);
+    await failWorldOperations(tx, world.id);
     return { outcome: "reset", worldId: await createWorldWithBots(tx, principalId, world.name, world.botSeed, now) };
   });
   if (created.outcome === "reset") {
