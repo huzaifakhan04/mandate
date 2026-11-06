@@ -33,8 +33,10 @@ const outputSchema = z.object({
       days_late: z.number(),
       late_fee_cents: z.number(),
       penalty_cents: z.number(),
-      /** Everything owed: outstanding principal + fee, late fees and penalty. */
+      /** Everything owed: outstanding principal + fee, late fees and penalty (CHARGED_OFF: what is still recoverable). */
       total_due_cents: z.number(),
+      /** P4: for a CHARGED_OFF loan, your owner's guarantee link (null otherwise). */
+      guarantee_link: z.object({ url: z.string().nullable(), amount_cents: z.number(), status: z.string() }).nullable(),
     })
     .nullable(),
   /** P4: notices you haven't acknowledged (late, penalty, substandard, cured…); clear them with ack_notices. */
@@ -106,6 +108,13 @@ export const getStatusTool = defineTool({
             late_fee_cents: Number(status.openLoan.lateFeeOutstandingCents),
             penalty_cents: Number(status.openLoan.penaltyOutstandingCents),
             total_due_cents: Number(status.openLoan.totalDueCents),
+            guarantee_link: status.openLoan.guaranteeLink
+              ? {
+                  url: status.openLoan.guaranteeLink.url,
+                  amount_cents: Number(status.openLoan.guaranteeLink.amountCents),
+                  status: status.openLoan.guaranteeLink.status.toUpperCase(),
+                }
+              : null,
           }
         : null,
       notices: notices.map(noticeView),
@@ -131,7 +140,9 @@ export const getStatusTool = defineTool({
     const claimUrl = status.kya.claimLink?.url ?? null;
 
     let nextActions: NextAction[];
-    const delinquent = status.openLoan && (status.openLoan.status === "late" || status.openLoan.status === "substandard");
+    const delinquent =
+      status.openLoan &&
+      (status.openLoan.status === "late" || status.openLoan.status === "substandard" || status.openLoan.status === "charged_off");
     if (status.openLoan && delinquent) {
       // P4: past due — repaying comes first (a restricted agent may still repay).
       nextActions = [

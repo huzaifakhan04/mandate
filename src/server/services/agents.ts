@@ -6,7 +6,7 @@ import type { GeneratedApiKey } from "../auth/apiKeys";
 import { generateApiKey } from "../auth/apiKeys";
 import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
-import { agents, apiKeys, loans } from "../db/schema";
+import { agents, apiKeys, loans, repaymentLinks } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { totalDueCents } from "./collections";
 import { getAccountBalance } from "../ledger/trialBalance";
@@ -139,6 +139,11 @@ export interface OpenLoanStatus {
   lateFeeOutstandingCents: bigint;
   penaltyOutstandingCents: bigint;
   totalDueCents: bigint;
+  /**
+   * P4 fix round (M6): a CHARGED_OFF loan is shown too — `totalDueCents` is
+   * then what is still recoverable — with the owner's guarantee link.
+   */
+  guaranteeLink: { url: string | null; amountCents: bigint; status: string } | null;
 }
 
 export interface AgentStatus {
@@ -199,7 +204,7 @@ export async function getAgentStatus(
 
   const openLoanRows = await scoped(db, worldId).select(
     loans,
-    and(eq(loans.agentId, agentId), inArray(loans.status, [...OPEN_LOAN_DB_STATUSES])),
+    and(eq(loans.agentId, agentId), inArray(loans.status, [...OPEN_LOAN_DB_STATUSES, "charged_off"])),
   );
   // P1 enforces "one open loan per agent" (plan, Fixed P1 pricing), so
   // at most one row is expected; take the most recent defensively.
@@ -235,6 +240,7 @@ export async function getAgentStatus(
           lateFeeOutstandingCents: openLoanRow.lateFeeOutstandingCents,
           penaltyOutstandingCents: openLoanRow.penaltyOutstandingCents,
           totalDueCents: totalDueCents(openLoanRow),
+          guaranteeLink: await guaranteeLinkFor(db, worldId, openLoanRow),
         }
       : null,
     limits: {
@@ -243,4 +249,19 @@ export async function getAgentStatus(
     },
     kya: { tier, claimLink },
   };
+}
+
+async function guaranteeLinkFor(
+  db: Db,
+  worldId: string,
+  loan: typeof loans.$inferSelect,
+): Promise<OpenLoanStatus["guaranteeLink"]> {
+  if (loan.status !== "charged_off") {
+    return null;
+  }
+  const link = await scoped(db, worldId).findOne(
+    repaymentLinks,
+    and(eq(repaymentLinks.loanId, loan.id), eq(repaymentLinks.kind, "guarantee"))!,
+  );
+  return link ? { url: link.approveUrl, amountCents: link.amountCents, status: link.status } : null;
 }

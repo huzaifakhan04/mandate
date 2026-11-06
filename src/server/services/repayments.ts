@@ -14,6 +14,7 @@ import {
   noteSeries,
   notePositions,
   offers,
+  paypalOperations,
   postings,
   repaymentLinks,
   repayments,
@@ -25,6 +26,7 @@ import { holdersShare, waterfall } from "../domain/waterfall";
 import { getAccountBalance } from "../ledger/trialBalance";
 import { postJournal } from "../ledger/postJournal";
 import {
+  amountToCents,
   buildCreateOrderRequest,
   buildSendPayoutRequest,
   deriveOperationId,
@@ -433,7 +435,7 @@ async function findLinkForCheckout(
   if (purpose === "guarantee") {
     return scoped(db, worldId).findOne(
       repaymentLinks,
-      and(eq(repaymentLinks.loanId, createSourceId), eq(repaymentLinks.kind, "guarantee"))!,
+      and(eq(repaymentLinks.loanId, loanIdFromGuaranteeSourceId(createSourceId)), eq(repaymentLinks.kind, "guarantee"))!,
     );
   }
   return purpose === "repayment_link"
@@ -542,7 +544,20 @@ export async function applyRepaymentCapture(
     await settlePendingRemainder(db, existing);
     return appliedResult(db, worldId, (await reloadRepayment(db, worldId, existing.id)) ?? existing);
   }
-  if (link.status === "review") {
+  // P4-F: a capture of a superseded guarantee issue (the owner paid an
+  // older link) — the row now describes a newer issue, so check the amount
+  // against the old order and apply it as a recovery without touching the row.
+  const createOperationId = deriveOperationId(worldId, args.purpose, args.createSourceId);
+  const staleOutside = args.purpose === "guarantee" && link.createOpId !== createOperationId;
+  if (staleOutside) {
+    const expected = await orderAmountCents(db, worldId, createOperationId);
+    if (expected === null || expected !== capturedCents) {
+      console.error(
+        `[repayments] capture ${captureId} of a superseded guarantee order ${args.orderId} captured ${capturedCents.toString()} cents, expected ${String(expected)} — nothing applied`,
+      );
+      return { outcome: "mismatch", reason: `captured ${capturedCents.toString()} cents, expected ${String(expected)}` };
+    }
+  } else if (link.status === "review") {
     return { outcome: "mismatch", reason: `captured ${capturedCents.toString()} cents, expected ${link.amountCents.toString()}` };
   }
   if (link.status === "failed") {
@@ -553,7 +568,7 @@ export async function applyRepaymentCapture(
     return { outcome: "failed", reason: "this repayment checkout was already paid" };
   }
 
-  if (capturedCents !== link.amountCents) {
+  if (!staleOutside && capturedCents !== link.amountCents) {
     await scoped(db, worldId).update(
       repaymentLinks,
       { status: "review" },
@@ -580,13 +595,24 @@ export async function applyRepaymentCapture(
       throw new Error(`loan ${link.loanId} not found for repayment link ${link.id}`);
     }
 
-    const marked = await scoped(tx, worldId).update(
-      repaymentLinks,
-      { status: "paid", paypalOrderId: args.orderId },
-      and(eq(repaymentLinks.id, link.id), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
-    );
-    if (marked.length !== 1) {
-      return null; // Lost a race with another settlement of this checkout.
+    // P4-F: re-check under the loan lock (a re-issue holds it too) whether
+    // this capture is for the guarantee link's current issue.
+    let stale = staleOutside;
+    if (!stale && args.purpose === "guarantee") {
+      const [current] = await scoped(tx, worldId).forUpdate(repaymentLinks, eq(repaymentLinks.id, link.id));
+      stale = current?.createOpId !== createOperationId;
+    }
+    if (!stale) {
+      const marked = await scoped(tx, worldId).update(
+        repaymentLinks,
+        { status: "paid", paypalOrderId: args.orderId },
+        and(eq(repaymentLinks.id, link.id), inArray(repaymentLinks.status, OPEN_LINK_STATUSES))!,
+      );
+      if (marked.length !== 1) {
+        return null; // Lost a race with another settlement of this checkout.
+      }
+    } else if (lockedLoan.status !== "charged_off" && lockedLoan.status !== "recovered") {
+      throw new Error(`superseded guarantee capture ${captureId} on loan ${lockedLoan.id} that isn't charged off`);
     }
 
     if (lockedLoan.status === "charged_off" || lockedLoan.status === "recovered") {
@@ -594,6 +620,7 @@ export async function applyRepaymentCapture(
       const recovered = await applyRecoveryLocked(tx, worldId, simNow, {
         loan: lockedLoan,
         link,
+        stale,
         seriesId: series?.id ?? null,
         captureId,
         captureOperationId,
@@ -763,6 +790,12 @@ export async function applyRepaymentCapture(
   if (applied?.payoutOperationId) {
     await applyRemainderPayoutOutcome(db, applied.payoutOperationId);
   }
+  if (applied) {
+    // P4-F: a partial recovery leaves the guarantee link quoting too much — re-issue it.
+    await reissueGuaranteeLink(db, worldId, link.loanId).catch((err: unknown) => {
+      console.error(`[repayments] guarantee re-issue for loan ${link.loanId}: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }
 
   const settled = await scoped(db, worldId).findOne(repayments, eq(repayments.captureId, captureId));
   if (!settled) {
@@ -899,12 +932,27 @@ async function applyRecoveryLocked(
     captureOperationId: string;
     capturedCents: bigint;
     capture: OrderCaptureResult;
+    /** A capture of a superseded guarantee issue (P4-F): never a quote. */
+    stale?: boolean;
   },
 ): Promise<{ repaymentId: string; remainderCents: bigint } | null> {
-  const { loan, capturedCents } = args;
+  const { loan, capturedCents, link } = args;
   const recoverable = recoverableCents(loan);
   const recovery = capturedCents < recoverable ? capturedCents : recoverable;
   const remainder = capturedCents - recovery;
+  // Ruling P4-E (as P4-C): a full-payoff quote made before the charge-off,
+  // paid as quoted, fully recovers — the residue (charges that accrued
+  // between the quote and the charge-off) is waived.
+  const paidAsQuoted =
+    !args.stale &&
+    loan.status === "charged_off" &&
+    link.quotedCents !== null &&
+    link.quotedCents === link.amountCents &&
+    capturedCents === link.quotedCents &&
+    link.quoteSimAt !== null &&
+    loan.chargedOffAt !== null &&
+    link.quoteSimAt.getTime() <= loan.chargedOffAt.getTime();
+  const waivedResidue = paidAsQuoted && recoverable > capturedCents ? recoverable - capturedCents : 0n;
 
   const [repayment] = await scoped(tx, worldId).insertOnConflictDoNothing(
     repayments,
@@ -991,11 +1039,12 @@ async function applyRecoveryLocked(
   }
 
   const newRecovered = loan.recoveredCents + recovery;
-  const fullyRecovered = loan.status === "charged_off" && newRecovered >= loan.chargeOffTotalCents;
+  const fullyRecovered = loan.status === "charged_off" && newRecovered + waivedResidue >= loan.chargeOffTotalCents;
   const [after] = await scoped(tx, worldId).update(
     loans,
     {
       recoveredCents: newRecovered,
+      ...(waivedResidue > 0n ? { waivedCents: loan.waivedCents + waivedResidue } : {}),
       ...(fullyRecovered ? { status: toDbStatus(transition(fromDbStatus(loan.status), "RECOVER")) } : {}),
     },
     eq(loans.id, loan.id),
@@ -1014,6 +1063,20 @@ async function applyRecoveryLocked(
       still_owed_cents: Number(after!.chargeOffTotalCents - after!.recoveredCents),
     },
   });
+  if (waivedResidue > 0n) {
+    await appendEvent(tx, worldId, {
+      type: "loan.charges_waived",
+      aggregateId: loan.id,
+      simAt: simNow,
+      payload: {
+        link_id: link.id,
+        quote_sim_at: link.quoteSimAt?.toISOString() ?? null,
+        quoted_cents: Number(link.quotedCents),
+        waived_recovery_cents: Number(waivedResidue),
+        reason: "paid_as_quoted_after_charge_off",
+      },
+    });
+  }
   if (fullyRecovered) {
     await appendEvent(tx, worldId, { type: "loan.recovered", aggregateId: loan.id, simAt: simNow });
   }
@@ -1101,10 +1164,13 @@ registerCaptureHandler("repayment_direct", {
 
 registerCaptureHandler("guarantee", {
   // P4 Task 2: the owner pays it; the borrower agent may confirm it too (it's its loan).
-  resolveOwnerAgentId: (db, worldId, loanId) => resolveLinkOwnerAgentId(db, worldId, loanId),
+  resolveOwnerAgentId: (db, worldId, sourceId) => resolveLinkOwnerAgentId(db, worldId, loanIdFromGuaranteeSourceId(sourceId)),
   applyEffect: (db, worldId, simNow, args) => applyRepaymentCapture(db, worldId, simNow, { purpose: "guarantee", ...args }),
   applyFailure: failureApplier("guarantee"),
-  retryNextAction: async (_db, _worldId, loanId): Promise<NextAction> => ({ tool: "get_loan", args: { loan_id: loanId } }),
+  retryNextAction: async (_db, _worldId, sourceId): Promise<NextAction> => ({
+    tool: "get_loan",
+    args: { loan_id: loanIdFromGuaranteeSourceId(sourceId) },
+  }),
 });
 
 // ---------------------------------------------------------------------
@@ -1213,6 +1279,123 @@ export async function applyRemainderPayoutOutcome(
 export async function remainderPayoutNeedsPolling(db: Db, worldId: string, repaymentId: string): Promise<boolean> {
   const repayment = await scoped(db, worldId).findOne(repayments, eq(repayments.id, repaymentId));
   return repayment?.remainderStatus === "pending";
+}
+
+// ---------------------------------------------------------------------
+// P4-F: guarantee link re-issue
+// ---------------------------------------------------------------------
+
+/** How many times a guarantee link may be issued in total (the first + 3 re-issues). */
+export const MAX_GUARANTEE_LINK_ISSUES = 4;
+
+/** The `guarantee` checkout's sourceId for issue `n`: the loan id, then `${loanId}:g<n>`. */
+export function guaranteeSourceId(loanId: string, issue: number): string {
+  return issue <= 1 ? loanId : `${loanId}:g${issue}`;
+}
+
+/** The loan id behind a `guarantee` checkout's sourceId. */
+export function loanIdFromGuaranteeSourceId(sourceId: string): string {
+  return sourceId.replace(/:g\d+$/, "");
+}
+
+/** The amount (cents) a queued/executed `order.create` asked for, or `null`. */
+async function orderAmountCents(db: Db, worldId: string, createOperationId: string): Promise<bigint | null> {
+  const row = await scoped(db, worldId).findOne(paypalOperations, eq(paypalOperations.id, createOperationId));
+  const body = (row?.executableRequest as { body?: { purchase_units?: { amount?: { value?: unknown } }[] } } | null | undefined)?.body;
+  const value = body?.purchase_units?.[0]?.amount?.value;
+  return typeof value === "string" ? amountToCents(value) : null;
+}
+
+export type ReissueGuaranteeOutcome =
+  | { outcome: "reissued"; issue: number; link: LinkRow }
+  | { outcome: "not_needed" }
+  | { outcome: "exhausted"; issues: number };
+
+/**
+ * Ruling P4-F: re-issues a CHARGED_OFF loan's guarantee link at what is
+ * still recoverable — after a partial recovery (the open link quotes too
+ * much) or after its `order.create` failed terminally. Updates the SAME
+ * row in place (one guarantee link per loan): a new `order.create` with
+ * sourceId `${loanId}:g<n>` (deterministic, so a repeat resolves to the
+ * same operation), status `pending`, no order/URL yet, amount = quote =
+ * the recoverable amount, `quote_sim_at` = now. At most
+ * `MAX_GUARANTEE_LINK_ISSUES` issues. Locks loan → link (the capture
+ * path's order). An owner paying an OLDER issue afterwards is still
+ * applied — as a recovery (any excess refunded) — see
+ * `applyRepaymentCapture`. Executes the create after commit. Never call
+ * inside a transaction.
+ */
+export async function reissueGuaranteeLink(db: Db, worldId: string, loanId: string): Promise<ReissueGuaranteeOutcome> {
+  const result = await db.transaction(async (tx): Promise<ReissueGuaranteeOutcome> => {
+    const [loan] = await scoped(tx, worldId).forUpdate(loans, eq(loans.id, loanId));
+    if (!loan || loan.status !== "charged_off") {
+      return { outcome: "not_needed" };
+    }
+    const [link] = await scoped(tx, worldId).forUpdate(
+      repaymentLinks,
+      and(eq(repaymentLinks.loanId, loanId), eq(repaymentLinks.kind, "guarantee"))!,
+    );
+    const recoverable = recoverableCents(loan);
+    if (!link || recoverable <= 0n) {
+      return { outcome: "not_needed" };
+    }
+    const stale = link.status === "failed" || (OPEN_LINK_STATUSES.includes(link.status) && link.amountCents !== recoverable);
+    if (!stale) {
+      return { outcome: "not_needed" };
+    }
+    let current = 1;
+    for (let issue = 1; issue <= MAX_GUARANTEE_LINK_ISSUES; issue += 1) {
+      if (deriveOperationId(worldId, "guarantee", guaranteeSourceId(loanId, issue)) === link.createOpId) {
+        current = issue;
+        break;
+      }
+    }
+    const next = current + 1;
+    if (next > MAX_GUARANTEE_LINK_ISSUES) {
+      return { outcome: "exhausted", issues: current };
+    }
+    const simNow = await getSimNow(tx, worldId);
+    const agent = await scoped(tx, worldId).findOne(agents, eq(agents.id, loan.agentId));
+    const rail = await railForWorld(tx, worldId);
+    const { operationId } = await enqueueOperation(tx, {
+      worldId,
+      rail,
+      kind: "order.create",
+      purpose: "guarantee",
+      sourceId: guaranteeSourceId(loanId, next),
+      request: buildCreateOrderRequest({
+        amountCents: recoverable,
+        description: `Guarantee: Mandate loan ${loan.id} to ${agent?.name ?? "your agent"} was charged off`.slice(0, PAYPAL_DESCRIPTION_MAX),
+        customId: loan.id,
+        returnUrl: checkoutUrl("/checkout/guarantee/return"),
+        cancelUrl: checkoutUrl("/checkout/guarantee/cancel"),
+      }),
+    });
+    const [reset] = await scoped(tx, worldId).update(
+      repaymentLinks,
+      {
+        status: "pending",
+        amountCents: recoverable,
+        quotedCents: recoverable,
+        quoteSimAt: simNow,
+        createOpId: operationId,
+        paypalOrderId: null,
+        approveUrl: null,
+      },
+      eq(repaymentLinks.id, link.id),
+    );
+    await appendEvent(tx, worldId, {
+      type: "loan.guarantee_reissued",
+      aggregateId: loan.id,
+      simAt: simNow,
+      payload: { link_id: link.id, issue: next, amount_cents: Number(recoverable), previous_status: link.status },
+    });
+    return { outcome: "reissued", issue: next, link: reset! };
+  });
+  if (result.outcome !== "reissued") {
+    return result;
+  }
+  return { ...result, link: await refreshLinkRow(db, worldId, result.link, { ignoreBackoff: true }) };
 }
 
 // ---------------------------------------------------------------------

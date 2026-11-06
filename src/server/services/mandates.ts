@@ -107,7 +107,7 @@ export async function principalExposure(db: Db, worldId: string, principalId: st
  * recovered). While it is, new applications by any of their
  * agents decline with `delinquent_principal` (and acceptances are refused).
  */
-export async function principalHasSubstandardLoan(db: Db, worldId: string, principalId: string | null): Promise<boolean> {
+export async function principalHasDelinquentLoan(db: Db, worldId: string, principalId: string | null): Promise<boolean> {
   if (!principalId) {
     return false;
   }

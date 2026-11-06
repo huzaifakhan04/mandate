@@ -34,6 +34,9 @@ import { simApprove } from "@/server/rail/simHandler";
 import { settleCheckoutByOrderId } from "@/server/services/checkouts";
 import { processDue } from "@/server/services/collections";
 import { advancePrivateWorld } from "@/server/services/privateWorlds";
+import { applyRedemptionPayoutOutcome, beginNoteRedemption } from "@/server/services/notes";
+import { MAX_GUARANTEE_LINK_ISSUES, reissueGuaranteeLink } from "@/server/services/repayments";
+import { runReconcile } from "@/server/jobs/reconcile";
 import { approveOwnedSimCheckout } from "@/server/auth/simApproveRoutes";
 import { createWorld } from "@/server/services/worlds";
 
@@ -313,7 +316,7 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     await expectBalanced(db, worldId);
   });
 
-  it("partial recovery via repay_loan stays CHARGED_OFF; then the guarantee (paid on top) refunds the overlap as a remainder; nothing double-credited", async () => {
+  it("partial recovery via repay_loan stays CHARGED_OFF and re-issues the guarantee (P4-F); the owner then pays the OLD guarantee order: the overlap is refunded; the new one is refunded in full", async () => {
     const worldId = (await createWorld(db, { name: "Partial", ownerPrincipalId: null, railMode: "sim" })).worldId;
     const l1 = await fundPool(db, worldId, 20000, "l1@example.com");
     const l2 = await fundPool(db, worldId, 10000, "l2@example.com");
@@ -326,6 +329,8 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     const loss1 = 20000n - (await units(db, l1.agentId));
     const loss2 = 10000n - (await units(db, l2.agentId));
     expect(loss1 + loss2).toBe(25000n);
+    const firstIssue = (await link(db, borrower.loanId, "guarantee"))!;
+    expect(firstIssue).toMatchObject({ amountCents: total, quotedCents: total, status: "open" });
 
     // A restricted agent repays 9000 after charge-off: a partial recovery, all to the holders (pro rata to loss).
     const partial = await repay(db, borrower.key, borrower.loanId, 9000);
@@ -339,12 +344,22 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     await expectUnitsMatchLedger(db, worldId);
     await expectBalanced(db, worldId);
 
+    // P4-F: the guarantee link (same row) is re-issued at what is still recoverable, as a quote.
+    const reissued = (await link(db, borrower.loanId, "guarantee"))!;
+    expect(reissued.id).toBe(firstIssue.id);
+    expect(reissued).toMatchObject({ amountCents: total - 9000n, quotedCents: total - 9000n, status: "open" });
+    expect(reissued.paypalOrderId).not.toBe(firstIssue.paypalOrderId);
+    const [g2] = await db.select().from(paypalOperations).where(eq(paypalOperations.id, reissued.createOpId!));
+    expect(g2!.sourceId).toBe(`${borrower.loanId}:g2`);
+
     // repay_loan caps at what is still owed.
     const tooMuch = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId, amount_cents: Number(total - 9000n) + 1 });
     expect(tooMuch.envelope.status).toBe("AMOUNT_EXCEEDS_OUTSTANDING");
 
-    // The owner pays the full guarantee anyway: total − 9000 recovered, 9000 back to the borrower.
-    const settled = await payLink(db, worldId, borrower.loanId, "guarantee");
+    // The owner pays the OLD (first-issue) guarantee order anyway: total − 9000 recovered, 9000 back to the borrower.
+    await simApprove(db, firstIssue.paypalOrderId!);
+    const settled = await settleCheckoutByOrderId(db, worldId, firstIssue.paypalOrderId!);
+    expect(settled.status).toBe("COMPLETED");
     expect(settled.data).toMatchObject({
       loan_status: "RECOVERED",
       applied_recovery_cents: Number(total - 9000n),
@@ -367,6 +382,12 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     expect(refund.remainderStatus).toBe("paid");
     expect(await getAccountBalance(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
     expect(await agentStatus(db, borrower.agentId)).toBe("active");
+    // The superseded order didn't touch the current link row; paying the re-issued link now is refunded in full.
+    expect((await link(db, borrower.loanId, "guarantee"))!.status).toBe("open");
+    const second = await payLink(db, worldId, borrower.loanId, "guarantee");
+    expect(second.data).toMatchObject({ loan_status: "RECOVERED", applied_recovery_cents: 0, remainder_cents: Number(total - 9000n) });
+    expect(await units(db, l1.agentId)).toBe(20000n);
+    expect((await loanRow(db, borrower.loanId)).recoveredCents).toBe(total);
     await expectUnitsMatchLedger(db, worldId);
     await expectBalanced(db, worldId);
   });
@@ -441,13 +462,21 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     await processDue(db, worldId, at(due2, 10));
     const chargedOff = await loanRow(db, late.loanId);
     expect(chargedOff.status).toBe("charged_off");
-    // … so the capture is a recovery of `amount`, short of the written-off total by the penalty since +9.
+    // … so the capture is a recovery of `amount`. Ruling P4-E: it was a full-payoff quote paid as quoted,
+    // so it fully recovers — the penalty accrued between the quote (+9) and the charge-off is waived.
     const confirmed = (await call(db, "confirm_checkout", late.key, { checkout_id: checkoutId })).envelope;
     expect(confirmed.status).toBe("COMPLETED");
-    expect(confirmed.data).toMatchObject({ loan_status: "CHARGED_OFF", applied_recovery_cents: Number(amount), remainder_cents: 0 });
+    expect(confirmed.data).toMatchObject({ loan_status: "RECOVERED", applied_recovery_cents: Number(amount), remainder_cents: 0 });
     const row = await loanRow(db, late.loanId);
+    expect(row.status).toBe("recovered");
     expect(row.recoveredCents).toBe(amount);
-    expect(row.chargeOffTotalCents - amount).toBe(penaltyFor(25000n, 10) - penaltyFor(25000n, daysLateAt(due2, simNow)));
+    const residue = penaltyFor(25000n, 10) - penaltyFor(25000n, daysLateAt(due2, simNow));
+    expect(residue).toBeGreaterThan(0n);
+    expect(row.chargeOffTotalCents - amount).toBe(residue);
+    expect(row.waivedCents - chargedOff.waivedCents).toBe(residue);
+    expect(await agentStatus(db, late.agentId)).toBe("active");
+    // The guarantee isn't re-issued for a recovered loan.
+    expect((await link(db, late.loanId, "guarantee"))!.amountCents).toBe(row.chargeOffTotalCents);
     await expectUnitsMatchLedger(db, worldId);
     await expectBalanced(db, worldId);
   });
@@ -491,6 +520,190 @@ describe("charge-off, the guarantee and recovery (P4 Task 2)", () => {
     expect(await agentStatus(db, borrower.agentId)).toBe("active");
     await expectUnitsMatchLedger(db, worldId);
     await expectBalanced(db, worldId);
+  });
+});
+
+/** Holder L1 (25000, receiver as given) with a 12000 redemption pending, L2 (10000); a 25000 loan charged off at +10. */
+async function chargeOffWithPendingRedemption(db: Db, l1Receiver: string) {
+  const worldId = (await createWorld(db, { name: "Deferred", ownerPrincipalId: null, railMode: "sim" })).worldId;
+  const l1 = await fundPool(db, worldId, 25000, l1Receiver);
+  const l2 = await fundPool(db, worldId, 10000, "l2@example.com");
+  const redemption = await db.transaction(async (tx) => {
+    const outcome = await beginNoteRedemption(tx, worldId, l1.agentId, 12000n);
+    if (outcome.outcome !== "submitted") {
+      throw new Error(`expected submitted, got ${outcome.outcome}`);
+    }
+    return outcome;
+  });
+  const borrower = await borrow(db, worldId);
+  const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+  await moveClockTo(db, worldId, at(due, 10));
+  await processDue(db, worldId, await getSimNow(db, worldId));
+  const loan = await loanRow(db, borrower.loanId);
+  expect(loan.status).toBe("charged_off");
+  return { worldId, l1, l2, borrower, loan, redemption };
+}
+
+async function lossRow(db: Db, loanId: string, agentId: string) {
+  const [row] = await db
+    .select()
+    .from(loanHolderLosses)
+    .where(and(eq(loanHolderLosses.loanId, loanId), eq(loanHolderLosses.agentId, agentId)));
+  return row!;
+}
+
+describe("charge-off fix round 1 (P4-D deferred holder loss, P4-F re-issue, M5, M6)", () => {
+  let db: Db;
+
+  beforeEach(async () => {
+    process.env.API_KEY_PEPPER = "test-pepper";
+    db = await createTestDb();
+  });
+
+  afterEach(() => {
+    delete process.env.API_KEY_PEPPER;
+  });
+
+  it("P4-D: shares on full units (17857 / 7143); 12000 reserved by a pending redemption defers 4857; the redemption SUCCEEDS → the bank absorbs it", async () => {
+    const { worldId, l1, l2, loan, redemption } = await chargeOffWithPendingRedemption(db, "l1@example.com");
+    const row = await lossRow(db, loan.id, l1.agentId);
+    expect(row).toMatchObject({ lossCents: 13000n, deferredCents: 4857n });
+    expect((await lossRow(db, loan.id, l2.agentId)).lossCents).toBe(7143n);
+    expect(loan.holdersLossCents).toBe(20143n);
+    expect(await units(db, l1.agentId)).toBe(12000n); // exactly the reserved units
+    expect(await getAccountBalance(db, worldId, "provision_expense", null)).toBe(4857n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+
+    await applyRedemptionPayoutOutcome(db, redemption.payoutOperationId);
+    expect(await units(db, l1.agentId)).toBe(0n);
+    expect(await lossRow(db, loan.id, l1.agentId)).toMatchObject({ lossCents: 13000n, deferredCents: 0n });
+    // Absorbed by the bank: nothing more journaled.
+    expect(await getAccountBalance(db, worldId, "provision_expense", null)).toBe(4857n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+  });
+
+  it("P4-D: the redemption FAILS → the deferred 4857 is applied (units 7143); the guarantee then makes the holder whole", async () => {
+    const { worldId, l1, borrower, loan, redemption } = await chargeOffWithPendingRedemption(db, "fail@example.com");
+    expect(await lossRow(db, loan.id, l1.agentId)).toMatchObject({ lossCents: 13000n, deferredCents: 4857n });
+
+    await applyRedemptionPayoutOutcome(db, redemption.payoutOperationId);
+    expect(await lossRow(db, loan.id, l1.agentId)).toMatchObject({ lossCents: 17857n, deferredCents: 0n });
+    expect(await units(db, l1.agentId)).toBe(25000n - 17857n);
+    expect(await getAccountBalance(db, worldId, "provision_expense", null)).toBe(0n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+    // Settling the same outcome again changes nothing.
+    await applyRedemptionPayoutOutcome(db, redemption.payoutOperationId);
+    expect(await units(db, l1.agentId)).toBe(25000n - 17857n);
+
+    await payLink(db, worldId, borrower.loanId, "guarantee");
+    expect(await units(db, l1.agentId)).toBe(25000n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+  });
+
+  it("P4-D: a redemption that fails AFTER the loan was recovered applies the deferred loss and passes back what the bank kept", async () => {
+    const { worldId, l1, borrower, loan, redemption } = await chargeOffWithPendingRedemption(db, "fail@example.com");
+    await payLink(db, worldId, borrower.loanId, "guarantee");
+    expect((await loanRow(db, loan.id)).status).toBe("recovered");
+    expect(await units(db, l1.agentId)).toBe(25000n); // 12000 + 13000 credited back
+    const kept = -(await getAccountBalance(db, worldId, "recoveries_income", null));
+    expect(kept).toBe(loan.chargeOffTotalCents - 20143n);
+
+    await applyRedemptionPayoutOutcome(db, redemption.payoutOperationId);
+    expect(await lossRow(db, loan.id, l1.agentId)).toMatchObject({ lossCents: 17857n, recoveredCents: 17857n, deferredCents: 0n });
+    expect(await units(db, l1.agentId)).toBe(25000n);
+    expect(-(await getAccountBalance(db, worldId, "recoveries_income", null))).toBe(kept - 4857n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+  });
+
+  it("P4-F: a guarantee whose order.create failed is re-issued in place by the reconcile cron, at most 3 times", async () => {
+    const worldId = (await createWorld(db, { name: "Reissue", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000, "l1@example.com");
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveClockTo(db, worldId, at(due, 10));
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    const total = (await loanRow(db, borrower.loanId)).chargeOffTotalCents;
+    const first = (await link(db, borrower.loanId, "guarantee"))!;
+
+    // Simulate a terminally failed create.
+    await db.update(repaymentLinks).set({ status: "failed" }).where(eq(repaymentLinks.id, first.id));
+    const report = await runReconcile(db);
+    expect(report.errors ?? []).toEqual([]);
+    let row = (await link(db, borrower.loanId, "guarantee"))!;
+    expect(row).toMatchObject({ id: first.id, status: "open", amountCents: total, quotedCents: total });
+    expect(row.createOpId).not.toBe(first.createOpId);
+
+    for (let issue = 3; issue <= MAX_GUARANTEE_LINK_ISSUES; issue += 1) {
+      await db.update(repaymentLinks).set({ status: "failed" }).where(eq(repaymentLinks.id, first.id));
+      expect((await reissueGuaranteeLink(db, worldId, borrower.loanId)).outcome).toBe("reissued");
+    }
+    await db.update(repaymentLinks).set({ status: "failed" }).where(eq(repaymentLinks.id, first.id));
+    expect(await reissueGuaranteeLink(db, worldId, borrower.loanId)).toEqual({ outcome: "exhausted", issues: MAX_GUARANTEE_LINK_ISSUES });
+    row = (await link(db, borrower.loanId, "guarantee"))!;
+    expect(row.status).toBe("failed");
+    await expectBalanced(db, worldId);
+  });
+
+  it("M5: the guarantee and a direct repayment settling at once after charge-off credit at most what is owed; the excess is refunded once", async () => {
+    const worldId = (await createWorld(db, { name: "Race", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    const l1 = await fundPool(db, worldId, 20000, "l1@example.com");
+    const l2 = await fundPool(db, worldId, 15000, "l2@example.com");
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await moveClockTo(db, worldId, at(due, 10));
+    await processDue(db, worldId, await getSimNow(db, worldId));
+    const total = (await loanRow(db, borrower.loanId)).chargeOffTotalCents;
+
+    const started = await call(db, "repay_loan", borrower.key, { loan_id: borrower.loanId });
+    const checkoutId = (started.envelope.data as Data).checkout_id as string;
+    expect((started.envelope.data as Data).amount_cents).toBe(Number(total));
+    await simApprove(db, checkoutId);
+    const guarantee = (await link(db, borrower.loanId, "guarantee"))!;
+    await simApprove(db, guarantee.paypalOrderId!);
+
+    const [byOwner, byAgent] = await Promise.all([
+      settleCheckoutByOrderId(db, worldId, guarantee.paypalOrderId!),
+      call(db, "confirm_checkout", borrower.key, { checkout_id: checkoutId }),
+    ]);
+    expect(byOwner.status).toBe("COMPLETED");
+    expect(byAgent.envelope.status).toBe("COMPLETED");
+
+    const rows = await db.select().from(repayments).where(eq(repayments.loanId, borrower.loanId));
+    expect(rows).toHaveLength(2);
+    expect(rows.reduce((sum, r) => sum + r.appliedRecoveryCents, 0n)).toBe(total);
+    expect(rows.reduce((sum, r) => sum + r.remainderCents, 0n)).toBe(total);
+    expect(rows.filter((r) => r.remainderCents === total)).toHaveLength(1);
+    const loan = await loanRow(db, borrower.loanId);
+    expect(loan).toMatchObject({ status: "recovered", recoveredCents: total });
+    expect(await units(db, l1.agentId)).toBe(20000n);
+    expect(await units(db, l2.agentId)).toBe(15000n);
+    expect(await getAccountBalance(db, worldId, "payable_to_borrower", borrower.agentId)).toBe(0n);
+    await expectUnitsMatchLedger(db, worldId);
+    await expectBalanced(db, worldId);
+  });
+
+  it("M6: get_status shows the charged-off loan with what is recoverable and the guarantee link", async () => {
+    const worldId = (await createWorld(db, { name: "Status", ownerPrincipalId: null, railMode: "sim" })).worldId;
+    await fundPool(db, worldId, 30000, "l1@example.com");
+    const borrower = await borrow(db, worldId);
+    const due = (await loanRow(db, borrower.loanId)).dueSimAt;
+    await processDue(db, worldId, at(due, 10));
+    const loan = await loanRow(db, borrower.loanId);
+    const guarantee = (await link(db, borrower.loanId, "guarantee"))!;
+    const status = (await call(db, "get_status", borrower.key, {})).envelope;
+    expect((status.data as Data).open_loan).toMatchObject({
+      loan_id: borrower.loanId,
+      status: "CHARGED_OFF",
+      total_due_cents: Number(loan.chargeOffTotalCents),
+      days_late: 0,
+      guarantee_link: { url: guarantee.approveUrl, amount_cents: Number(loan.chargeOffTotalCents), status: "OPEN" },
+    });
+    expect(status.next_actions[0]).toMatchObject({ tool: "repay_loan", args: { loan_id: borrower.loanId } });
   });
 });
 

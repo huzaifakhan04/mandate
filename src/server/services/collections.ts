@@ -396,13 +396,16 @@ async function applySubstandardStep(tx: Db, worldId: string, loan: LoanRow, at: 
  *   Dr `allowance_for_losses` / Cr `loans_receivable` (P). The base fee,
  *   late fees and penalty were never journaled (fee income on collection,
  *   P1/Task 1) — writing them off posts nothing;
- * - note holders bear the principal loss pro rata by their units at this
- *   moment (less their own pending redemptions, so a redemption already
- *   in flight can't drive units negative): L = min(P, Σ units), shares by
- *   `distribute` (Σ = L), Dr `notes_payable[holder_i]` / Cr
- *   `provision_expense` L, units reduced by the same amounts (Ruling T:
- *   units == −notes_payable[holder]); the bank's capital absorbs P − L;
- *   each share recorded in `loan_holder_losses` for recovery;
+ * - note holders bear the principal loss pro rata by their FULL units at
+ *   this moment (Ruling P4-D): L = min(P, Σ units), shares by `distribute`
+ *   (Σ = L). Each share is cut now only up to the holder's units not
+ *   reserved by its own pending redemptions (so a redemption in flight
+ *   can't drive units negative): Dr `notes_payable[holder_i]` / Cr
+ *   `provision_expense`, units reduced by the same amounts (Ruling T:
+ *   units == −notes_payable[holder]). The rest is `deferred_cents` on the
+ *   holder's `loan_holder_losses` row — applied if that redemption fails,
+ *   absorbed by the bank if it succeeds (`holderLosses.ts`). The bank's
+ *   capital absorbs P − L;
  * - the principal's guarantee: a `guarantee` `repayment_links` row for
  *   the written-off total, payable by the owner, and its queued
  *   `order.create` (purpose `guarantee`, sourceId = loan id) — executed
@@ -421,7 +424,7 @@ async function applyChargeOffStep(
   const total = parts.principalCents + parts.feeCents + parts.lateFeeCents + parts.penaltyCents;
   const next = transition(fromDbStatus(loan.status), "CHARGE_OFF");
 
-  // Holders' share of the principal loss, by units at this moment.
+  // Holders' share of the principal loss, by FULL units at this moment (Ruling P4-D).
   const [series] = await scoped(tx, worldId).select(noteSeries, eq(noteSeries.name, MANDATE_POOL_A_NAME));
   const positions = series
     ? await scoped(tx, worldId).forUpdate(notePositions, eq(notePositions.seriesId, series.id))
@@ -439,16 +442,26 @@ async function applyChargeOffStep(
         )!,
       )
     : [];
-  const available = positions.map((position) => {
-    const pendingCents = pending
-      .filter((row) => row.positionId === position.id)
-      .reduce((sum, row) => sum + row.amountCents, 0n);
-    const units = position.units - pendingCents;
-    return { agentId: position.agentId, units: units > 0n ? units : 0n };
-  });
-  const totalUnits = available.reduce((sum, holder) => sum + holder.units, 0n);
-  const holdersLoss = parts.principalCents < totalUnits ? parts.principalCents : totalUnits;
-  const shares = distribute(available, holdersLoss).filter((share) => share.cents > 0n);
+  const totalUnits = positions.reduce((sum, position) => sum + position.units, 0n);
+  const allocated = parts.principalCents < totalUnits ? parts.principalCents : totalUnits;
+  // Each share is cut now up to the holder's units not reserved by its own
+  // pending redemptions; the rest is deferred until that redemption settles.
+  const shares = distribute(
+    positions.map((position) => ({ agentId: position.agentId, units: position.units })),
+    allocated,
+  )
+    .filter((share) => share.cents > 0n)
+    .map((share) => {
+      const position = positions.find((row) => row.agentId === share.agentId)!;
+      const pendingCents = pending
+        .filter((row) => row.positionId === position.id)
+        .reduce((sum, row) => sum + row.amountCents, 0n);
+      const free = position.units - pendingCents > 0n ? position.units - pendingCents : 0n;
+      const now = share.cents < free ? share.cents : free;
+      return { agentId: share.agentId, position, cents: now, deferred: share.cents - now };
+    });
+  const holdersLoss = shares.reduce((sum, share) => sum + share.cents, 0n);
+  const holdersDeferred = shares.reduce((sum, share) => sum + share.deferred, 0n);
 
   const [updated] = await scoped(tx, worldId).update(
     loans,
@@ -496,7 +509,7 @@ async function applyChargeOffStep(
       ],
     });
   }
-  if (shares.length > 0) {
+  if (holdersLoss > 0n) {
     await postJournal(tx, {
       worldId,
       memo: "Loan charged off: note holders' share of the loss",
@@ -505,19 +518,31 @@ async function applyChargeOffStep(
       simAt: at,
       idempotencyKey: `charge_off:${loan.id}:holders`,
       postings: [
-        ...shares.map((share) => ({
-          accountCode: "notes_payable" as const,
-          ownerRef: share.agentId,
-          amountCents: share.cents,
-        })),
+        ...shares
+          .filter((share) => share.cents > 0n)
+          .map((share) => ({
+            accountCode: "notes_payable" as const,
+            ownerRef: share.agentId,
+            amountCents: share.cents,
+          })),
         { accountCode: "provision_expense", amountCents: -holdersLoss },
       ],
     });
-    for (const share of shares) {
-      const position = positions.find((row) => row.agentId === share.agentId)!;
-      await scoped(tx, worldId).update(notePositions, { units: position.units - share.cents }, eq(notePositions.id, position.id));
-      await scoped(tx, worldId).insert(loanHolderLosses, { loanId: loan.id, agentId: share.agentId, lossCents: share.cents });
+  }
+  for (const share of shares) {
+    if (share.cents > 0n) {
+      await scoped(tx, worldId).update(
+        notePositions,
+        { units: share.position.units - share.cents },
+        eq(notePositions.id, share.position.id),
+      );
     }
+    await scoped(tx, worldId).insert(loanHolderLosses, {
+      loanId: loan.id,
+      agentId: share.agentId,
+      lossCents: share.cents,
+      deferredCents: share.deferred,
+    });
   }
 
   // The principal's guarantee: a checkout for everything written off.
@@ -558,8 +583,13 @@ async function applyChargeOffStep(
     penalty_cents: Number(parts.penaltyCents),
     written_off_cents: Number(total),
     holders_loss_cents: Number(holdersLoss),
+    holders_deferred_cents: Number(holdersDeferred),
     bank_loss_cents: Number(parts.principalCents - holdersLoss),
-    holders: shares.map((share) => ({ agent_id: share.agentId, loss_cents: Number(share.cents) })),
+    holders: shares.map((share) => ({
+      agent_id: share.agentId,
+      loss_cents: Number(share.cents),
+      deferred_cents: Number(share.deferred),
+    })),
   };
   await appendEvent(tx, worldId, {
     type: "loan.charged_off",
@@ -812,7 +842,7 @@ export async function onLoanRecovery(
  * Whether `agentId` has a substandard (or, P4 Task 2, charged-off and not
  * yet recovered) loan — unfreezing such an agent lands on `restricted`.
  */
-export async function agentHasSubstandardLoan(db: Db, worldId: string, agentId: string): Promise<boolean> {
+export async function agentHasDelinquentLoan(db: Db, worldId: string, agentId: string): Promise<boolean> {
   const rows = await scoped(db, worldId).selectFields(
     loans,
     { id: loans.id },

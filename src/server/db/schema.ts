@@ -589,7 +589,7 @@ export const loanLadderSteps = pgTable(
 
 /**
  * P4 Task 2: each note holder's share of a charged-off loan's principal
- * loss (Dr `notes_payable[holder]` / Cr `provision_expense`, units reduced
+ * loss (Ruling P4-D: deferred while reserved by a pending redemption) (Dr `notes_payable[holder]` / Cr `provision_expense`, units reduced
  * by the same amount — Ruling T), and how much of it recoveries have
  * credited back (`recovered_cents` ≤ `loss_cents`). Written under the
  * loan row lock only (charge-off step, recovery capture).
@@ -607,8 +607,17 @@ export const loanHolderLosses = pgTable(
     agentId: uuid("agent_id")
       .notNull()
       .references(() => agents.id),
+    /** The loss this holder has borne so far (units already reduced by it). */
     lossCents: bigint("loss_cents", { mode: "bigint" }).notNull(),
     recoveredCents: bigint("recovered_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    /**
+     * Ruling P4-D: the part of this holder's share (computed on FULL units)
+     * that couldn't be cut at charge-off because those units were reserved
+     * by a pending redemption. Applied (→ `loss_cents`) if that redemption
+     * fails; absorbed by the bank's capital (→ 0, nothing journaled) if it
+     * succeeds. Never more than the holder's pending redemptions.
+     */
+    deferredCents: bigint("deferred_cents", { mode: "bigint" }).notNull().default(sql`0`),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),

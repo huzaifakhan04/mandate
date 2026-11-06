@@ -41,7 +41,7 @@ import {
   checkAgentMandate,
   mandateLimits,
   mandateSummary,
-  principalHasSubstandardLoan,
+  principalHasDelinquentLoan,
   resolveCurrentMandate,
   type MandateRow,
   type MandateSummary,
@@ -241,7 +241,7 @@ async function underwrite(
     invoiceCoverageBps: coverageBps,
     sanctions: { name: agent.name, operator: agent.operator, list: sanctionsStubList() },
     declarations: request.declarations,
-    delinquentPrincipal: await principalHasSubstandardLoan(db, worldId, agent.principalId),
+    delinquentPrincipal: await principalHasDelinquentLoan(db, worldId, agent.principalId),
     openLoanExists: await hasOpenLoan(db, worldId, agentId),
     availableLiquidityCents,
   });
@@ -878,7 +878,7 @@ export async function beginAcceptOffer(
   }
 
   // P4 mandate freeze, under the series lock (the ladder's substandard step takes it too).
-  if (await principalHasSubstandardLoan(tx, worldId, kyaAgent.principalId)) {
+  if (await principalHasDelinquentLoan(tx, worldId, kyaAgent.principalId)) {
     return { outcome: "delinquent_principal" };
   }
 

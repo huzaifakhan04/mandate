@@ -162,6 +162,13 @@
       "when": 1793965131953,
       "tag": "0022_p4_quotes",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793965553067,
+      "tag": "0023_p4_deferred_holder_loss",
+      "breakpoints": true
     }
   ]
 }

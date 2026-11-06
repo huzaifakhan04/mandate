@@ -6,7 +6,7 @@ import { getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
 import { agentKeys, agents, apiKeys, events } from "../db/schema";
 import { scoped } from "../db/scoped";
-import { agentHasSubstandardLoan, lockAgent } from "./collections";
+import { agentHasDelinquentLoan, lockAgent } from "./collections";
 import { registerAgent } from "./agents";
 import { ownedPrivateWorld } from "./privateWorldAccess";
 import { ensureMainWorldOnce } from "./worlds";
@@ -189,7 +189,7 @@ export async function setAgentFrozen(
     // M1: lock the agent row first, so a concurrent cure / substandard step
     // (which lock it too) is either fully before or after this check.
     await lockAgent(tx, agent.worldId, agent.id);
-    const unfrozenStatus = (await agentHasSubstandardLoan(tx, agent.worldId, agent.id)) ? "restricted" : "active";
+    const unfrozenStatus = (await agentHasDelinquentLoan(tx, agent.worldId, agent.id)) ? "restricted" : "active";
     const updated = await scoped(tx, agent.worldId).update(
       agents,
       { status: params.frozen ? "frozen" : unfrozenStatus },
