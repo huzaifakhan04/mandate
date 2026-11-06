@@ -9,4 +9,4 @@ Hard rules:
 - Amounts are in cents in the input; write them as dollars (e.g. 5000 cents = $50.00). APR is in basis points (1000 bps = 10%).
 - If the decision is "approve", "reasons_explained" is empty and the summary describes the offer (amount, term, fee, APR).
 
-Return JSON only, matching the schema: {"summary": ..., "reasons_explained": [{"code": ..., "explanation": ...}], "next_steps": [...]}. At most 4 next steps.`;
+Return JSON only, matching the schema: {"summary": ..., "reasons_explained": [{"code": ..., "explanation": ...}], "next_steps": [...]}. At most 4 next steps. Keep "summary" to 200 characters or fewer and each next step to 160 characters or fewer (longer text is cut off). If a reason is "mandate_fee" and "mandateMaxFeeBps" is given, say the human must raise the mandate's max fee from that value to at least the fee as a share of the amount, and re-sign it.`;

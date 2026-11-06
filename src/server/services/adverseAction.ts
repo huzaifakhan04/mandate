@@ -53,6 +53,7 @@ export function loanOfficerInputFor(
   credit: ScoreResult,
   amountCents: bigint,
   termDays: number,
+  mandateMaxFeeBps: number | null = null,
 ): LoanOfficerInput {
   return {
     decision: decision.decision,
@@ -65,6 +66,7 @@ export function loanOfficerInputFor(
     feeCents: decision.price ? Number(decision.price.feeCents) : null,
     aprBps: decision.price ? decision.price.aprBps : null,
     effectiveCapCents: Number(decision.effectiveCapCents),
+    mandateMaxFeeBps,
   };
 }
 

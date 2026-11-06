@@ -6,7 +6,9 @@ import { REASON_PRIORITY } from "../../domain/reasons";
 import type { Explanation } from "../../services/adverseAction";
 import { createLoanOffer, type NarrativeInputs } from "../../services/loans";
 import { narrateApplication } from "../../services/underwritingNarrative";
-import { fail, ok, type Envelope } from "../envelope";
+import { fail, ok, type Envelope, type NextAction } from "../envelope";
+import { invoiceBackedCheckArgs } from "../sampleArgs";
+import { PURPOSE_PLACEHOLDER } from "./checkEligibility";
 import { defineTool } from "../registry";
 
 const invoiceSchema = z.object({
@@ -119,6 +121,48 @@ interface ApplyFinalizeState {
   /** Private-world bots get the template narrative (no LLM calls for simulated volume). */
   isBot: boolean;
 }
+
+type ApplyInput = z.infer<typeof inputSchema>;
+
+/** Only an ALA E/H miss: the reasons are `declaration_missing` and nothing else. */
+function onlyDeclarationMissing(reasons: readonly string[]): boolean {
+  return reasons.length > 0 && reasons.every((reason) => reason === "declaration_missing");
+}
+
+/**
+ * What a DECLINED agent should do next (P3 final review I2/I5):
+ * - grade E (no or bad history) → check an invoice-backed newcomer loan
+ *   (≤ 5000 cents, invoice ≥ 1.5×) instead of the same request again;
+ * - only `declaration_missing` → the same application with section E and
+ *   H filled in (the summary says to send them only if they are true);
+ * - anything else → check eligibility for the same amount and term.
+ */
+function declinedNextActions(input: ApplyInput, reasons: readonly string[]): NextAction[] {
+  if (reasons.includes("insufficient_credit_history") || reasons.includes("score_too_low")) {
+    return [{ tool: "check_eligibility", args: invoiceBackedCheckArgs(input.amount_cents, input.term_days) }];
+  }
+  if (onlyDeclarationMissing(reasons)) {
+    return [
+      {
+        tool: "apply_for_loan",
+        args: {
+          ...input,
+          // A blank purpose is also a section B/E miss: hand back the placeholder to fill in.
+          ...(input.purpose.trim().length === 0 ? { purpose: PURPOSE_PLACEHOLDER } : {}),
+          declarations: { no_other_debt: true },
+          attest: true,
+        },
+      },
+    ];
+  }
+  return [{ tool: "check_eligibility", args: { amount_cents: input.amount_cents, term_days: input.term_days } }];
+}
+
+/** I5: the declined summary's extra instruction when only the declarations were missing. */
+const DECLARATION_RETRY_TEXT =
+  " Your application was missing its declarations: re-apply with declarations.no_other_debt: true and attest: true " +
+  "ONLY if both are true — you have no other outstanding debts and everything in the application is accurate. " +
+  "If either is not true, do not send them.";
 
 function isApplyFinalizeState(state: unknown): state is ApplyFinalizeState {
   return typeof state === "object" && state !== null && "applicationId" in state && "narrative" in state;
@@ -248,11 +292,10 @@ export const applyForLoanTool = defineTool({
           summary:
             `Application declined. Tell your human the bank's principal reasons, quoted: ` +
             `${result.adverseAction.reasons.map((r) => `"${r.text}"`).join(" ")} ` +
-            `(${result.reasons.join(", ")}).`,
+            `(${result.reasons.join(", ")}).` +
+            (onlyDeclarationMissing(result.reasons) ? DECLARATION_RETRY_TEXT : ""),
           reason_codes: result.reasons,
-          next_actions: [
-            { tool: "check_eligibility", args: { amount_cents: input.amount_cents, term_days: input.term_days } },
-          ],
+          next_actions: declinedNextActions(input, result.reasons),
         },
       );
     }
