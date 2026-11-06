@@ -584,7 +584,7 @@ export async function consoleWorldChoices(
  * failed computation is evicted at once. `invalidateConsoleSnapshot` drops
  * a world's entries after an owner action (clock advance, stress, reset).
  */
-export const SNAPSHOT_CACHE_TTL_MS = 1500;
+export const SNAPSHOT_CACHE_TTL_MS = 900; // 2s poll + 0.9s cache keeps worst-case staleness under the 3s real-time target
 const SNAPSHOT_CACHE_MAX_KEYS = 500;
 
 interface CacheEntry {
