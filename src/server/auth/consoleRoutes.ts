@@ -1,6 +1,6 @@
 import type { Db } from "../db/client";
 import { createTokenBucket, clientKey } from "../http/rateLimit";
-import { consoleSnapshot, resolveConsoleWorld } from "../services/console";
+import { cachedConsoleSnapshot, resolveConsoleWorld } from "../services/console";
 import { principalFromRequest } from "./guard";
 
 /**
@@ -10,7 +10,8 @@ import { principalFromRequest } from "./guard";
  * - No auth for the main world. A private world is served only to its
  *   signed-in owner (session cookie); anyone else — and any unknown,
  *   archived or malformed id — gets the same 404.
- * - `cache-control: no-store` on every response.
+ * - `cache-control: no-store` on every response; server-side, snapshots
+ *   come from a 1.5 s single-flight per-world cache (`cachedConsoleSnapshot`).
  * - Rate limited per client IP by an in-memory token bucket (burst 30,
  *   2 requests/s sustained — a page polls at 0.5/s): 429 + `retry-after`.
  */
@@ -54,7 +55,7 @@ export function createConsoleHandlers({
         if (!world) {
           return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });
         }
-        return jsonResponse(200, { ok: true, snapshot: await consoleSnapshot(db, world, now()) });
+        return jsonResponse(200, { ok: true, snapshot: await cachedConsoleSnapshot(db, world, () => now().getTime()) });
       } catch (err) {
         console.error(`[console] snapshot failed: ${err instanceof Error ? err.name : "unknown error"}`);
         return jsonResponse(500, { ok: false, error: "error", message: "Something went wrong." });

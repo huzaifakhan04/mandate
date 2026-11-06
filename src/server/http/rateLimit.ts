@@ -66,6 +66,7 @@ export function createTokenBucket({ capacity, refillPerSecond, maxKeys = 10_000 
 
 /** The client key for rate limiting: the first `x-forwarded-for` hop, else `x-real-ip`, else `unknown`. */
 export function clientKey(request: Request): string {
+  // Trusting the first x-forwarded-for hop is safe on Vercel: its edge overwrites the header with the real client IP.
   const forwarded = request.headers.get("x-forwarded-for");
   const first = forwarded?.split(",")[0]?.trim();
   if (first) {

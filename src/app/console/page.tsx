@@ -4,7 +4,7 @@ import { Suspense } from "react";
 
 import { getPagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
-import { consoleSnapshot, consoleWorldChoices, resolveConsoleWorld } from "@/server/services/console";
+import { cachedConsoleSnapshot, consoleWorldChoices, resolveConsoleWorld } from "@/server/services/console";
 
 import { ConsoleApp } from "./_components/console-app";
 import "./console.css";
@@ -34,7 +34,7 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
   if (!world) {
     notFound();
   }
-  const [snapshot, choices] = await Promise.all([consoleSnapshot(db, world), consoleWorldChoices(db, principalId)]);
+  const [snapshot, choices] = await Promise.all([cachedConsoleSnapshot(db, world), consoleWorldChoices(db, principalId)]);
   return <ConsoleApp initial={snapshot} worldParam={world.kind === "main" ? "main" : world.id} choices={choices} />;
 }
 

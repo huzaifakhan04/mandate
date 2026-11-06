@@ -9,22 +9,30 @@ import { journalEntries, ledgerAccounts, postings } from "../db/schema";
  * `trialBalance`). Nothing here returns memos or idempotency keys.
  */
 
-/** Postings summed per (account code, sim day since `anchorSim`) — the ledger's daily movement, for sparklines. */
+/**
+ * Postings summed per (account code, sim-day bucket) since `anchorSim`,
+ * bounded to the console's window: everything before `firstDay` collapses
+ * into one bucket (`firstDay - 1`, the opening balance), then one row per
+ * day from `firstDay` on. So a code's balance through day d is the sum of
+ * its buckets ≤ d, and its live balance is the sum of all its buckets —
+ * at most (window + 2) rows per code whatever the ledger's age.
+ */
 export async function dailyMovements(
   db: Db,
   worldId: string,
   anchorSim: Date,
+  firstDay: number,
   codes: string[] = ["cash_paypal", "loans_receivable", "notes_payable", "allowance_for_losses"],
 ): Promise<Array<{ code: string; day: number; total: bigint }>> {
-  const dayExpr = sql<number>`floor(extract(epoch from (${journalEntries.simAt} - ${anchorSim.toISOString()}::timestamptz)) / 86400)::int`;
+  const bucket = sql<number>`greatest(floor(extract(epoch from (${journalEntries.simAt} - ${anchorSim.toISOString()}::timestamptz)) / 86400)::int, ${firstDay - 1}::int)`;
   const rows = await db
-    .select({ code: ledgerAccounts.code, day: dayExpr, total: sql<string>`sum(${postings.amountCents})` })
+    .select({ code: ledgerAccounts.code, day: bucket, total: sql<string>`sum(${postings.amountCents})` })
     .from(postings)
     .innerJoin(ledgerAccounts, eq(ledgerAccounts.id, postings.accountId))
     .innerJoin(journalEntries, eq(journalEntries.id, postings.entryId))
     .where(and(eq(postings.worldId, worldId), eq(journalEntries.worldId, worldId), inArray(ledgerAccounts.code, codes)))
-    // By position: the day expression binds its anchor as a parameter, so
-    // repeating it in GROUP BY would not match the select list.
+    // By position: the bucket expression binds parameters, so repeating it
+    // in GROUP BY would not match the select list.
     .groupBy(sql`1, 2`);
   return rows.map((row) => ({ code: row.code, day: Number(row.day), total: BigInt(row.total) }));
 }

@@ -15,11 +15,9 @@ import {
   paypalOperations,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
+import { utilizationBps } from "../domain/economy";
 import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { dailyMovements, latestJournalLines } from "../ledger/consoleLedger";
-import { getCodeBalance } from "../ledger/trialBalance";
-import { allowanceBalance } from "./cecl";
-import { liveUtilization } from "./economy";
 import { listOwnedPrivateWorlds, ownedPrivateWorld } from "./privateWorldAccess";
 import type { StoredTreasuryMemo } from "./treasuryMemo";
 import { ensureMainWorldOnce } from "./worlds";
@@ -351,7 +349,8 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
         status: p.status,
       };
     })
-    .sort((a, b) => b.units - a.units);
+    .sort((a, b) => b.units - a.units)
+    .slice(0, CONSOLE_GRID_LIMIT);
 
   // --- agents grid ---
   const lenderIds = new Set(positions.filter((p) => p.units > 0n).map((p) => p.agentId));
@@ -480,20 +479,26 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
       principalCents: num(l.principalCents),
     }));
 
-  // --- KPIs ---
-  const live = await liveUtilization(db, world.id);
-  const notesOutstanding = -(await getCodeBalance(db, world.id, "notes_payable"));
-  const allowance = await allowanceBalance(db, world.id);
+  // --- KPIs + 30-day series: ONE bounded ledger query. Each code's rows
+  // are its balance before the window (bucket firstDay - 1) plus one row
+  // per day inside it, so the live balance is the sum of its rows. ---
+  const lastDay = Math.max(0, simDay);
+  const firstDay = Math.max(0, lastDay - CONSOLE_SERIES_DAYS + 1);
+  const movements = await dailyMovements(db, world.id, anchorSim, firstDay);
+  const balanceThrough = (code: string, day: number) =>
+    movements.filter((m) => m.code === code && m.day <= day).reduce((s, m) => s + m.total, 0n);
+  const balanceNow = (code: string) => movements.filter((m) => m.code === code).reduce((s, m) => s + m.total, 0n);
+  const cashNow = balanceNow("cash_paypal");
+  const loansNow = balanceNow("loans_receivable");
+  const notesOutstanding = -balanceNow("notes_payable");
+  const allowance = -balanceNow("allowance_for_losses");
+  const utilizationNow = utilizationBps(cashNow, loansNow);
   const latest = await w.findLatest(economyState, eq(economyState.worldId, world.id), economyState.simDay);
   const memoRow = await w.findLatest(economyState, isNotNull(economyState.treasuryMemo), economyState.simDay);
   const memo = (memoRow?.treasuryMemo as StoredTreasuryMemo | null | undefined) ?? null;
   const reserveRatioBps =
-    notesOutstanding > 0n ? Number((live.cashCents * 10_000n) / notesOutstanding) : (latest?.reserveRatioBps ?? 0);
+    notesOutstanding > 0n ? Number((cashNow * 10_000n) / notesOutstanding) : (latest?.reserveRatioBps ?? 0);
 
-  // --- 30-day series: the ledger's end-of-day balances + the economy rows ---
-  const lastDay = Math.max(0, simDay);
-  const firstDay = Math.max(0, lastDay - CONSOLE_SERIES_DAYS + 1);
-  const movements = await dailyMovements(db, world.id, anchorSim);
   const econRows = (
     await w.select(economyState, sql`${economyState.simDay} >= ${firstDay}`)
   ).sort((a, b) => a.simDay - b.simDay);
@@ -501,8 +506,6 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
   const chargeOffDays = loanRows
     .filter((l) => l.chargedOffAt)
     .map((l) => simDayIndex(anchorSim, l.chargedOffAt!));
-  const balanceThrough = (code: string, day: number) =>
-    movements.filter((m) => m.code === code && m.day <= day).reduce((s, m) => s + m.total, 0n);
   const series: ConsoleSnapshot["series"] = [];
   let lastEcon = econRows.find((r) => r.simDay <= firstDay);
   for (let day = firstDay; day <= lastDay; day += 1) {
@@ -528,10 +531,10 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
     world,
     clock: { simNow: simNow.toISOString(), simDay, speed: Number(clockRow?.speed ?? 0) },
     kpis: {
-      cashCents: num(live.cashCents),
-      loansOutstandingCents: num(live.loansReceivableCents),
+      cashCents: num(cashNow),
+      loansOutstandingCents: num(loansNow),
       notesOutstandingCents: num(notesOutstanding),
-      utilizationBps: live.utilizationBps,
+      utilizationBps: utilizationNow,
       baseRateBps: latest?.baseRateBps ?? 0,
       inflationRateBps: latest?.inflationRateBps ?? 0,
       reserveRatioBps,
@@ -568,4 +571,81 @@ export async function consoleWorldChoices(
   }
   const rows = await listOwnedPrivateWorlds(db, principalId);
   return [...choices, ...rows.map((r) => ({ id: r.id, name: scrubText(r.name), kind: "private" as const }))];
+}
+
+/**
+ * P6 review: a per-world, in-process snapshot cache in front of
+ * `consoleSnapshot`. Each entry is fresh for `SNAPSHOT_CACHE_TTL_MS` after
+ * its computation settles, and single-flight: concurrent callers for the
+ * same key share the one in-flight computation. The key is the world plus
+ * the view — a private world's (owner-only) view is never stored under the
+ * public key, so an anonymous caller can never be handed it. Keyed per
+ * `Db` instance (a WeakMap, so test databases don't share entries). A
+ * failed computation is evicted at once. `invalidateConsoleSnapshot` drops
+ * a world's entries after an owner action (clock advance, stress, reset).
+ */
+export const SNAPSHOT_CACHE_TTL_MS = 1500;
+const SNAPSHOT_CACHE_MAX_KEYS = 500;
+
+interface CacheEntry {
+  promise: Promise<ConsoleSnapshot>;
+  /** When the computation settled; `null` while in flight. */
+  settledAtMs: number | null;
+}
+
+const snapshotCaches = new WeakMap<Db, Map<string, CacheEntry>>();
+const invalidatedWorlds = new Set<string>();
+
+function cacheKey(world: ConsoleWorld): string {
+  return `${world.id}:${world.kind === "private" ? "owner" : "public"}`;
+}
+
+export function cachedConsoleSnapshot(db: Db, world: ConsoleWorld, nowMs: () => number = Date.now): Promise<ConsoleSnapshot> {
+  let cache = snapshotCaches.get(db);
+  if (!cache) {
+    cache = new Map();
+    snapshotCaches.set(db, cache);
+  }
+  const key = cacheKey(world);
+  if (invalidatedWorlds.delete(world.id)) {
+    for (const k of [...cache.keys()]) {
+      if (k.startsWith(`${world.id}:`)) {
+        cache.delete(k);
+      }
+    }
+  }
+  const hit = cache.get(key);
+  if (hit && (hit.settledAtMs === null || nowMs() - hit.settledAtMs < SNAPSHOT_CACHE_TTL_MS)) {
+    return hit.promise;
+  }
+  const entry: CacheEntry = { promise: Promise.resolve() as unknown as Promise<ConsoleSnapshot>, settledAtMs: null };
+  entry.promise = consoleSnapshot(db, world, new Date(nowMs())).then(
+    (snapshot) => {
+      entry.settledAtMs = nowMs();
+      return snapshot;
+    },
+    (err: unknown) => {
+      if (cache!.get(key) === entry) {
+        cache!.delete(key);
+      }
+      throw err;
+    },
+  );
+  cache.set(key, entry);
+  if (cache.size > SNAPSHOT_CACHE_MAX_KEYS) {
+    for (const [k, e] of cache) {
+      if (cache.size <= SNAPSHOT_CACHE_MAX_KEYS) {
+        break;
+      }
+      if (e.settledAtMs !== null) {
+        cache.delete(k);
+      }
+    }
+  }
+  return entry.promise;
+}
+
+/** Drops a world's cached snapshots (every `Db`) — the next read recomputes. */
+export function invalidateConsoleSnapshot(worldId: string): void {
+  invalidatedWorlds.add(worldId);
 }

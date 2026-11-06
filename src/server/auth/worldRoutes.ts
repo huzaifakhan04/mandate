@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { invalidateConsoleSnapshot } from "../services/console";
 import { advancePrivateWorld, createPrivateWorld, resetPrivateWorld } from "../services/privateWorlds";
 import { STRESS_SCENARIOS, triggerStressScenario } from "../services/stress";
 import { failure, gate, json, readFields, seeOther, wantsHtml } from "./ownerRoutes";
@@ -92,6 +93,7 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
       if (result.outcome === "invalid") {
         return failure(request, 400, "invalid_days", "Advance by 1 or 7 days.", worldBack(worldId, { error: "days" }));
       }
+      invalidateConsoleSnapshot(worldId); // P6: the console shows the change on its next poll
       return wantsHtml(request)
         ? seeOther(request, worldPagePath(worldId, { advanced: String(days) }))
         : json(200, { ok: true, sim_day: result.simDay, sim_now: result.simNow.toISOString() });
@@ -114,6 +116,7 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
       if (result.outcome === "not_found") {
         return failure(request, 404, "not_found", "World not found.", null);
       }
+      invalidateConsoleSnapshot(worldId); // P6: the console shows the change on its next poll
       return wantsHtml(request)
         ? seeOther(request, worldPagePath(result.worldId, { reset: "1" }))
         : json(200, { ok: true, world_id: result.worldId, archived_world_id: worldId });
@@ -147,6 +150,7 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
           worldBack(worldId, { error: "scenario" }),
         );
       }
+      invalidateConsoleSnapshot(worldId); // P6: the console shows the change on its next poll
       return wantsHtml(request)
         ? seeOther(request, worldPagePath(worldId, { stress: result.scenario }))
         : json(200, { ok: true, scenario: result.scenario, event_id: result.eventId, sim_day: result.simDay, params: result.params });

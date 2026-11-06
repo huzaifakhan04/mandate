@@ -19,7 +19,12 @@ import type { Db } from "@/server/db/client";
 import { agents, principals, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { clientKey, createTokenBucket } from "@/server/http/rateLimit";
+import { dailyMovements } from "@/server/ledger/consoleLedger";
+import { getSimDay } from "@/server/clock/clock";
 import {
+  SNAPSHOT_CACHE_TTL_MS,
+  cachedConsoleSnapshot,
+  invalidateConsoleSnapshot,
   consoleSnapshot,
   consoleWorldChoices,
   requestAmountCents,
@@ -151,6 +156,55 @@ describe("console read model (P6)", () => {
       expect(snapshot.loans).toEqual([]);
       expect(snapshot.kpis.defaults).toBe(0);
       expect(JSON.stringify(snapshot)).not.toContain("@");
+    });
+  });
+
+  describe("cache and bounded aggregates (P6 review)", () => {
+    it("single-flight per world+view, fresh for the TTL, invalidated by owner actions", async () => {
+      const worldId = await busyWorld(1);
+      const priv = (await resolveConsoleWorld(db, owner, worldId))!;
+      const main = (await resolveConsoleWorld(db, null, null))!;
+      let now = 1_000_000;
+      const clock = () => now;
+
+      const a = cachedConsoleSnapshot(db, priv, clock);
+      const b = cachedConsoleSnapshot(db, priv, clock);
+      expect(a).toBe(b); // concurrent callers share one computation
+      await a;
+      now += SNAPSHOT_CACHE_TTL_MS - 1;
+      expect(cachedConsoleSnapshot(db, priv, clock)).toBe(a);
+      now += 2;
+      const c = cachedConsoleSnapshot(db, priv, clock);
+      expect(c).not.toBe(a);
+      await c;
+
+      // The owner-only view is never served under the public key.
+      const asPublic = cachedConsoleSnapshot(db, { ...priv, kind: "main" }, clock);
+      expect(asPublic).not.toBe(c);
+      await asPublic;
+      const pub = cachedConsoleSnapshot(db, main, clock);
+      expect(pub).not.toBe(c);
+      await pub;
+
+      invalidateConsoleSnapshot(worldId);
+      const d = cachedConsoleSnapshot(db, priv, clock);
+      expect(d).not.toBe(c);
+      expect((await d).world.id).toBe(worldId);
+    });
+
+    it("daily movements collapse history before the window into one opening bucket", async () => {
+      const worldId = await busyWorld(7);
+      const { anchorSim } = await getSimDay(db, worldId);
+      const full = await dailyMovements(db, worldId, anchorSim, 0);
+      const bounded = await dailyMovements(db, worldId, anchorSim, 5);
+      expect(Math.min(...bounded.map((m) => m.day))).toBeGreaterThanOrEqual(4);
+      const through = (rows: typeof full, code: string, day: number) =>
+        rows.filter((m) => m.code === code && m.day <= day).reduce((s, m) => s + m.total, 0n);
+      for (const code of ["cash_paypal", "loans_receivable", "notes_payable", "allowance_for_losses"]) {
+        for (const day of [5, 6, 7]) {
+          expect(through(bounded, code, day)).toBe(through(full, code, day));
+        }
+      }
     });
   });
 
