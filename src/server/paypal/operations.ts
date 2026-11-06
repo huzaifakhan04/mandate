@@ -29,7 +29,7 @@ import {
   payoutItemIdFromCancelPath,
   withSenderBatchId,
 } from "./payouts";
-import { redact } from "./redact";
+import { maskEmail, redact } from "./redact";
 import {
   OPERATION_KINDS,
   READ_KINDS,
@@ -39,6 +39,7 @@ import {
   type OperationResponse,
   type OperationResultByKind,
   type OperationStatus,
+  type OrderGetResult,
 } from "./types";
 
 // The service-facing API: services import from here only (never from
@@ -697,7 +698,28 @@ function applyRetryCap(claimed: OperationRow, outcome: Outcome, counted: number)
  * When the guarded write loses, only the attempts are counted and the
  * row's current state is returned.
  */
-async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome): Promise<OperationRow> {
+/**
+ * P2 Task 1 fix round 1: what `response` is persisted as. An `order.get`
+ * payer's email (Verify with PayPal) is PII, so the stored copy masks it
+ * (`ab***@example.com`); the payer id stays. Every other field is stored
+ * as parsed (Ruling H: the stored response is what replays return).
+ */
+function responseForStorage(kind: OperationKind, response: OperationResponse): OperationResponse {
+  if (kind !== "order.get") {
+    return response;
+  }
+  const got = response as Partial<OrderGetResult>;
+  if (!got.payer?.email) {
+    return response;
+  }
+  return { ...got, payer: { ...got.payer, email: maskEmail(got.payer.email) } } as OperationResponse;
+}
+
+async function recordOutcome(
+  db: Db,
+  claimed: OperationRow,
+  rawOutcome: Outcome,
+): Promise<{ row: OperationRow; won: boolean }> {
   const t = paypalOperations;
   // A failed run counts as at least one attempt, even when nothing was
   // sent (config error, internal error), so backoff keeps growing.
@@ -707,7 +729,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
   const common = {
     status: outcome.status,
     httpStatus: outcome.httpStatus,
-    response: outcome.response,
+    response: responseForStorage(claimed.kind as OperationKind, outcome.response),
     latencyMs: outcome.latencyMs,
     lastError: outcome.lastError,
     attempts: sql`${t.attempts} + ${counted}`,
@@ -745,7 +767,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
           .returning();
 
   if (written) {
-    return written;
+    return { row: written, won: true };
   }
 
   const [current] = await db
@@ -756,7 +778,7 @@ async function recordOutcome(db: Db, claimed: OperationRow, rawOutcome: Outcome)
   if (!current) {
     throw new Error(`paypal_operations row ${claimed.id} vanished mid-execution`);
   }
-  return current;
+  return { row: current, won: false };
 }
 
 /**
@@ -1134,5 +1156,13 @@ export async function executeOperation(
     );
   }
 
-  return toOperationResult(await recordOutcome(db, claimed, outcome));
+  const { row, won } = await recordOutcome(db, claimed, outcome);
+  const result = toOperationResult(row);
+  // P2 Task 1 fix round 1: the run that recorded a success hands its caller
+  // the unmasked parsed result (an order.get payer's full email) in memory;
+  // the stored row — and so every replay — has it masked (responseForStorage).
+  if (won && row.status === "succeeded" && outcome.status === "succeeded") {
+    return { ...result, body: outcome.response };
+  }
+  return result;
 }

@@ -149,6 +149,29 @@ describe("/verify/start → PayPal → /verify/return (sim rail)", () => {
     expect(response.status).toBe(403);
     expect(await db.select().from(paypalOperations)).toHaveLength(0);
   });
+
+  it("fails closed when a POST carries neither Origin nor Sec-Fetch-Site", async () => {
+    const bare = new Request(`${ORIGIN}/verify/start`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "",
+    });
+    expect((await start(bare)).status).toBe(403);
+    const sameSite = new Request(`${ORIGIN}/verify/start`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "same-origin" },
+      body: "",
+    });
+    expect((await start(sameSite)).status).toBe(303);
+    const crossSite = new Request(`${ORIGIN}/verify/start`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "sec-fetch-site": "cross-site" },
+      body: "",
+    });
+    expect((await start(crossSite)).status).toBe(403);
+    const logout = createLogoutHandler();
+    expect((await logout(new Request(`${ORIGIN}/logout`, { method: "POST" }))).status).toBe(403);
+  });
 });
 
 describe("/logout", () => {

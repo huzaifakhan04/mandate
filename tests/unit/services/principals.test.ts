@@ -2,10 +2,12 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createSession, readSession } from "@/server/auth/session";
+import { buildCreateOrderRequest, enqueueOperation, executeOperation } from "@/server/paypal/operations";
 import type { Db } from "@/server/db/client";
 import { paypalOperations, principals, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { simApprove } from "@/server/rail/simHandler";
+import { sql } from "drizzle-orm";
 import {
   VerificationError,
   completeVerification,
@@ -136,9 +138,6 @@ describe("Verify with PayPal (sim rail)", () => {
 
   it("rejects an order created for another purpose or in another world", async () => {
     const other = await createWorld(db, { name: "Elsewhere", ownerPrincipalId: null, railMode: "sim" });
-    const { enqueueOperation, executeOperation, buildCreateOrderRequest } = await import(
-      "@/server/paypal/operations"
-    );
     const { operationId } = await enqueueOperation(db, {
       worldId: other.worldId,
       rail: "sim",
@@ -158,5 +157,76 @@ describe("Verify with PayPal (sim rail)", () => {
     await simApprove(db, orderId, OWNER);
     await expect(completeVerification(db, orderId)).rejects.toBeInstanceOf(VerificationError);
     await expect(completeVerification(db, orderId)).rejects.toMatchObject({ code: "unknown_order" });
+  });
+
+  it("stores the payer email masked on the order.get row, but the principal gets the real email", async () => {
+    const { orderId } = await startVerification(db, {});
+    await simApprove(db, orderId, OWNER);
+    const principal = await completeVerification(db, orderId);
+    expect(principal.email).toBe("owner@example.com");
+
+    const [read] = await db.select().from(paypalOperations).where(eq(paypalOperations.kind, "order.get"));
+    const stored = read!.response as { payer: { payerId: string; email: string } };
+    expect(stored.payer.payerId).toBe(OWNER.payerId);
+    expect(stored.payer.email).toBe("ow***@example.com");
+    expect(JSON.stringify(read!.response)).not.toContain("owner@example.com");
+
+    // A replay of that read returns the stored (masked) form.
+    const replay = await executeOperation(db, read!.id);
+    expect((replay.body as { payer: { email: string } }).payer.email).toBe("ow***@example.com");
+  });
+
+  it("rejects an approved order whose payer has no id or email (no_payer)", async () => {
+    const { orderId } = await startVerification(db, {});
+    await simApprove(db, orderId, OWNER);
+    // Strip the sim payer's id, as if PayPal returned an order without one.
+    await db
+      .update(paypalOperations)
+      .set({ simState: sql`jsonb_set(${paypalOperations.simState}, '{payer,payerId}', '""'::jsonb)` })
+      .where(eq(paypalOperations.paypalId, orderId));
+    await expect(completeVerification(db, orderId)).rejects.toMatchObject({ code: "no_payer" });
+    expect(await db.select().from(principals)).toHaveLength(0);
+  });
+
+  it("reports paypal_unavailable when the order cannot be read", async () => {
+    const { orderId } = await startVerification(db, {});
+    await simApprove(db, orderId, OWNER);
+    // The sim's order.get answers 404 once the order's state is gone (a stand-in for PayPal failing).
+    await db
+      .update(paypalOperations)
+      .set({ simState: null })
+      .where(eq(paypalOperations.paypalId, orderId));
+    await expect(completeVerification(db, orderId)).rejects.toMatchObject({ code: "paypal_unavailable" });
+  });
+
+  it("reports paypal_unavailable when the order cannot be created", async () => {
+    await db.update(worlds).set({ railMode: "paypal" }).where(eq(worlds.id, mainWorldId));
+    vi.stubEnv("PAYPAL_CLIENT_ID", "");
+    vi.stubEnv("PAYPAL_CLIENT_SECRET", "");
+    vi.stubEnv("PAYPAL_BASE_URL", "");
+    // No PayPal credentials → PayPalConfigError before any network call.
+    await expect(startVerification(db, {})).rejects.toMatchObject({ code: "paypal_unavailable" });
+  });
+
+  it("rejects a main-world order created for another purpose", async () => {
+    const { operationId } = await enqueueOperation(db, {
+      worldId: mainWorldId,
+      rail: "sim",
+      kind: "order.create",
+      purpose: "note_purchase",
+      sourceId: "not-identity",
+      request: buildCreateOrderRequest({
+        amountCents: 1n,
+        description: "x",
+        customId: "not-identity",
+        returnUrl: "https://x/r",
+        cancelUrl: "https://x/c",
+      }),
+    });
+    const result = await executeOperation(db, operationId, { ignoreBackoff: true });
+    const orderId = (result.body as { orderId: string }).orderId;
+    await simApprove(db, orderId, OWNER);
+    await expect(completeVerification(db, orderId)).rejects.toMatchObject({ code: "unknown_order" });
+    expect(await db.select().from(principals)).toHaveLength(0);
   });
 });

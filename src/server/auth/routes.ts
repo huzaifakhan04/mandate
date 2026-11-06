@@ -70,8 +70,9 @@ function errorRedirect(request: Request, reason: VerifyErrorReason, cookies: str
 
 /**
  * CSRF guard for form POSTs: a present `Origin` must be this deployment's
- * (the request's own origin or `PUBLIC_BASE_URL`'s); without `Origin`, a
- * present `Sec-Fetch-Site` must be `same-origin` or `none`.
+ * (the request's own origin or `PUBLIC_BASE_URL`'s); without `Origin`,
+ * `Sec-Fetch-Site` must be `same-origin` or `none`. With neither header the
+ * request is refused (fail closed — browsers send at least one on a POST).
  */
 export function isSameOriginPost(request: Request): boolean {
   const origin = request.headers.get("origin");
@@ -88,7 +89,7 @@ export function isSameOriginPost(request: Request): boolean {
     return allowed.has(origin);
   }
   const site = request.headers.get("sec-fetch-site");
-  return site === null || site === "same-origin" || site === "none";
+  return site === "same-origin" || site === "none";
 }
 
 function forbidden(): Response {
