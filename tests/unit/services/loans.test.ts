@@ -179,7 +179,13 @@ describe("lending: check_eligibility / apply_for_loan / accept_offer / decline_o
 
     const result = await applyFor(db, key, 60000, 5);
     expect(result.envelope.status).toBe("DECLINED");
-    expect(result.envelope.reason_codes).toEqual(["amount_out_of_range", "term_out_of_range"]);
+    // P2 Task 4: 60000 is also above the mandate's 50000 and tier T1's 25000 per-loan caps.
+    expect(result.envelope.reason_codes).toEqual([
+      "amount_out_of_range",
+      "term_out_of_range",
+      "mandate_per_loan",
+      "tier_per_loan",
+    ]);
   });
 
   it("apply rejects an invoice smaller than the loan amount (INVALID_REQUEST)", async () => {

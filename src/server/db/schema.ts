@@ -349,13 +349,30 @@ export const mandates = pgTable("mandates", {
   maxFeeBps: integer("max_fee_bps").notNull(),
   maxTermDays: integer("max_term_days").notNull(),
   guaranteeTextHash: text("guarantee_text_hash").notNull(),
+  /** P2 Task 4: optional end of the mandate's validity. */
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  /** `signed` (the current version) | `superseded` (a newer version was signed) | `revoked`. */
+  status: text("status").notNull().default("signed"),
+  /** The typed full name the human signed with. */
+  signerName: text("signer_name"),
+  /** sha256(IP + SESSION_SECRET) of the signing request. */
+  ipHash: text("ip_hash"),
+  /** sha256 of the canonical JSON of the signed terms (see `domain/mandate.ts`). */
+  termsHash: text("terms_hash"),
   signedAt: timestamp("signed_at", { withTimezone: true }),
   signature: jsonb("signature"),
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  uniqueIndex("mandates_agent_version_idx").on(table.agentId, table.version),
+  // At most one current (signed) version per agent.
+  uniqueIndex("mandates_one_signed_per_agent_idx")
+    .on(table.agentId)
+    .where(sql`${table.status} = 'signed'`),
+]);
 
 export const applications = pgTable("applications", {
   id: uuid("id").primaryKey().defaultRandom(),

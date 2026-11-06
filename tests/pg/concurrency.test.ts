@@ -104,6 +104,40 @@ describe("real Postgres (TEST_PG=1)", () => {
     expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
   });
 
+  it("Review Focus 2: two agents of one principal accept at once, together over max_total_owed → exactly one loan", async () => {
+    const worldId = await createSimWorld(db);
+    await fundPool(db, worldId, 100000);
+    // Each offer is 10000 + 150 fee = 10150 ≤ 15000 alone; both would owe 20300.
+    const a = await createTestAgent(db, worldId, "a@example.com", { limits: { maxTotalOwedCents: 15000n } });
+    const b = await createTestAgent(db, worldId, "b@example.com", {
+      principalId: a.principalId,
+      limits: { maxTotalOwedCents: 15000n },
+    });
+    const apply = (key: string) =>
+      call(db, "apply_for_loan", key, { amount_cents: 10000, term_days: 7, purpose: "Working capital" });
+    const offerA = (await apply(a.key)).envelope.data as Data;
+    const offerB = (await apply(b.key)).envelope.data as Data;
+    expect(offerA.offer_id).toBeDefined();
+    expect(offerB.offer_id).toBeDefined();
+
+    const lock = await holdLock(db, seriesLock(worldId));
+    const racing = Promise.all([
+      call(db, "accept_offer", a.key, { offer_id: offerA.offer_id, disclosure_hash: offerA.disclosure_hash }),
+      call(db, "accept_offer", b.key, { offer_id: offerB.offer_id, disclosure_hash: offerB.disclosure_hash }),
+    ]);
+    await waitForLockWaiters(db, 2);
+    await lock.release();
+    const [ra, rb] = await racing;
+
+    expect([ra.envelope.status, rb.envelope.status].sort()).toEqual(["ACTIVE", "MANDATE_LIMIT"]);
+    const loser = ra.envelope.status === "MANDATE_LIMIT" ? ra : rb;
+    expect(loser.httpStatus).toBe(400);
+    expect(loser.envelope.reason_codes).toEqual(["mandate_total_owed"]);
+    expect(await db.select().from(loans).where(eq(loans.worldId, worldId))).toHaveLength(1);
+    expect(await getAccountBalance(db, worldId, "loans_receivable", null)).toBe(10000n);
+    expect((await trialBalance(db, worldId)).totalCents).toBe(0n);
+  });
+
   it("one agent double-submits accept_offer for the same offer while overlapping → one loan, the other INVALID_TRANSITION", async () => {
     const worldId = await createSimWorld(db);
     await fundPool(db, worldId, 30000);

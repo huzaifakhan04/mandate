@@ -106,6 +106,13 @@
       "when": 1793934985735,
       "tag": "0014_kya_documents_and_keys",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1793935896523,
+      "tag": "0015_mandates_versioning",
+      "breakpoints": true
     }
   ]
 }

@@ -1,34 +1,25 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { agents, kyaDocuments, mandates, principals } from "../db/schema";
+import { agents, kyaDocuments, principals } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { computeTier, type KyaMandateFacts, type TierResult } from "../domain/kya";
 import { activeAgentKey } from "../auth/agentKeys";
 import { claimLinkForAgent, type ClaimLink } from "./claims";
+import { currentMandateRow } from "./mandates";
 
 type AgentRow = typeof agents.$inferSelect;
 
 /**
- * The claiming principal's current mandate for `agent`: its newest signed,
- * unrevoked version. `null` when there is none (always, until Task 4 lets
- * owners sign one — the test-only claim shortcut inserts one directly).
+ * The claiming principal's current mandate for `agent` (its `signed`,
+ * unrevoked version — see `services/mandates.ts`), as tier facts. `null`
+ * when there is none. Expiry is applied by `computeTier`.
  */
 export async function currentMandate(db: Db, worldId: string, agent: AgentRow): Promise<KyaMandateFacts | null> {
-  if (!agent.principalId) {
-    return null;
-  }
-  const row = await scoped(db, worldId).findLatest(
-    mandates,
-    and(
-      eq(mandates.agentId, agent.id),
-      eq(mandates.principalId, agent.principalId),
-      isNotNull(mandates.signedAt),
-      isNull(mandates.revokedAt),
-    )!,
-    mandates.version,
-  );
-  return row ? { principalId: row.principalId, signedAt: row.signedAt, revokedAt: row.revokedAt } : null;
+  const row = await currentMandateRow(db, worldId, agent.id, agent.principalId);
+  return row
+    ? { principalId: row.principalId, signedAt: row.signedAt, revokedAt: row.revokedAt, expiresAt: row.expiresAt }
+    : null;
 }
 
 /** `computeTier` over the agent's stored facts (claim, principal, mandate, documents, key). */

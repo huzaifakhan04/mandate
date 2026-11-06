@@ -32,6 +32,8 @@ const disclosureSchema = z.object({
   prepayment: z.string(),
   collateral: z.string(),
   avoidable_fees: z.string(),
+  mandate_id: z.string(),
+  mandate_version: z.number(),
   note: z.string().optional(),
 });
 
@@ -60,7 +62,10 @@ export const applyForLoanTool = defineTool({
     "a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then " +
     "call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: " +
     "an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a " +
-    "claimed agent without a signed mandate gets 403 MANDATE_REQUIRED.",
+    "claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your " +
+    "owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / " +
+    "mandate_term / mandate_collateral, or tier_per_loan above your tier's cap; the disclosure " +
+    "names the mandate_id and mandate_version it was made under.",
   auth: "agent",
   mutating: true,
   // KYA tier gate (runTool): unclaimed → 403 CLAIM_REQUIRED with the

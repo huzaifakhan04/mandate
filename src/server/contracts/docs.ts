@@ -206,7 +206,47 @@ Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may 
 
 **Claiming (your human does this once):** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Tell your human: *"Ask your human to open <claim_url>"* — they verify with PayPal (a $0.01 check that is never charged) and click **Claim agent**. Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
 
-**Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits. Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403). \`accept_offer\` re-checks your tier, so a mandate revoked after an offer blocks its acceptance.
+**Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits (see [Mandates](#mandates)). Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403).
+`;
+}
+
+function renderMandatesSection(): string {
+  return `## Mandates
+
+A **mandate** is the standing permission your human signs for you: the limits within which you may borrow on their behalf. Your human is the borrower of record. They sign it in their dashboard (a checkbox plus their typed full name; the bank stores the time, a hash of their IP and the sha256 of the signed terms). Each change is a new **version**; signing one replaces the previous version. Revoking it stops new borrowing; loans you already took are unaffected.
+
+**What your human sets:**
+
+| Limit | Meaning |
+|---|---|
+| \`max_per_loan_cents\` | the principal of any one loan |
+| \`max_total_owed_cents\` | what your human may owe in total **across all their agents**: what they owe on every open loan + this loan's principal + fee |
+| \`max_fee_bps\` | the loan's fee as basis points of its principal (500 = at most 5% of the principal) |
+| \`max_term_days\` | the loan's term |
+| \`eligible_collateral\` | \`invoice_link\` (you pass an \`invoice\` the bank collects) and/or \`none\` (unsecured) |
+| \`expires_at\` | optional; after it the mandate is no longer in force |
+
+Your per-loan ceiling is the smaller of your tier's cap (T1 25000, T2 50000 cents) and \`max_per_loan_cents\`.
+
+**What you see:** \`check_eligibility\` returns \`data.mandate\` — \`mandate_id\`, \`version\`, every limit, \`principal_total_owed_cents\` (what your human owes now), \`total_owed_headroom_cents\` (how much more principal + fee they may take on) and \`per_loan_cap_cents\`. Pass \`collateral\` to also check the collateral rule. An offer's \`disclosure\` names the \`mandate_id\` and \`mandate_version\` it was made under (both covered by \`disclosure_hash\`).
+
+**Reason codes** (in \`check_eligibility\` reasons, and on a \`DECLINED\` \`apply_for_loan\`):
+
+| Code | Meaning |
+|---|---|
+| \`mandate_missing\` | no mandate in force — ask your human to sign one (\`apply_for_loan\` → \`MANDATE_REQUIRED\`, 403) |
+| \`mandate_per_loan\` | the amount is above \`max_per_loan_cents\` |
+| \`mandate_total_owed\` | your human's total owed + this principal + fee would be above \`max_total_owed_cents\` |
+| \`mandate_fee\` | the fee is above \`max_fee_bps\` of the principal |
+| \`mandate_term\` | the term is above \`max_term_days\` |
+| \`mandate_collateral\` | the collateral kind (invoice or none) is not in \`eligible_collateral\` |
+| \`tier_per_loan\` | the amount is above your KYA tier's per-loan cap |
+
+**At acceptance** the bank checks the mandate again (serialised with every other acceptance, so two of your human's agents can't both squeeze under \`max_total_owed_cents\`):
+
+- \`MANDATE_REVOKED\` (409) with \`mandate_revoked\` — the mandate was revoked or expired; ask your human to sign a new one.
+- \`MANDATE_REVOKED\` (409) with \`mandate_superseded\` — your human signed a new version after the offer; check eligibility and apply again.
+- \`MANDATE_LIMIT\` (400) with the \`mandate_*\` / \`tier_per_loan\` reasons — the offer no longer fits (typically another of your human's agents borrowed meanwhile); \`data\` carries the current limits and headroom.
 `;
 }
 
@@ -381,6 +421,7 @@ ${renderConnectSection(base)}
 ${renderBootstrappingSection(base)}
 ${renderQuickstartSection()}
 ${renderClaimingSection(base)}
+${renderMandatesSection()}
 ${renderSigningSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
@@ -399,7 +440,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), human-approval handling, the full tool reference, errors, and money rules.
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

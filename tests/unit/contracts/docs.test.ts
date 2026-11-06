@@ -181,3 +181,38 @@ describe("agents.md signing section (P2 Task 3)", () => {
     expect(md).toMatch(/\| `SIGNATURE_REQUIRED` \| 401 \|/);
   });
 });
+
+describe("agents.md mandates section (P2 Task 4)", () => {
+  it("documents what the human sets, what the agent sees, every reason code and the accept-time statuses", async () => {
+    const { renderAgentsMd } = await import("@/server/contracts/docs");
+    const { knownStatusTable } = await import("@/server/contracts/envelope");
+    const { registry } = await import("@/server/contracts/registry");
+    await import("@/server/contracts/tools");
+    const md = renderAgentsMd(registry, "https://mandate.example", knownStatusTable());
+    const section = md.slice(md.indexOf("## Mandates"), md.indexOf("## Signing requests"));
+    expect(section.length).toBeGreaterThan(100);
+    for (const text of [
+      "max_per_loan_cents",
+      "max_total_owed_cents",
+      "max_fee_bps",
+      "max_term_days",
+      "eligible_collateral",
+      "expires_at",
+      "total_owed_headroom_cents",
+      "mandate_version",
+      "mandate_missing",
+      "mandate_per_loan",
+      "mandate_total_owed",
+      "mandate_fee",
+      "mandate_term",
+      "mandate_collateral",
+      "tier_per_loan",
+      "`MANDATE_REVOKED` (409)",
+      "`MANDATE_LIMIT` (400)",
+      "mandate_superseded",
+    ]) {
+      expect(section).toContain(text);
+    }
+    expect(md).toContain("| `MANDATE_REVOKED` | 409 |");
+  });
+});

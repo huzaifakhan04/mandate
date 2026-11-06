@@ -19,8 +19,10 @@ import { buildSendPayoutRequest, enqueueOperation, getOperation, journalKey } fr
 import { payoutRecipientType, resolvePayoutOutcome, type ObservedPayoutStatus } from "./payoutStatus";
 import { postPayoutFee } from "./paypalFees";
 import { railForWorld } from "./worlds";
-import { borrowGate } from "./kya";
+import { borrowGate, loadAgentKya } from "./kya";
 import type { BorrowBlocker } from "../domain/kya";
+import { checkAgentMandate, mandateSummary, type MandateSummary, type TierReason } from "./mandates";
+import type { MandateReason } from "../domain/mandate";
 
 /** The plan's single per-world note series name — see `services/worlds.ts`. */
 const MANDATE_POOL_A_NAME = "Mandate Pool A";
@@ -141,6 +143,10 @@ async function expireOffer(tx: Db, worldId: string, offer: OfferRow, simAt: Date
   }
 }
 
+function retryArgs(offer: OfferRow): EligibilityArgs {
+  return { amount_cents: Number(offer.principalCents), term_days: offer.termDays };
+}
+
 function addDays(at: Date, days: number): Date {
   return new Date(at.getTime() + days * DAY_MS);
 }
@@ -157,16 +163,24 @@ export interface Quote {
 
 export interface Eligibility {
   eligible: boolean;
-  /** Subset of `amount_out_of_range`, `term_out_of_range`, `open_loan_exists`, `insufficient_liquidity`, in that order. */
+  /**
+   * Subset of `amount_out_of_range`, `term_out_of_range`, `open_loan_exists`,
+   * `insufficient_liquidity`, then the mandate codes (`mandate_*`, except
+   * `mandate_collateral` unless a collateral kind is given) and
+   * `tier_per_loan`, in that order.
+   */
   reasons: string[];
   maxPrincipalCents: bigint;
   availableLiquidityCents: bigint;
   quote: Quote;
+  /** The agent's current mandate, its limits and the principal's headroom; `null` without one. */
+  mandate: MandateSummary | null;
 }
 
 /**
  * Read-only eligibility for `(amount, term)`: the P1 range checks, the
- * one-open-loan rule, and available liquidity. Advisory only —
+ * one-open-loan rule, available liquidity, and (P2 Task 4) the mandate
+ * limits, the principal's exposure and the tier per-loan cap. Advisory only —
  * `apply_for_loan` re-evaluates the same rules, and `accept_offer`
  * re-checks liquidity and the open loan under the series lock.
  */
@@ -176,6 +190,7 @@ export async function checkEligibility(
   agentId: string,
   amountCents: bigint,
   termDays: number,
+  collateral: "invoice_link" | "none" | null = null,
 ): Promise<Eligibility> {
   const reasons = rangeReasons(amountCents, termDays);
   if (await hasOpenLoan(db, worldId, agentId)) {
@@ -196,12 +211,29 @@ export async function checkEligibility(
 
   const { feeCents, aprBps } = price(amountCents, termDays);
 
+  // P2 Task 4: the mandate limits, the principal's exposure across all
+  // their agents, and the tier's per-loan cap. A missing mandate is the
+  // tier gate's `mandate_missing` blocker (reported by the tool), so it
+  // isn't repeated here.
+  const { agent, tier } = await loadAgentKya(db, worldId, agentId);
+  const mandateCheck = await checkAgentMandate(db, worldId, agent, tier.tier, {
+    principalCents: amountCents,
+    feeCents,
+    termDays,
+    collateral,
+  });
+  reasons.push(...mandateCheck.reasons.filter((reason) => reason !== "mandate_missing"));
+  const mandate = mandateCheck.mandate
+    ? mandateSummary(mandateCheck.mandate, mandateCheck.exposureCents, tier.tier)
+    : null;
+
   return {
     eligible: reasons.length === 0,
     reasons,
     maxPrincipalCents,
     availableLiquidityCents,
     quote: { feeCents, aprBps, totalCents: amountCents + feeCents },
+    mandate,
   };
 }
 
@@ -236,6 +268,9 @@ export interface Disclosure {
   prepayment: "No penalty";
   collateral: "Invoice payment link" | "None";
   avoidable_fees: "None in P1";
+  /** P2 Task 4: the mandate this offer was made under (accept refuses if it changed). */
+  mandate_id: string;
+  mandate_version: number;
   note?: "APR above 36% may exceed some state caps (unverified)";
 }
 
@@ -257,6 +292,7 @@ function buildDisclosure(
   termDays: number,
   dueSimAt: Date,
   hasInvoice: boolean,
+  mandate: { id: string; version: number },
 ): Disclosure {
   const disclosure: Disclosure = {
     funding_provided_cents: Number(amountCents),
@@ -269,6 +305,8 @@ function buildDisclosure(
     prepayment: "No penalty",
     collateral: hasInvoice ? "Invoice payment link" : "None",
     avoidable_fees: "None in P1",
+    mandate_id: mandate.id,
+    mandate_version: mandate.version,
   };
   if (aprBps > STATE_CAP_NOTE_APR_BPS) {
     disclosure.note = "APR above 36% may exceed some state caps (unverified)";
@@ -278,8 +316,9 @@ function buildDisclosure(
 
 /**
  * `apply_for_loan`'s transactional half. Always records the application.
- * When the P1 rules decline it (range, open loan, liquidity — evaluated
- * under the note series row lock for a consistent snapshot) it is
+ * When the P1 rules or the P2 mandate/tier limits decline it (range, open
+ * loan, liquidity, `mandate_*`, `tier_per_loan` — evaluated under the
+ * note series row lock for a consistent snapshot) it is
  * `declined` with the reason codes; otherwise it is `offered` and an
  * offer is created with the priced disclosure and its hash, valid for one
  * simulated day. Any of the agent's earlier still-open offers are
@@ -330,7 +369,23 @@ export async function createLoanOffer(
     reasons.push("insufficient_liquidity");
   }
 
-  if (reasons.length > 0) {
+  // P2 Task 4: the mandate (limits + the principal's exposure across all
+  // their agents, under the series lock) and the tier's per-loan cap.
+  const { feeCents, aprBps } = price(input.amountCents, input.termDays);
+  const { agent, tier } = await loadAgentKya(tx, worldId, agentId);
+  const mandateCheck = await checkAgentMandate(tx, worldId, agent, tier.tier, {
+    principalCents: input.amountCents,
+    feeCents,
+    termDays: input.termDays,
+    collateral: input.invoice ? "invoice_link" : "none",
+  });
+  reasons.push(...mandateCheck.reasons);
+  const mandate = mandateCheck.mandate;
+  if (mandate) {
+    await scoped(tx, worldId).update(applications, { mandateId: mandate.id }, eq(applications.id, application.id));
+  }
+
+  if (reasons.length > 0 || !mandate) {
     await scoped(tx, worldId).update(
       applications,
       {
@@ -363,10 +418,12 @@ export async function createLoanOffer(
     }
   }
 
-  const { feeCents, aprBps } = price(input.amountCents, input.termDays);
   const dueSimAt = addDays(simNow, input.termDays);
   const expiresSimAt = new Date(simNow.getTime() + OFFER_TTL_MS);
-  const disclosure = buildDisclosure(input.amountCents, feeCents, aprBps, input.termDays, dueSimAt, !!input.invoice);
+  const disclosure = buildDisclosure(input.amountCents, feeCents, aprBps, input.termDays, dueSimAt, !!input.invoice, {
+    id: mandate.id,
+    version: mandate.version,
+  });
   // Round-trip through canonical JSON so what's stored is exactly what was hashed.
   const storedDisclosure = JSON.parse(canonicalJson(disclosure)) as Disclosure;
   const hash = disclosureHash(storedDisclosure);
@@ -414,6 +471,12 @@ export async function createLoanOffer(
 // accept_offer / decline_offer
 // ---------------------------------------------------------------------
 
+/** `check_eligibility` arguments for re-trying an offer's amount and term. */
+export interface EligibilityArgs {
+  amount_cents: number;
+  term_days: number;
+}
+
 export type AcceptOfferOutcome =
   | { outcome: "not_found" }
   | { outcome: "disclosure_mismatch" }
@@ -424,6 +487,13 @@ export type AcceptOfferOutcome =
   | { outcome: "payout_receiver_missing" }
   /** P2 Task 2: the agent's KYA tier no longer allows borrowing (e.g. the mandate was revoked). */
   | { outcome: "borrow_blocked"; blockers: BorrowBlocker[] }
+  /**
+   * P2 Task 4: the mandate the offer was made under is no longer current —
+   * revoked (or expired) or superseded by a newer signed version.
+   */
+  | { outcome: "mandate_revoked"; reason: "mandate_revoked" | "mandate_superseded"; retry: EligibilityArgs }
+  /** P2 Task 4: the offer no longer fits the mandate (e.g. the principal's exposure rose) or the tier cap. */
+  | { outcome: "mandate_limit"; reasons: Array<MandateReason | TierReason>; mandate: MandateSummary; retry: EligibilityArgs }
   | { outcome: "disbursing"; loanId: string; payoutOperationId: string };
 
 /**
@@ -478,8 +548,37 @@ export async function beginAcceptOffer(
   // — a mandate can be revoked between offer and acceptance. No claim link:
   // this outcome is stored under the call's idempotency key.
   const gate = await borrowGate(tx, worldId, agentId, { withClaimLink: false });
-  if (gate.tier.borrowBlockers.length > 0) {
+  if (gate.tier.borrowBlockers.includes("claim_required")) {
     return { outcome: "borrow_blocked", blockers: gate.tier.borrowBlockers };
+  }
+  if (gate.tier.borrowBlockers.includes("mandate_missing")) {
+    return { outcome: "mandate_revoked", reason: "mandate_revoked", retry: retryArgs(offer) };
+  }
+
+  // P2 Task 4 (Review Focus 2): re-check the mandate under the series
+  // lock. Every acceptance takes that lock first, so the principal's
+  // exposure read here includes any loan a concurrent acceptance by
+  // another of their agents just created.
+  const { agent: kyaAgent, tier } = await loadAgentKya(tx, worldId, agentId);
+  const mandateCheck = await checkAgentMandate(tx, worldId, kyaAgent, tier.tier, {
+    principalCents: offer.principalCents,
+    feeCents: offer.feeCents,
+    termDays: offer.termDays,
+    collateral: owned.application.invoiceRef ? "invoice_link" : "none",
+  });
+  if (!mandateCheck.mandate) {
+    return { outcome: "mandate_revoked", reason: "mandate_revoked", retry: retryArgs(offer) };
+  }
+  if (owned.application.mandateId && owned.application.mandateId !== mandateCheck.mandate.id) {
+    return { outcome: "mandate_revoked", reason: "mandate_superseded", retry: retryArgs(offer) };
+  }
+  if (mandateCheck.reasons.length > 0) {
+    return {
+      outcome: "mandate_limit",
+      reasons: mandateCheck.reasons,
+      mandate: mandateSummary(mandateCheck.mandate, mandateCheck.exposureCents, tier.tier),
+      retry: retryArgs(offer),
+    };
   }
 
   if (await hasOpenLoan(tx, worldId, agentId)) {

@@ -34,7 +34,7 @@ export interface KyaMandateFacts {
   principalId: string;
   signedAt: Date | null;
   revokedAt: Date | null;
-  /** Optional until Task 4 adds the column. */
+  /** Optional end of validity (P2 Task 4). */
   expiresAt?: Date | null;
 }
 

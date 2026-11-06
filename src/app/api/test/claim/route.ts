@@ -11,7 +11,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 /**
  * TEST-ONLY — `POST /api/test/claim` `{ "agent_id": "<uuid>" }`: claims a
  * main-world agent for a fresh verified test principal and signs a
- * generous mandate (see `claimAndMandateForTests`), so the sandbox e2e and
+ * generous mandate through the real signing service (see
+ * `claimAndMandateForTests`; the tier's per-loan cap still applies), so the sandbox e2e and
  * the acceptance harness can borrow without a human in a browser. A plain
  * 404 unless `MANDATE_TEST_ENDPOINTS=1` outside production (the
  * `/api/test/ledger` gate). Task 7 replaces its callers with the real

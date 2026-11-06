@@ -5,10 +5,14 @@
  */
 import { createHash, generateKeyPairSync, sign, type KeyObject } from "crypto";
 
+import { eq } from "drizzle-orm";
+
 import "@/server/contracts/tools";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
+import { agents } from "@/server/db/schema";
+import { uploadKyaDocument } from "@/server/services/kyaDocs";
 
 export interface TestSigningKey {
   privateKey: KeyObject;
@@ -77,4 +81,29 @@ export async function signedCall(
     },
   });
   return { ...result, signature };
+}
+
+/**
+ * P2 Task 4: lifts a claimed + mandated agent to tier T2 (an approved KYA
+ * document + a registered Ed25519 key). From then on its mutating calls
+ * must go through `signedCall` with the returned key.
+ */
+export async function upgradeToTier2(db: Db, agentId: string, apiKey: string): Promise<TestSigningKey> {
+  const [owner] = await db.select({ principalId: agents.principalId }).from(agents).where(eq(agents.id, agentId));
+  const upload = await uploadKyaDocument(db, {
+    principalId: owner!.principalId!,
+    agentId,
+    kind: "operator_registration",
+    fileName: "registration.pdf",
+    bytes: Buffer.concat([Buffer.from("%PDF-1.7\n"), Buffer.alloc(64, 0x20)]),
+  });
+  if (upload.outcome !== "uploaded") {
+    throw new Error(`upgradeToTier2: upload failed (${upload.outcome})`);
+  }
+  const key = newSigningKey();
+  const registered = await signedCall(db, "register_public_key", apiKey, { public_key: key.spkiB64 }, key.privateKey);
+  if (registered.envelope.status !== "OK") {
+    throw new Error(`upgradeToTier2: key registration returned ${registered.envelope.status}`);
+  }
+  return key;
 }

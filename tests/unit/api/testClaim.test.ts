@@ -1,6 +1,8 @@
+import { eq } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createTestClaimHandler } from "@/app/api/test/claim/route";
+import { mandates } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 
 import { call, type Data } from "../../helpers/world";
@@ -50,5 +52,10 @@ describe("test-only POST /api/test/claim", () => {
     expect(res.status).toBe(200);
     const status = await call(db, "get_status", registered.api_key as string, {});
     expect(status.envelope.data).toMatchObject({ kya: { tier: 1, can_borrow: true, claim_url: null } });
+
+    // P2 Task 4: the mandate is signed through the real service (version 1, terms hash).
+    const [mandate] = await db.select().from(mandates).where(eq(mandates.agentId, registered.agent_id as string));
+    expect(mandate).toMatchObject({ version: 1, status: "signed", maxPerLoanCents: 50000n });
+    expect(mandate!.termsHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });

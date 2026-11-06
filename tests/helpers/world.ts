@@ -13,6 +13,7 @@ import type { Db } from "@/server/db/client";
 import { agents, apiKeys } from "@/server/db/schema";
 import { simApprove } from "@/server/rail/simHandler";
 import { createWorld } from "@/server/services/worlds";
+import type { TestClaimOptions } from "@/server/services/testClaim";
 import { claimAndMandate } from "./kya";
 
 export type Data = Record<string, unknown>;
@@ -22,7 +23,12 @@ export async function createSimWorld(db: Db): Promise<string> {
   return worldId;
 }
 
-export async function createTestAgent(db: Db, worldId: string, payoutReceiver = "agent@example.com") {
+export async function createTestAgent(
+  db: Db,
+  worldId: string,
+  payoutReceiver = "agent@example.com",
+  kya: TestClaimOptions = {},
+) {
   const [agent] = await db
     .insert(agents)
     .values({
@@ -39,8 +45,8 @@ export async function createTestAgent(db: Db, worldId: string, payoutReceiver = 
   const generated = generateApiKey();
   await db.insert(apiKeys).values({ worldId, agentId: agent!.id, prefix: generated.prefix, keyHash: generated.hash });
   // P2: borrowing needs KYA tier 1 (claimed + signed mandate).
-  await claimAndMandate(db, agent!.id);
-  return { agentId: agent!.id, key: generated.key };
+  const { principalId, mandateId } = await claimAndMandate(db, agent!.id, kya);
+  return { agentId: agent!.id, key: generated.key, principalId, mandateId };
 }
 
 export async function call(

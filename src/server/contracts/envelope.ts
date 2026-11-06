@@ -109,6 +109,9 @@ const STATUS_HTTP: Record<string, number> = {
   // P2 Task 2 (KYA tiers): borrowing needs a claim, then a signed mandate.
   CLAIM_REQUIRED: 403,
   MANDATE_REQUIRED: 403,
+  // P2 Task 4 (mandates): accept_offer re-checks the mandate the offer was made under.
+  MANDATE_REVOKED: 409,
+  MANDATE_LIMIT: 400,
   // P2 Task 3 (Ed25519 request signing).
   SIGNATURE_REQUIRED: 401,
   SIGNATURE_INVALID: 401,

@@ -12,6 +12,22 @@ export const PURPOSE_PLACEHOLDER = "<describe what the money is for>";
 const inputSchema = z.object({
   amount_cents: z.number().int().min(1),
   term_days: z.number().int().min(1),
+  /** Also check the mandate's eligible collateral for this kind (invoice_link = you'll pass an invoice). */
+  collateral: z.enum(["invoice_link", "none"]).optional(),
+});
+
+const mandateSchema = z.object({
+  mandate_id: z.string(),
+  version: z.number(),
+  max_per_loan_cents: z.number(),
+  max_total_owed_cents: z.number(),
+  max_fee_bps: z.number(),
+  max_term_days: z.number(),
+  eligible_collateral: z.array(z.string()),
+  expires_at: z.string().nullable(),
+  principal_total_owed_cents: z.number(),
+  total_owed_headroom_cents: z.number(),
+  per_loan_cap_cents: z.number(),
 });
 
 const outputSchema = z.object({
@@ -21,6 +37,8 @@ const outputSchema = z.object({
   available_liquidity_cents: z.number(),
   quote: z.object({ fee_cents: z.number(), apr_bps: z.number(), total_cents: z.number() }),
   tier: z.number(),
+  /** Your owner's current mandate: its limits and the headroom left across all their agents (null without one). */
+  mandate: mandateSchema.nullable(),
   /** Only while the calling agent is unclaimed — the link its human opens to claim it. */
   claim_url: z.string().optional(),
 });
@@ -32,7 +50,11 @@ export const checkEligibilityTool = defineTool({
     "Checks, without committing to anything, whether the calling agent could borrow amount_cents " +
     "for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool " +
     "liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and " +
-    "quotes the fee, APR and total repayment. Call it before apply_for_loan; if eligible, call " +
+    "quotes the fee, APR and total repayment. data.mandate shows the limits your human signed " +
+    "(max per loan, max total owed across all their agents, max fee in bps of the principal, max " +
+    "term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and " +
+    "a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral " +
+    "to also check the collateral rule. Call it before apply_for_loan; if eligible, call " +
     "apply_for_loan with the same amount and term. While unclaimed, reasons include " +
     "claim_required and data.claim_url is the link to give your human.",
   auth: "agent",
@@ -55,6 +77,7 @@ export const checkEligibilityTool = defineTool({
       ctx.agentId,
       BigInt(input.amount_cents),
       input.term_days,
+      input.collateral ?? null,
     );
 
     const reasons = [...blockers, ...result.reasons];
@@ -72,6 +95,7 @@ export const checkEligibilityTool = defineTool({
           total_cents: Number(result.quote.totalCents),
         },
         tier: gate.tier.tier,
+        mandate: result.mandate,
         ...(claimUrl ? { claim_url: claimUrl } : {}),
       },
       {

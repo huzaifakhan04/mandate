@@ -2,9 +2,10 @@ import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Db } from "@/server/db/client";
-import { agents, idempotencyKeys, mandates, principals, worlds } from "@/server/db/schema";
+import { agents, idempotencyKeys, principals, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { CLAIM_TTL_MS, claimAgent, claimView, hashClaimToken, lookupClaim } from "@/server/services/claims";
+import { revokeMandate, signMandate as signMandateService } from "@/server/services/mandates";
 import { ensureMainWorldOnce } from "@/server/services/worlds";
 
 import { claimAndMandate } from "../../helpers/kya";
@@ -42,25 +43,27 @@ async function register(db: Db, name = "Claimable Agent") {
   };
 }
 
-/** A signed mandate row for a claimed agent (Task 4 builds the real signing). */
+/** Signs a mandate for a claimed agent through the real service (Task 4). */
 async function signMandate(db: Db, agentId: string) {
   const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
-  const [row] = await db
-    .insert(mandates)
-    .values({
-      worldId: agent!.worldId,
-      principalId: agent!.principalId!,
-      agentId,
-      maxPerLoanCents: 50000n,
-      maxTotalOwedCents: 100000n,
-      eligibleCollateral: ["invoice_link", "none"],
-      maxFeeBps: 10000,
-      maxTermDays: 30,
-      guaranteeTextHash: "x",
-      signedAt: new Date(),
-    })
-    .returning();
-  return row!;
+  const result = await signMandateService(db, {
+    principalId: agent!.principalId!,
+    agentId,
+    input: {
+      max_per_loan_cents: 50000,
+      max_total_owed_cents: 100000,
+      max_fee_bps: 10000,
+      max_term_days: 30,
+      eligible_collateral: ["invoice_link", "none"],
+      typed_name: "Owner A",
+      agree: true,
+    },
+    ip: "127.0.0.1",
+  });
+  if (result.outcome !== "signed") {
+    throw new Error(`signMandate: ${result.outcome}`);
+  }
+  return result.mandate;
 }
 
 describe("claim flow (path A) and KYA tiers", () => {
@@ -246,14 +249,14 @@ describe("claim flow (path A) and KYA tiers", () => {
       expect(applied.envelope.status).toBe("OFFERED");
       const offer = applied.envelope.data as Data;
 
-      // The mandate is revoked between offer and acceptance.
-      await db.update(mandates).set({ revokedAt: new Date() }).where(eq(mandates.id, mandate.id));
+      // The mandate is revoked between offer and acceptance (Task 4: 409 MANDATE_REVOKED).
+      await revokeMandate(db, { principalId: mandate.principalId, agentId });
       const accepted = await call(db, "accept_offer", key, {
         offer_id: offer.offer_id,
         disclosure_hash: offer.disclosure_hash,
       });
-      expect(accepted.httpStatus).toBe(403);
-      expect(accepted.envelope).toMatchObject({ status: "MANDATE_REQUIRED", reason_codes: ["mandate_missing"] });
+      expect(accepted.httpStatus).toBe(409);
+      expect(accepted.envelope).toMatchObject({ status: "MANDATE_REVOKED", reason_codes: ["mandate_revoked"] });
     });
 
     it("a blocked apply is never stored under its Idempotency-Key (no token in idempotency_keys); the same key works after claiming", async () => {
