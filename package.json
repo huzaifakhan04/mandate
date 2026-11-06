@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:sandbox": "RUN_SANDBOX_E2E=1 node --env-file=.env.local node_modules/vitest/vitest.mjs run tests/integration/core-loop.sandbox.test.ts --testTimeout=600000 --hookTimeout=300000",
+    "test:agents": "tsx --env-file=.env.local tests/acceptance/run.ts",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test",
     "db:generate": "drizzle-kit generate",

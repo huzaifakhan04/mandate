@@ -95,7 +95,14 @@ export const getLoanTool = defineTool({
       },
       {
         status: "OK",
-        summary: `Loan is ${state}; ${loan.outstandingCents.toString()} cents outstanding.`,
+        summary:
+          state === "DISBURSING"
+            ? // Task 11: agents polled this in a tight loop and read "0 cents
+              // outstanding" as odd. Say what is happening and how long it takes.
+              "Loan is DISBURSING: the principal payout to your PayPal account is settling, which " +
+              "usually takes a minute or two. Nothing is owed until it lands. Check back with " +
+              "get_loan in a minute (don't poll in a tight loop). The invoice repayment_link appears once the loan is ACTIVE."
+            : `Loan is ${state}; ${loan.outstandingCents.toString()} cents outstanding.`,
         reason_codes: state === "DISBURSEMENT_FAILED" ? disbursementFailureReasonCodes(view.disbursementFailureReason) : [],
         next_actions: nextActions,
       },

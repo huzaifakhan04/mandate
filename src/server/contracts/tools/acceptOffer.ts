@@ -33,7 +33,9 @@ function disbursingEnvelope(loanId: string): Envelope<unknown> {
     { loan_id: loanId, status: "DISBURSING", disbursement: { status: "PENDING" } },
     {
       status: "DISBURSING",
-      summary: "Offer accepted; the disbursement payout is in progress. Check back with get_loan.",
+      summary:
+        "Offer accepted; the disbursement payout is in progress and usually settles within a minute or two. " +
+        "Check back with get_loan then; the invoice repayment_link appears once the loan is ACTIVE.",
       next_actions: [{ tool: "get_loan", args: { loan_id: loanId } }],
     },
   );

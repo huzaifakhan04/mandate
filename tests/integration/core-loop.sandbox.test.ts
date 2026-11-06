@@ -1,14 +1,20 @@
-import { spawn, type ChildProcess } from "child_process";
-import { randomBytes } from "crypto";
-import { createWriteStream, mkdirSync } from "fs";
+import { mkdirSync, writeFileSync } from "fs";
 import { join, resolve } from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { paypalConfig } from "@/server/paypal/config";
-import { getAccessToken } from "@/server/paypal/token";
-
-import { approvePayPalCheckout, type ApproveResult } from "../helpers/paypalApprove";
+import { type ApproveResult } from "../helpers/paypalApprove";
+import {
+  approveAs,
+  assertApproved,
+  ledgerReport as fetchLedgerReport,
+  type LedgerReport,
+  type LocalServer,
+  payerIdFor,
+  reconcile as runReconcile,
+  requireEnv,
+  startLocalServer,
+} from "../helpers/sandboxServer";
 
 /**
  * Task 10 — the core loop end to end over REST against REAL PayPal
@@ -37,7 +43,6 @@ const RUN = Boolean(process.env.PAYPAL_CLIENT_ID) && process.env.RUN_SANDBOX_E2E
 
 const PORT = Number(process.env.SANDBOX_E2E_PORT ?? 3130);
 const BASE = `http://localhost:${PORT}`;
-const CRON_SECRET = randomBytes(24).toString("hex");
 const ARTIFACTS = resolve("test-results/sandbox-e2e");
 
 /** Expected numbers (cents): notes 3000; loan 1000 over 7 days; invoice 1500. */
@@ -61,14 +66,6 @@ interface Envelope {
   data: Json;
   reason_codes?: string[];
   next_actions?: { tool: string; args: Json }[];
-}
-
-function requireEnv(name: string): string {
-  const value = process.env[name];
-  if (!value) {
-    throw new Error(`Missing required env var: ${name}`);
-  }
-  return value;
 }
 
 /** What the run observed, written to test-results/sandbox-e2e/summary-*.json (ids + timings, no secrets). */
@@ -102,17 +99,10 @@ async function ok(name: string, input: Json, apiKey?: string): Promise<Envelope>
 
 const reconcileErrors: unknown[] = [];
 async function reconcile(): Promise<void> {
-  const res = await fetch(`${BASE}/api/cron/reconcile`, {
-    method: "POST",
-    headers: { authorization: `Bearer ${CRON_SECRET}` },
-  });
-  const body = (await res.json()) as { ok: boolean; report?: { errors?: unknown[] } };
-  if (res.status !== 200 || !body.ok) {
-    throw new Error(`reconcile → HTTP ${res.status}: ${JSON.stringify(body)}`);
-  }
-  if (body.report?.errors?.length) {
-    reconcileErrors.push(...body.report.errors);
-    console.warn(`[sandbox-e2e] reconcile reported errors: ${JSON.stringify(body.report.errors)}`);
+  const errors = await runReconcile(BASE, server!.cronSecret);
+  if (errors.length) {
+    reconcileErrors.push(...errors);
+    console.warn(`[sandbox-e2e] reconcile reported errors: ${JSON.stringify(errors)}`);
   }
 }
 
@@ -132,131 +122,32 @@ async function settleUntil<T>(what: string, withinMs: number, check: () => Promi
   }
 }
 
-interface LedgerReport {
-  trial_balance_cents: string;
-  accounts: { code: string; owner_ref: string | null; balance_cents: string }[];
-  operations: {
-    total: number;
-    failed: number;
-    by_status: Record<string, number>;
-    rows: { kind: string; purpose: string | null; status: string; paypal_id: string | null; attempts: number }[];
-  };
-}
-
 async function ledgerReport(): Promise<LedgerReport> {
-  const res = await fetch(`${BASE}/api/test/ledger`);
-  if (res.status !== 200) {
-    throw new Error(`/api/test/ledger → HTTP ${res.status}`);
-  }
-  return ((await res.json()) as { report: LedgerReport }).report;
-}
-
-function assertApproved(result: ApproveResult, who: string): void {
-  if (result.blocked) {
-    throw new Error(
-      `BLOCKED: PayPal showed a security challenge to the ${who} account (screenshot: ${result.screenshotPath}). ` +
-        "Not attempting to bypass it.",
-    );
-  }
-  if (!result.ok) {
-    throw new Error(`${who} approval failed: ${result.errorText} (screenshot: ${result.screenshotPath})`);
-  }
+  return fetchLedgerReport(BASE);
 }
 
 async function approve(url: string, account: "LENDER" | "OWNER" | "CLIENT", label: string): Promise<ApproveResult> {
-  return approvePayPalCheckout(url, {
-    email: requireEnv(`PAYPAL_${account}_EMAIL`),
-    password: requireEnv(`PAYPAL_${account}_PASSWORD`),
-    returnUrlPrefix: BASE,
-    screenshotDir: ARTIFACTS,
-    label,
-  });
+  return approveAs(url, account, { returnUrlPrefix: BASE, screenshotDir: ARTIFACTS, label });
 }
 
-/**
- * The OWNER account's PayPal payer ID, for its payout receiver:
- * `PAYPAL_OWNER_PAYER_ID` if set, else discovered by having the owner
- * approve (never capture) a throwaway $1.00 order and reading
- * `payer.payer_id` off it. No money moves; the order just expires.
- */
+/** The OWNER account's PayPal payer ID (PAYPAL_OWNER_PAYER_ID, else a throwaway-order lookup — see payerIdFor). */
 async function ownerPayerId(): Promise<string> {
-  if (process.env.PAYPAL_OWNER_PAYER_ID) {
-    return process.env.PAYPAL_OWNER_PAYER_ID;
+  const { payerId, lookupOrderId } = await payerIdFor("OWNER", {
+    returnUrl: `${BASE}/sandbox-e2e/return`,
+    screenshotDir: ARTIFACTS,
+  });
+  if (lookupOrderId) {
+    summary.payer_id_lookup_order_id = lookupOrderId;
   }
-  const { baseUrl } = paypalConfig();
-  const headers = { Authorization: `Bearer ${await getAccessToken()}`, "Content-Type": "application/json" };
-  const created = (await (
-    await fetch(`${baseUrl}/v2/checkout/orders`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        intent: "CAPTURE",
-        purchase_units: [{ amount: { currency_code: "USD", value: "1.00" }, description: "Mandate e2e: payer id lookup" }],
-        payment_source: {
-          paypal: { experience_context: { return_url: `${BASE}/sandbox-e2e/return`, cancel_url: `${BASE}/sandbox-e2e/cancel` } },
-        },
-      }),
-    })
-  ).json()) as { id: string; links: { rel: string; href: string }[] };
-  const link = created.links.find((l) => l.rel === "payer-action" || l.rel === "approve");
-  if (!link) {
-    throw new Error("payer id lookup order has no approve link");
-  }
-  assertApproved(await approve(link.href, "OWNER", "owner-payer-id"), "OWNER");
-  const order = (await (await fetch(`${baseUrl}/v2/checkout/orders/${created.id}`, { headers })).json()) as {
-    payer?: { payer_id?: string };
-  };
-  const payerId = order.payer?.payer_id;
-  if (!payerId) {
-    throw new Error(`order ${created.id} has no payer.payer_id after approval`);
-  }
-  summary.payer_id_lookup_order_id = created.id;
   return payerId;
 }
 
-let server: ChildProcess | null = null;
+let server: LocalServer | null = null;
 
 describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
   beforeAll(async () => {
     mkdirSync(ARTIFACTS, { recursive: true });
-    const log = createWriteStream(join(ARTIFACTS, `server-${Date.now()}.log`));
-    // vitest sets NODE_ENV=test; let `next dev` choose its own.
-    const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_ENV"));
-    const env: Record<string, string | undefined> = {
-      ...inherited,
-      // In-memory PGlite, never the Neon database `.env.local` points at.
-      DATABASE_URL: "",
-      PUBLIC_BASE_URL: BASE,
-      CRON_SECRET,
-      API_KEY_PEPPER: process.env.API_KEY_PEPPER || randomBytes(24).toString("hex"),
-      MANDATE_TEST_ENDPOINTS: "1",
-      PORT: String(PORT),
-    };
-    server = spawn(resolve("node_modules/.bin/next"), ["dev", "-p", String(PORT)], {
-      env: env as NodeJS.ProcessEnv,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    server.stdout?.pipe(log);
-    server.stderr?.pipe(log);
-
-    const deadline = Date.now() + 180_000;
-    for (;;) {
-      if (server.exitCode !== null) {
-        throw new Error(`next dev exited early (code ${server.exitCode}); see ${ARTIFACTS}`);
-      }
-      const ready = await fetch(`${BASE}/api/v1/get_bank_guide`)
-        .then((res) => res.status === 200)
-        .catch(() => false);
-      if (ready) {
-        break;
-      }
-      if (Date.now() > deadline) {
-        throw new Error("next dev did not become ready within 180 s");
-      }
-      await new Promise((r) => setTimeout(r, 1_000));
-    }
-    // The test-only ledger route must be live on this server.
-    await ledgerReport();
+    server = await startLocalServer({ port: PORT, artifactsDir: ARTIFACTS });
     mark("server_ready");
   }, 240_000);
 
@@ -264,15 +155,9 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
     summary.finished_at = new Date().toISOString();
     summary.reconcile_errors = reconcileErrors;
     const file = join(ARTIFACTS, `summary-${Date.now()}.json`);
-    await import("fs").then((fs) => fs.writeFileSync(file, JSON.stringify(summary, null, 2)));
+    writeFileSync(file, JSON.stringify(summary, null, 2));
     console.log(`[sandbox-e2e] summary: ${file}\n${JSON.stringify(summary, null, 2)}`);
-    if (server && server.exitCode === null) {
-      server.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 1_000));
-      if (server.exitCode === null) {
-        server.kill("SIGKILL");
-      }
-    }
+    await server?.stop();
   });
 
   it(

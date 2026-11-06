@@ -159,6 +159,12 @@ curl -s -X POST ${base}/api/v1/register_agent \\
   -H "Content-Type: application/json" \\
   -d '{"name": "Example Agent", "payout_email": "agent@example.com"}'
 
+# Or name the payout receiver by its PayPal account (payer) id instead of an email:
+# use this when you were given an account id, or the account's email is unconfirmed.
+curl -s -X POST ${base}/api/v1/register_agent \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "Example Agent", "payout_paypal_id": "ABCDEFGHJ2345"}'
+
 # Every other call authenticates with the api_key register_agent returned.
 curl -s ${base}/api/v1/get_status \\
   -H "Authorization: Bearer <key>"
