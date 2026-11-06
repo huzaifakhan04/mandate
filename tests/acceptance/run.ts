@@ -13,7 +13,9 @@
  * Vercel cron + webhooks, and /api/test/ledger is not served.
  *
  * Per run: a lender agent funds $30 of notes (the harness approves its
- * PayPal checkout as PAYPAL_LENDER); a borrower agent borrows $10 for 7 days
+ * PayPal checkout as PAYPAL_LENDER); a borrower agent surfaces its claim_url
+ * (the harness, as the human, verifies with PayPal as PAYPAL_OWNER, claims
+ * it and signs a mandate in the dashboard), then borrows $10 for 7 days
  * against a $15 invoice and hands over the client's payment link (the
  * harness pays it as PAYPAL_CLIENT); the harness then waits for REPAID and
  * the $4.85 remainder payout, and asserts the books.
@@ -28,6 +30,7 @@ import { tmpdir } from "os";
 import { dirname, join, resolve } from "path";
 import { fileURLToPath } from "url";
 
+import { claimAndSignMandateAsHuman, type MandateFormValues } from "../helpers/humanOwner";
 import { type ApproveResult } from "../helpers/paypalApprove";
 import {
   approveAs,
@@ -38,7 +41,6 @@ import {
   requireEnv,
   type SandboxAccount,
   startLocalServer,
-  testClaim,
 } from "../helpers/sandboxServer";
 
 type Json = Record<string, unknown>;
@@ -61,6 +63,15 @@ const INVOICE_CENTS = 1500;
 const FEE_CENTS = 15;
 const REMAINDER_CENTS = INVOICE_CENTS - PRINCIPAL_CENTS - FEE_CENTS; // 485
 const LENDER_EARNED_CENTS = 12; // floor(15 × 80 / 100) when this lender is the only note holder
+
+/** What the borrower's human signs in the dashboard drawer (room for the $10 / 7-day / 1.5% loan). */
+const BORROWER_MANDATE: MandateFormValues = {
+  maxPerLoanUsd: "20",
+  maxTotalOwedUsd: "50",
+  maxFeePct: "5",
+  maxTermDays: "30",
+  collateral: ["invoice_link"],
+};
 
 // ---------------------------------------------------------------- CLI args
 
@@ -305,6 +316,13 @@ function paypalUrls(text: string): string[] {
   return [...new Set(found.map((url) => url.replace(/[.,;:!?*_]+$/, "")))];
 }
 
+/** Claim-page URLs (`<base>/claim/<token>`) anywhere in the agent's text. */
+function claimUrls(text: string, base: string): string[] {
+  const escaped = base.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = text.match(new RegExp(`${escaped}/claim/[A-Za-z0-9_-]{43}`, "g")) ?? [];
+  return [...new Set(found)];
+}
+
 function tokenOf(url: string): string | null {
   try {
     return new URL(url).searchParams.get("token");
@@ -420,6 +438,8 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     };
     result.agents.push(record);
     const noKeyConfig = writeMcpConfig(`${role}-nokey`, null);
+    /** Every reply this agent has given (the claim_url may surface in any of them). */
+    const replies: string[] = [];
     const say = async (text: string, mcpConfigPath: string, resume?: string): Promise<AgentTurn> => {
       transcript.push(`\n===== ${role} ← ${redact(text).slice(0, 4000)}`);
       const turn = await runClaude({ prompt: text, resume, mcpConfigPath, options: ctx.options, cwd, transcript });
@@ -431,6 +451,7 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
         record.toolCalls[name] = (record.toolCalls[name] ?? 0) + 1;
       }
       record.finalMessage = redact(turn.result);
+      replies.push(turn.result);
       transcript.push(`----- ${role} result (${turn.ms} ms, ${turn.numTurns} turns${turn.isError ? ", ERROR" : ""}): ${redact(turn.result)}`);
       log(`run ${index}: ${role} turn done in ${(turn.ms / 1000).toFixed(0)}s, tools: ${turn.toolCalls.join(", ") || "none"}`);
       return turn;
@@ -457,22 +478,10 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     const status = await tool(base, "get_status", {}, apiKey);
     record.agentId = String((status.data.agent as Json).id);
     mark(`${role}_registered`);
-    if (role === "borrower") {
-      // P2: borrowing needs KYA tier 1 (claimed by a human + a signed
-      // mandate). Locally the harness plays the human via the test-only
-      // shortcut; Task 7 replaces it with the real claim page + mandate
-      // flow in the browser (which a remote --base needs).
-      if (ctx.server) {
-        await testClaim(base, record.agentId);
-        mark("borrower_claimed");
-      } else {
-        result.notes.push("remote base: /api/test/claim is not served — the borrower stays unclaimed (tier 0) until Task 7's browser claim flow");
-      }
-    }
 
     const keyConfig = writeMcpConfig(`${role}-key`, apiKey);
     turn = await say(template("continue.md", {}), keyConfig, turn.sessionId);
-    return { record, apiKey, turn, say: (text: string) => say(text, keyConfig, record.sessionId ?? undefined) };
+    return { record, apiKey, turn, replies, say: (text: string) => say(text, keyConfig, record.sessionId ?? undefined) };
   }
 
   async function approve(url: string, account: SandboxAccount, label: string): Promise<ApproveResult> {
@@ -532,9 +541,53 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
     let borrowerTurn = borrower.turn;
     let loanId: string | null = null;
     let link: string | null = null;
+    let claimed = false;
     for (let step = 0; ; step += 1) {
       await settle();
       const status = await tool(base, "get_status", {}, borrower.apiKey);
+      if (!claimed) {
+        // P2: borrowing needs KYA tier 1. The agent must surface its
+        // claim_url to its human; the harness then plays that human in a
+        // real browser (claim page → Verify with PayPal as OWNER → Claim
+        // agent → sign the mandate in the dashboard drawer).
+        const kya = status.data.kya as Json;
+        const current = kya.claim_url as string | null;
+        const surfaced = claimUrls(borrower.replies.join("\n"), base);
+        if (current && surfaced.includes(current)) {
+          mark("claim_url_surfaced_by_agent");
+          const owner = await claimAndSignMandateAsHuman({
+            claimUrl: current,
+            base,
+            agentId: borrower.record.agentId!,
+            account: "OWNER",
+            mandate: BORROWER_MANDATE,
+            signerName: "Sandbox Owner",
+            screenshotDir: ARTIFACTS,
+            label: `run${index}-borrower-owner`,
+          });
+          if (owner.blocked) {
+            throw new Error(`BLOCKED: PayPal showed a security challenge to OWNER (screenshot: ${owner.screenshotPath}); stopping`);
+          }
+          if (!owner.ok) {
+            throw new Error(`owner claim/mandate steps failed: ${owner.errorText} (screenshot: ${owner.screenshotPath})`);
+          }
+          const after = (await tool(base, "get_status", {}, borrower.apiKey)).data.kya as Json;
+          check("borrower tier 1 after claim + mandate", after.tier === 1 && after.can_borrow === true, JSON.stringify(after));
+          claimed = true;
+          result.ids.owner_steps_ms = owner.timingsMs;
+          mark("borrower_claimed_and_mandate_signed");
+          borrowerTurn = await borrower.say(
+            "Done: I verified with PayPal, claimed you, and signed your mandate in my dashboard " +
+              "(up to $20 per loan, $50 owed in total, 5% fee, 30 days, invoice collateral). Continue toward your goal.",
+          );
+          continue;
+        }
+        if (kya.claimed === true) {
+          claimed = true;
+        } else if (surfaced.length > 0) {
+          result.notes.push("borrower printed a claim link that is not its current claim_url");
+        }
+      }
       const openLoan = status.data.open_loan as Json | null;
       if (openLoan?.loan_id) {
         loanId = String(openLoan.loan_id);
@@ -550,8 +603,12 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
         }
         result.notes.push(`borrower printed a PayPal URL that is not the loan's open repayment link (loan ${String(loan.data.status)})`);
       }
-      if (step >= 6) {
-        throw new Error("borrower agent did not hand over the payment link within 6 follow-ups");
+      if (step >= 7) {
+        throw new Error(
+          claimed
+            ? "borrower agent did not hand over the payment link within 6 follow-ups"
+            : "borrower agent never gave its human the claim_url within 6 follow-ups",
+        );
       }
       borrowerTurn = await borrower.say(
         loanId

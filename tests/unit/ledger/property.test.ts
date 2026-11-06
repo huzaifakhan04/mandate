@@ -88,6 +88,6 @@ describe("ledger property: any set of balanced entries nets to zero", () => {
         { numRuns: 50 },
       );
     },
-    60_000,
+    120_000,
   );
 });

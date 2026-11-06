@@ -1,12 +1,13 @@
 import { spawn, type ChildProcess } from "child_process";
 import { randomBytes } from "crypto";
-import { createWriteStream, mkdirSync } from "fs";
+import { copyFileSync, createWriteStream, mkdirSync, mkdtempSync } from "fs";
+import { tmpdir } from "os";
 import { join, resolve } from "path";
 
 import { paypalConfig } from "@/server/paypal/config";
 import { getAccessToken } from "@/server/paypal/token";
 
-import { approvePayPalCheckout, type ApproveResult } from "./paypalApprove";
+import { approvePayPalCheckout, type ApproveResult, PAYPAL_GENERIC_ERROR } from "./paypalApprove";
 
 /**
  * Shared by the real-sandbox tests (Task 10's core-loop e2e and Task 11's
@@ -40,7 +41,8 @@ export interface LocalServer {
  * Spawns `next dev -p <port>` with `DATABASE_URL` forced empty (in-memory
  * PGlite, never the Neon database `.env.local` points at), a fresh
  * CRON_SECRET, the test-only endpoints on, and waits until it serves both
- * `get_bank_guide` and `/api/test/ledger`. The server log goes to
+ * `get_bank_guide` and `/api/test/ledger`. A fresh SESSION_SECRET too, unless
+ * one is set. The server log goes to
  * `<artifactsDir>/server-<ts>.log`.
  */
 export async function startLocalServer(options: { port: number; artifactsDir: string }): Promise<LocalServer> {
@@ -48,8 +50,13 @@ export async function startLocalServer(options: { port: number; artifactsDir: st
   const base = `http://localhost:${port}`;
   const cronSecret = randomBytes(24).toString("hex");
   mkdirSync(artifactsDir, { recursive: true });
+  // The live log is written OUTSIDE the project: `next dev` watches the
+  // project tree, and a log file growing inside it makes every write a
+  // change → recompile → HMR full reload of any page a browser has open
+  // (a reload loop on the claim page). It is copied to `artifactsDir` on stop.
+  const liveLogPath = join(mkdtempSync(join(tmpdir(), "mandate-next-")), "server.log");
   const logPath = join(artifactsDir, `server-${Date.now()}.log`);
-  const log = createWriteStream(logPath);
+  const log = createWriteStream(liveLogPath);
   // vitest sets NODE_ENV=test; let `next dev` choose its own.
   const inherited = Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_ENV"));
   const env: Record<string, string | undefined> = {
@@ -58,6 +65,8 @@ export async function startLocalServer(options: { port: number; artifactsDir: st
     PUBLIC_BASE_URL: base,
     CRON_SECRET: cronSecret,
     API_KEY_PEPPER: process.env.API_KEY_PEPPER || randomBytes(24).toString("hex"),
+    // P2: the owner session cookie (Verify with PayPal → claim → mandate) is HMAC-signed with this.
+    SESSION_SECRET: process.env.SESSION_SECRET || randomBytes(32).toString("hex"),
     MANDATE_TEST_ENDPOINTS: "1",
     PORT: String(port),
   };
@@ -76,11 +85,17 @@ export async function startLocalServer(options: { port: number; artifactsDir: st
         server.kill("SIGKILL");
       }
     }
+    try {
+      copyFileSync(liveLogPath, logPath);
+    } catch {
+      // best effort
+    }
   }
 
   const deadline = Date.now() + 180_000;
   for (;;) {
     if (server.exitCode !== null) {
+      copyFileSync(liveLogPath, logPath);
       throw new Error(`next dev exited early (code ${server.exitCode}); see ${logPath}`);
     }
     const ready = await fetch(`${base}/api/v1/get_bank_guide`)
@@ -162,19 +177,35 @@ export function assertApproved(result: ApproveResult, who: string): void {
   }
 }
 
-/** Approves a PayPal checkout URL as `PAYPAL_<account>_EMAIL` / `_PASSWORD`. */
+/** Pause before retrying after PayPal sandbox's transient error page. */
+export const PAYPAL_RETRY_PAUSE_MS = 20_000;
+
+/**
+ * Approves a PayPal checkout URL as `PAYPAL_<account>_EMAIL` / `_PASSWORD`.
+ * PayPal sandbox's transient "things don't appear to be working" page gets
+ * one retry after a pause (the order is still awaiting approval); a
+ * captcha / challenge is never retried.
+ */
 export async function approveAs(
   url: string,
   account: SandboxAccount,
   options: { returnUrlPrefix: string; screenshotDir: string; label: string },
 ): Promise<ApproveResult> {
-  return approvePayPalCheckout(url, {
-    email: requireEnv(`PAYPAL_${account}_EMAIL`),
-    password: requireEnv(`PAYPAL_${account}_PASSWORD`),
-    returnUrlPrefix: options.returnUrlPrefix,
-    screenshotDir: options.screenshotDir,
-    label: options.label,
-  });
+  const attempt = (label: string) =>
+    approvePayPalCheckout(url, {
+      email: requireEnv(`PAYPAL_${account}_EMAIL`),
+      password: requireEnv(`PAYPAL_${account}_PASSWORD`),
+      returnUrlPrefix: options.returnUrlPrefix,
+      screenshotDir: options.screenshotDir,
+      label,
+    });
+  const first = await attempt(options.label);
+  if (first.ok || first.blocked || first.errorText !== PAYPAL_GENERIC_ERROR) {
+    return first;
+  }
+  console.warn(`[paypal] ${account} approval hit PayPal's transient error page; retrying once in ${PAYPAL_RETRY_PAUSE_MS / 1000}s`);
+  await new Promise((r) => setTimeout(r, PAYPAL_RETRY_PAUSE_MS));
+  return attempt(`${options.label}-retry`);
 }
 
 /**

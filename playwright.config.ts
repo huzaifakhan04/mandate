@@ -1,15 +1,20 @@
 import { defineConfig } from "@playwright/test";
 
+// `E2E_PORT=3100 npm run e2e` when something else already listens on 3000
+// (reuseExistingServer would otherwise test that other server).
+const port = Number(process.env.E2E_PORT || 3000);
+const baseURL = `http://localhost:${port}`;
+
 export default defineConfig({
   testDir: "tests/e2e",
   fullyParallel: true,
   reporter: "list",
   use: {
-    baseURL: "http://localhost:3000",
+    baseURL,
   },
   webServer: {
-    command: "npm run dev",
-    url: "http://localhost:3000",
+    command: `npm run dev -- -p ${port}`,
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     // Neon is not provisioned for local/e2e runs, so force the API routes'

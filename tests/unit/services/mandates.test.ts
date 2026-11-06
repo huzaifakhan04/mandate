@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@/server/db/client";
 import { agents, events, loans, mandates, principals } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
+import { advanceClock } from "@/server/clock/clock";
 import { disclosureHash } from "@/server/domain/disclosure";
 import { agreementTextHash } from "@/server/domain/mandate";
 import { hashIp, principalExposure, revokeMandate, signMandate } from "@/server/services/mandates";
@@ -200,6 +201,26 @@ describe("mandates (P2 Task 4)", () => {
       expect(applied.envelope).toMatchObject({ status: "MANDATE_REQUIRED", reason_codes: ["mandate_missing"] });
     });
 
+    it("an expired mandate (real calendar time) → MANDATE_REQUIRED at apply, mandate_missing at check", async () => {
+      const agent = await createTestAgent(db, worldId, "agent@example.com", {
+        limits: { expiresAt: new Date(Date.now() - 1_000) },
+      });
+      const check = await call(db, "check_eligibility", agent.key, { amount_cents: 1000, term_days: 7 });
+      expect((check.envelope.data as Data).reasons).toContain("mandate_missing");
+      const applied = await call(db, "apply_for_loan", agent.key, APPLY);
+      expect(applied.envelope).toMatchObject({ status: "MANDATE_REQUIRED", reason_codes: ["mandate_missing"] });
+    });
+
+    it("Ruling P2-D: mandate expiry follows the real calendar, not the world's simulated clock", async () => {
+      const agent = await createTestAgent(db, worldId, "agent@example.com", {
+        limits: { expiresAt: new Date(Date.now() + 2 * 86_400_000) },
+      });
+      // Seven simulated days later the mandate is still in force: two real days haven't passed.
+      await advanceClock(db, worldId, 7);
+      const applied = await call(db, "apply_for_loan", agent.key, APPLY);
+      expect(applied.envelope.status).toBe("OFFERED");
+    });
+
     it("tier caps: T1 may borrow ≤ 25000 per loan, T2 ≤ 50000 (min with the mandate's max_per_loan)", async () => {
       const t1 = await createTestAgent(db, worldId, "t1@example.com");
       expect((await call(db, "apply_for_loan", t1.key, { ...APPLY, amount_cents: 25000 })).envelope.status).toBe("OFFERED");
@@ -311,6 +332,45 @@ describe("mandates (P2 Task 4)", () => {
       expect(acceptB.envelope).toMatchObject({ status: "MANDATE_LIMIT", reason_codes: ["mandate_total_owed"] });
       expect(acceptB.envelope.data).toMatchObject({ principal_total_owed_cents: 10150, max_total_owed_cents: 15000 });
       expect(await db.select().from(loans).where(eq(loans.agentId, b.agentId))).toEqual([]);
+    });
+
+    it("a mandate that expired (real calendar time) after the offer → 409 MANDATE_REVOKED, no loan", async () => {
+      const agent = await createTestAgent(db, worldId, "agent@example.com", {
+        limits: { expiresAt: new Date(Date.now() + 60 * 60_000) },
+      });
+      const offer = (await call(db, "apply_for_loan", agent.key, APPLY)).envelope.data as Data;
+      expect(offer.offer_id).toBeDefined();
+      // Real time passes the mandate's expires_at (simulated by moving it into the past).
+      await db
+        .update(mandates)
+        .set({ expiresAt: new Date(Date.now() - 1_000) })
+        .where(eq(mandates.id, agent.mandateId));
+      const accepted = await call(db, "accept_offer", agent.key, {
+        offer_id: offer.offer_id,
+        disclosure_hash: offer.disclosure_hash,
+      });
+      expect(accepted.httpStatus).toBe(409);
+      expect(accepted.envelope).toMatchObject({ status: "MANDATE_REVOKED", reason_codes: ["mandate_revoked"] });
+      expect(await db.select().from(loans).where(eq(loans.agentId, agent.agentId))).toEqual([]);
+    });
+
+    it("principalExposure counts a DISBURSING loan at principal + fee (nothing outstanding yet)", async () => {
+      // A "pending" receiver gets a live-shaped payout response, so the loan stays DISBURSING.
+      const a = await createTestAgent(db, worldId, "pending@example.com", { limits: { maxTotalOwedCents: 15000n } });
+      const offer = (await call(db, "apply_for_loan", a.key, APPLY)).envelope.data as Data;
+      const accepted = await call(db, "accept_offer", a.key, { offer_id: offer.offer_id, disclosure_hash: offer.disclosure_hash });
+      expect(accepted.envelope.status).toBe("DISBURSING");
+      const [loan] = await db.select().from(loans).where(eq(loans.agentId, a.agentId));
+      expect(loan).toMatchObject({ status: "disbursing", outstandingCents: 0n });
+      expect(await principalExposure(db, worldId, a.principalId)).toBe(10150n);
+
+      // …and it counts against the principal's other agents.
+      const b = await createTestAgent(db, worldId, "b@example.com", {
+        principalId: a.principalId,
+        limits: { maxTotalOwedCents: 15000n },
+      });
+      const applied = await call(db, "apply_for_loan", b.key, APPLY);
+      expect(applied.envelope).toMatchObject({ status: "DECLINED", reason_codes: ["mandate_total_owed"] });
     });
 
     it("exposure is per principal: another principal's loans don't count", async () => {

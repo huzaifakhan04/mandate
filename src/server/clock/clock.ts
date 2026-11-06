@@ -1,4 +1,4 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import type { Db } from "../db/client";
 import { clock } from "../db/schema";
@@ -50,6 +50,13 @@ export async function getSimNow(
  * Manually fast-forwards a world's clock by `days` whole days, by adding
  * to `manual_offset_ms`. Rejects non-positive or implausibly large
  * (> 365 day) jumps.
+ *
+ * The clock row is locked (`SELECT … FOR UPDATE`) for the read-modify-write
+ * and the returned simulated time is computed from the row this call
+ * wrote, inside the same transaction: concurrent advances (two "+7 days"
+ * clicks at once) serialise, each moves the clock by exactly what it
+ * asked for, and each returns its own result — never a time that also
+ * includes the other click's jump.
  */
 export async function advanceClock(
   db: Db,
@@ -65,17 +72,18 @@ export async function advanceClock(
 
   const deltaMs = BigInt(days) * 86_400_000n;
 
-  const updated = await db
-    .update(clock)
-    .set({ manualOffsetMs: sql`${clock.manualOffsetMs} + ${deltaMs}` })
-    .where(eq(clock.worldId, worldId))
-    .returning();
-
-  if (updated.length === 0) {
-    throw new Error(`advanceClock: no clock row found for world ${worldId}`);
-  }
-
-  return getSimNow(db, worldId);
+  return db.transaction(async (tx) => {
+    const [row] = await tx.select().from(clock).where(eq(clock.worldId, worldId)).for("update");
+    if (!row) {
+      throw new Error(`advanceClock: no clock row found for world ${worldId}`);
+    }
+    const manualOffsetMs = row.manualOffsetMs + deltaMs;
+    await tx.update(clock).set({ manualOffsetMs }).where(eq(clock.worldId, worldId));
+    return simNow(
+      { anchorReal: row.anchorReal, anchorSim: row.anchorSim, speed: Number(row.speed), manualOffsetMs },
+      new Date(),
+    );
+  });
 }
 
 const DAY_MS = 86_400_000;

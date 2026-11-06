@@ -169,6 +169,25 @@ describe("/verify/start → PayPal → /verify/return (sim rail)", () => {
       body: "",
     });
     expect((await start(crossSite)).status).toBe(403);
+    // A no-referrer page (the claim page) sends `Origin: null`: Sec-Fetch-Site decides.
+    const nullOriginSame = new Request(`${ORIGIN}/verify/start`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", origin: "null", "sec-fetch-site": "same-origin" },
+      body: "",
+    });
+    expect((await start(nullOriginSame)).status).toBe(303);
+    for (const site of ["cross-site", "same-site", null]) {
+      const nullOrigin = new Request(`${ORIGIN}/verify/start`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: "null",
+          ...(site ? { "sec-fetch-site": site } : {}),
+        },
+        body: "",
+      });
+      expect((await start(nullOrigin)).status, `Origin: null, Sec-Fetch-Site: ${site}`).toBe(403);
+    }
     const logout = createLogoutHandler();
     expect((await logout(new Request(`${ORIGIN}/logout`, { method: "POST" }))).status).toBe(403);
   });
@@ -207,7 +226,11 @@ describe("requirePrincipal", () => {
   });
 
   it("throws PrincipalRequiredError (401) without a valid session", () => {
-    const tampered = createSession(id).replace(/.$/, "x");
+    // Flip the signature's FIRST char: the last base64url char of a 32-byte
+    // HMAC carries ignored low bits, so changing it can decode to the same bytes.
+    const value = createSession(id);
+    const sigStart = value.lastIndexOf(".") + 1;
+    const tampered = `${value.slice(0, sigStart)}${value[sigStart] === "A" ? "B" : "A"}${value.slice(sigStart + 1)}`;
     for (const cookie of [undefined, `${SESSION_COOKIE_NAME}=${tampered}`]) {
       const request = new Request(`${ORIGIN}/dashboard`, { headers: cookie ? { cookie } : {} });
       expect(principalFromRequest(request)).toBeNull();

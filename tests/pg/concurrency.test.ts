@@ -9,6 +9,7 @@ import type { ToolDef } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import type { Db } from "@/server/db/client";
 import {
+  clock,
   events,
   idempotencyKeys,
   journalEntries,
@@ -19,6 +20,7 @@ import {
   repaymentLinks,
   repayments,
 } from "@/server/db/schema";
+import { advanceClock } from "@/server/clock/clock";
 import { createTestDb } from "@/server/db/testing";
 import { getAccountBalance, trialBalance } from "@/server/ledger/trialBalance";
 import { simApprove } from "@/server/rail/simHandler";
@@ -77,6 +79,24 @@ describe("real Postgres (TEST_PG=1)", () => {
       });
     await Promise.all([tx(), tx()]);
     expect(open).toBe(2);
+  });
+
+  it("P2 Task 6/7: two concurrent +7-day clock advances serialise on the clock row — exactly +14 days, each returns its own +7", async () => {
+    const worldId = await createSimWorld(db);
+    const [before] = await db.select().from(clock).where(eq(clock.worldId, worldId));
+    const held = await holdLock(db, sql`select world_id from clock where world_id = ${worldId} for update`);
+    const racing = Promise.all([advanceClock(db, worldId, 7), advanceClock(db, worldId, 7)]);
+    await waitForLockWaiters(db, 2);
+    await held.release();
+    const [first, second] = (await racing).map((d) => d.getTime()).sort((a, b) => a - b);
+
+    const [after] = await db.select().from(clock).where(eq(clock.worldId, worldId));
+    const week = 7n * 86_400_000n;
+    expect(after!.manualOffsetMs - before!.manualOffsetMs).toBe(2n * week);
+    // Each call saw only its own jump: the later result is one week (+ the real ms between them) after the earlier.
+    const gap = second! - first!;
+    expect(gap).toBeGreaterThanOrEqual(Number(week));
+    expect(gap).toBeLessThan(Number(week) + 5_000);
   });
 
   it("two agents accept 20000 each against a 34245 pool while overlapping → exactly one loan", async () => {

@@ -3,6 +3,7 @@ import { join, resolve } from "path";
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { claimAndSignMandateAsHuman } from "../helpers/humanOwner";
 import { type ApproveResult } from "../helpers/paypalApprove";
 import {
   approveAs,
@@ -14,7 +15,6 @@ import {
   reconcile as runReconcile,
   requireEnv,
   startLocalServer,
-  testClaim,
 } from "../helpers/sandboxServer";
 
 /**
@@ -181,12 +181,36 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
       const borrowerKey = borrower.data.api_key as string;
       summary.agents = { lender: lender.data.agent_id, borrower: borrower.data.agent_id };
       mark("agents_registered");
-      // P2: borrowing needs KYA tier 1. The borrower's human claims it and
-      // signs a mandate — via the test-only shortcut until Task 7 drives
-      // the real claim page in the browser.
-      expect(borrower.data.claim_url).toMatch(/\/claim\/[A-Za-z0-9_-]{43}$/);
-      await testClaim(BASE, borrower.data.agent_id as string);
-      mark("borrower_claimed");
+      // P2: borrowing needs KYA tier 1. The borrower's human (the OWNER
+      // sandbox account) opens the claim_url, verifies with PayPal (a $0.01
+      // identity order that is approved but never captured — this is also
+      // the live check that order.get shows the payer before capture),
+      // claims the agent, and signs a mandate in the dashboard drawer.
+      const claimUrl = borrower.data.claim_url as string;
+      expect(claimUrl).toMatch(/\/claim\/[A-Za-z0-9_-]{43}$/);
+      expect(claimUrl.startsWith(`${BASE}/claim/`)).toBe(true);
+      const before = await ok("get_status", {}, borrowerKey);
+      expect(before.data.kya).toMatchObject({ tier: 0, claimed: false, can_borrow: false });
+      const owner = await claimAndSignMandateAsHuman({
+        claimUrl,
+        base: BASE,
+        agentId: borrower.data.agent_id as string,
+        account: "OWNER",
+        mandate: { maxPerLoanUsd: "20", maxTotalOwedUsd: "50", maxFeePct: "5", maxTermDays: "30", collateral: ["invoice_link"] },
+        signerName: "Sandbox Owner",
+        screenshotDir: ARTIFACTS,
+        label: "borrower-owner",
+      });
+      if (owner.blocked) {
+        throw new Error(`BLOCKED: PayPal showed a security challenge to the OWNER account (screenshot: ${owner.screenshotPath}). Not attempting to bypass it.`);
+      }
+      expect(owner.errorText, `owner steps failed (screenshot: ${owner.screenshotPath})`).toBeNull();
+      expect(owner.tier).toBe("T1");
+      summary.owner_steps_ms = owner.timingsMs;
+      summary.owner_verify_attempts = owner.verifyAttempts;
+      mark("borrower_claimed_and_mandate_signed");
+      const after = await ok("get_status", {}, borrowerKey);
+      expect(after.data.kya).toMatchObject({ tier: 1, claimed: true, claim_url: null, can_borrow: true, borrow_blockers: [] });
 
       // 2. buy_notes 3000 → the lender approves → confirm_checkout.
       const buy = await ok("buy_notes", { amount_cents: NOTES_CENTS }, lenderKey);
@@ -331,6 +355,14 @@ describe.skipIf(!RUN)("core loop over REST against real PayPal sandbox", () => {
         BigInt(NOTES_CENTS + INVOICE_CENTS - PRINCIPAL_CENTS - REMAINDER_CENTS),
       );
       expect(report.operations.failed, JSON.stringify(report.operations.by_status)).toBe(0);
+      // One identity order per Verify attempt (a retry after PayPal's transient
+      // error page makes a fresh one); created and read, never captured.
+      const identity = report.operations.rows.filter((r) => r.purpose === "identity_verification");
+      summary.identity_operations = identity;
+      expect(identity.filter((r) => r.kind === "order.create").map((r) => r.status)).toEqual(
+        Array.from({ length: Number(summary.owner_verify_attempts) }, () => "succeeded"),
+      );
+      expect(report.operations.rows.some((r) => r.kind === "order.capture" && r.purpose === "identity_verification")).toBe(false);
       const payouts = report.operations.rows.filter((r) => r.kind === "payout.send");
       expect(payouts.map((p) => [p.purpose, p.status])).toEqual([
         ["loan_disbursement", "succeeded"],

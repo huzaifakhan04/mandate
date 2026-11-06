@@ -208,7 +208,7 @@ function renderQuickstartSection(): string {
 function renderClaimingSection(base: string): string {
   return `## Claiming and KYA tiers
 
-Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may do depends on your tier, which the bank computes (\`get_status\` → \`data.kya\`):
+Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may do depends on your tier, which the bank computes from your facts every time (\`get_status\` → \`data.kya\`, with \`borrow_blockers\` saying what is still missing):
 
 | Tier | Requirement | May lend | May borrow |
 | --- | --- | --- | --- |
@@ -216,7 +216,18 @@ Every agent that registers itself is \`ACTIVE\` at **KYA tier 0**. What you may 
 | T1 | claimed by a PayPal-verified human **and** a signed mandate | yes | within the mandate's limits, per loan ≤ 25000 cents |
 | T2 | T1 + an approved KYA document + a registered Ed25519 key ([Signing requests](#signing-requests-optional-unlocks-tier-t2)) | yes | within the mandate's limits, per loan ≤ 50000 cents |
 
-**Claiming (your human does this once):** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Tell your human: *"Ask your human to open <claim_url>"* — they verify with PayPal (a $0.01 check that is never charged) and click **Claim agent**. Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
+**What unlocks each tier:**
+
+- **T0 → T1** takes two steps by your human: they claim you (below), then sign a mandate in their dashboard ([Mandates](#mandates)). \`borrow_blockers\` goes \`claim_required\` → \`mandate_missing\` → empty.
+- **T1 → T2** takes one step by you and one by your human: you register an Ed25519 key with \`register_public_key\` (and sign every mutating call from then on), and your human uploads a KYA document (e.g. an operator registration) in their dashboard.
+
+**Claiming — send your human the \`claim_url\`.** \`register_agent\` returns a \`claim_url\` (\`${base}/claim/<token>\`, valid 7 days, single use). Ask your human to open <claim_url>: give them the link and say what it is for ("claim me as your agent so I can borrow within limits you set"). On that page they:
+
+1. click **Verify with PayPal** and approve a $0.01 identity check in PayPal (it is never charged — the bank only reads which PayPal account approved it), which brings them back to the claim page;
+2. click **Claim agent**;
+3. open their dashboard (\`${base}/dashboard\`) and sign your mandate.
+
+You can't do these steps yourself and you don't need to poll: once your human tells you they are done, call \`get_status\` (\`data.kya.tier\` ≥ 1, \`can_borrow: true\`). Until you are claimed, \`get_status\` keeps showing your \`claim_url\` (a fresh one if the old link expired); \`next_actions\` carries it as a \`human_approval\` with \`"who": "owner"\`. Treat the link like a password: give it only to your own human.
 
 **Mandate:** once claimed, your human signs a mandate in their dashboard that sets your borrowing limits (see [Mandates](#mandates)). Until then, \`check_eligibility\` lists \`mandate_missing\` and \`apply_for_loan\` returns \`MANDATE_REQUIRED\` (403).
 `;
@@ -259,6 +270,8 @@ Your per-loan ceiling is the smaller of your tier's cap (T1 25000, T2 50000 cent
 - \`MANDATE_REVOKED\` (409) with \`mandate_revoked\` — the mandate was revoked or expired; ask your human to sign a new one.
 - \`MANDATE_REVOKED\` (409) with \`mandate_superseded\` — your human signed a new version after the offer; check eligibility and apply again.
 - \`MANDATE_LIMIT\` (400) with the \`mandate_*\` / \`tier_per_loan\` reasons — the offer no longer fits (typically another of your human's agents borrowed meanwhile); \`data\` carries the current limits and headroom.
+
+**Two clocks.** A mandate is a document your human signs, so its \`expires_at\` is **real calendar time**: it lapses at that wall-clock moment in every world, however far a world's simulated clock has been moved. Everything about loans — an offer's expiry, a loan's due date, accrual — runs on the world's **simulated clock** (the main world's runs at real speed; a private world's can be fast-forwarded). An expired mandate behaves like a revoked one: \`mandate_missing\` at check/apply, \`MANDATE_REVOKED\` (\`mandate_revoked\`) at accept.
 `;
 }
 
@@ -324,6 +337,20 @@ async function signedPost(tool, args, apiKey) {
 
 await signedPost("register_public_key", { public_key: publicKeyB64 }, process.env.MANDATE_API_KEY);
 \`\`\`
+`;
+}
+
+function renderPrivateWorldsSection(base: string): string {
+  return `## Private worlds
+
+The main world is the shared bank on PayPal sandbox. A **private world** is a separate, sandboxed copy of the bank that belongs to one human: simulated money only (the \`sim\` rail — no PayPal), with its own ledger, notes, loans and clock. Nothing in it shows up in the main world, and nothing from the main world shows up in it.
+
+- **Who creates one:** a PayPal-verified human, in their dashboard (\`${base}/dashboard/worlds\` → **Create a world**), up to 3 at a time. Agents can't create worlds.
+- **What's inside:** two lender bots and two borrower bots (with their own mandate) that buy notes, borrow and repay once per simulated day, so the pool has liquidity and activity. Their funds are simulated.
+- **Clock controls:** the owner moves the world's clock **+1 day** or **+7 days** (the bots act for each day that passes, so terms, due dates and repayments play out in minutes) or **Reset**s it to a fresh world.
+- **Agents in a private world:** the human registers the agent from their dashboard (\`${base}/dashboard/agents/new\`, choosing the world). Its API key is **bound to that world**: every call made with it — over REST or MCP, at the same URLs as the main world — acts in that world only. To act in another world you need an agent registered there, with its own key. Such an agent is already claimed by that human; it can borrow once they sign its mandate.
+
+Use a private world to rehearse (borrow, let the term pass, repay) without PayPal approvals, then do it for real in the main world.
 `;
 }
 
@@ -435,6 +462,7 @@ ${renderQuickstartSection()}
 ${renderClaimingSection(base)}
 ${renderMandatesSection()}
 ${renderSigningSection(base)}
+${renderPrivateWorldsSection(base)}
 ${renderHumanApprovalSection()}
 ${renderToolReferenceSection(registry, base)}
 ${renderErrorsSection(statusTable)}
@@ -452,7 +480,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, human-approval handling, the full tool reference, errors, and money rules.
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.
 `;

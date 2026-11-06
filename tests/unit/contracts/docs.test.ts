@@ -216,3 +216,50 @@ describe("agents.md mandates section (P2 Task 4)", () => {
     expect(md).toContain("| `MANDATE_REVOKED` | 409 |");
   });
 });
+
+describe("agents.md identity sections (P2 Task 7)", () => {
+  const md = renderAgentsMd(registry, BASE_URL, knownStatusTable());
+
+  it("explains what unlocks each tier and the human claim flow (send your human the claim_url)", () => {
+    const section = md.slice(md.indexOf("## Claiming and KYA tiers"), md.indexOf("## Mandates"));
+    for (const text of [
+      "| T0 | unclaimed |",
+      "| T1 | claimed by a PayPal-verified human **and** a signed mandate |",
+      "| T2 | T1 + an approved KYA document + a registered Ed25519 key",
+      "**T0 → T1**",
+      "**T1 → T2**",
+      "send your human the `claim_url`",
+      "**Verify with PayPal**",
+      "**Claim agent**",
+      `${BASE_URL}/dashboard`,
+      "`claim_required` → `mandate_missing` → empty",
+    ]) {
+      expect(section).toContain(text);
+    }
+  });
+
+  it("documents Ruling P2-D: mandate expiry is real calendar time, offers run on the simulated clock", () => {
+    const section = md.slice(md.indexOf("## Mandates"), md.indexOf("## Signing requests"));
+    expect(section).toContain("**Two clocks.**");
+    expect(section).toContain("`expires_at` is **real calendar time**");
+    expect(section).toContain("an offer's expiry");
+    expect(section).toContain("**simulated clock**");
+  });
+
+  it("documents private worlds: what they are, how a human creates one, keys bound to a world", () => {
+    const section = md.slice(md.indexOf("## Private worlds"), md.indexOf("## Human approval"));
+    expect(section.length).toBeGreaterThan(200);
+    for (const text of [
+      "simulated money only",
+      `${BASE_URL}/dashboard/worlds`,
+      "up to 3",
+      "two lender bots and two borrower bots",
+      "**+1 day** or **+7 days**",
+      "**bound to that world**",
+      `${BASE_URL}/dashboard/agents/new`,
+    ]) {
+      expect(section).toContain(text);
+    }
+    expect(renderLlmsTxt(BASE_URL)).toContain("private worlds");
+  });
+});

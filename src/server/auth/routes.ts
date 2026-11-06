@@ -73,10 +73,16 @@ function errorRedirect(request: Request, reason: VerifyErrorReason, cookies: str
  * (the request's own origin or `PUBLIC_BASE_URL`'s); without `Origin`,
  * `Sec-Fetch-Site` must be `same-origin` or `none`. With neither header the
  * request is refused (fail closed — browsers send at least one on a POST).
+ *
+ * `Origin: null` counts as absent: browsers send it for a form POST from a
+ * page with `Referrer-Policy: no-referrer` — the claim page, which keeps its
+ * token out of every Referer — so there `Sec-Fetch-Site` (set by the
+ * browser, not by scripts) decides. Found by the real-browser sandbox e2e
+ * (P2 Task 7): the claim page's Verify / Claim buttons were refused.
  */
 export function isSameOriginPost(request: Request): boolean {
   const origin = request.headers.get("origin");
-  if (origin) {
+  if (origin && origin !== "null") {
     const allowed = new Set([new URL(request.url).origin]);
     const base = process.env.PUBLIC_BASE_URL;
     if (base) {
