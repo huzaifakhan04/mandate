@@ -1,7 +1,7 @@
 import { and, eq, sql } from "drizzle-orm";
 
 import type { Db } from "../db/client";
-import { paypalOperations } from "../db/schema";
+import { paypalOperations, worlds } from "../db/schema";
 import { PayPalApiError } from "../paypal/fetch";
 import { amountToCents, centsToAmount, orderIdFromPath } from "../paypal/orders";
 import { batchIdFromPath, payoutItemIdFromCancelPath } from "../paypal/payouts";
@@ -69,6 +69,15 @@ interface SimOrderState {
   captureStatus?: string;
   /** Who approved the order (set by `simApprove`); shown on the order from then on, like PayPal's `payer`. */
   payer?: SimPayer;
+  /**
+   * P2 final review (I-1): the order's `payer-action` link, fixed at
+   * creation. In a private world it is the owner's sim approval page
+   * (`/dashboard/worlds/<id>/checkouts/<orderId>/approve`), so an agent's
+   * `human_approval` there leads somewhere real; elsewhere (the main
+   * world's sim rail, used by tests) it is the inert `sim.paypal.local`
+   * link. Absent on orders created before the field existed.
+   */
+  payerActionUrl?: string;
 }
 
 /** The sim payer `simApprove` records — Verify with PayPal reads it back via `order.get`. */
@@ -229,11 +238,30 @@ function orderBody(state: SimOrderState): Record<string, unknown> {
     links: [
       {
         rel: "payer-action",
-        href: `https://sim.paypal.local/checkoutnow?token=${encodeURIComponent(state.orderId)}`,
+        href: state.payerActionUrl ?? simCheckoutUrl(state.orderId),
         method: "GET",
       },
     ],
   };
+}
+
+/** The inert payer-action link of a sim order outside a private world. */
+function simCheckoutUrl(orderId: string): string {
+  return `https://sim.paypal.local/checkoutnow?token=${encodeURIComponent(orderId)}`;
+}
+
+/** The owner's approval page for a sim order in private world `worldId` (I-1). */
+export function privateWorldApprovePath(worldId: string, orderId: string): string {
+  return `/dashboard/worlds/${worldId}/checkouts/${encodeURIComponent(orderId)}/approve`;
+}
+
+async function payerActionUrlFor(db: Db, worldId: string, orderId: string): Promise<string> {
+  const [world] = await db.select({ kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  if (world?.kind !== "private") {
+    return simCheckoutUrl(orderId);
+  }
+  const base = (process.env.PUBLIC_BASE_URL || "http://localhost:3000").replace(/\/+$/, "");
+  return `${base}${privateWorldApprovePath(worldId, orderId)}`;
 }
 
 async function createOrder(db: Db, req: SimRequest): Promise<SimResponse> {
@@ -245,11 +273,13 @@ async function createOrder(db: Db, req: SimRequest): Promise<SimResponse> {
   if (amountCents <= 0n) {
     return unprocessable("CANNOT_BE_ZERO_OR_NEGATIVE");
   }
+  const orderId = `SIMORDER-${req.operationId}`;
   const state = await initSimState<SimOrderState>(db, req.operationId, {
-    orderId: `SIMORDER-${req.operationId}`,
+    orderId,
     status: "PAYER_ACTION_REQUIRED",
     amountCents: amountCents.toString(),
     captureId: null,
+    payerActionUrl: await payerActionUrlFor(db, req.worldId, orderId),
   });
   return { httpStatus: 201, body: orderBody(state) };
 }

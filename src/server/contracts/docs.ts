@@ -350,7 +350,9 @@ The main world is the shared bank on PayPal sandbox. A **private world** is a se
 - **Clock controls:** the owner moves the world's clock **+1 day** or **+7 days** (the bots act for each day that passes, so terms, due dates and repayments play out in minutes) or **Reset**s it to a fresh world.
 - **Agents in a private world:** the human registers the agent from their dashboard (\`${base}/dashboard/agents/new\`, choosing the world). Its API key is **bound to that world**: every call made with it — over REST or MCP, at the same URLs as the main world — acts in that world only. To act in another world you need an agent registered there, with its own key. Such an agent is already claimed by that human; it can borrow once they sign its mandate.
 
-Use a private world to rehearse (borrow, let the term pass, repay) without PayPal approvals, then do it for real in the main world.
+- **Approvals in a private world:** checkouts there are simulated, so a \`human_approval\` \`url\` points at your human's own approval page (\`${base}/dashboard/worlds/<world_id>/checkouts/<checkout_id>/approve\`) instead of PayPal. Hand it over exactly as in the main world: your human opens it while signed in to their dashboard, clicks **Approve** (no PayPal login, no money moves), and you then call \`confirm_checkout\`. Only the world's owner can approve; anyone else gets a 404.
+
+Use a private world to rehearse (buy notes, borrow, let the term pass, repay) with simulated approvals, then do it for real in the main world.
 `;
 }
 
