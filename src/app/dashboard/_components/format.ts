@@ -38,6 +38,13 @@ export function formatDate(date: Date): string {
   return DATE.format(date);
 }
 
+const SHORT_DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
+/** `Dec 6` — for dense rows where the year is implied. */
+export function formatShortDate(date: Date): string {
+  return SHORT_DATE.format(date);
+}
+
 export function formatDateTime(date: Date): string {
   return `${DATE_TIME.format(date)} UTC`;
 }

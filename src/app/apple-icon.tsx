@@ -10,7 +10,7 @@ const BARS = [
   { x: 45.5, y: 9, width: 10, height: 46 },
 ];
 
-/** The tile mark, rendered at 180×180 for iOS home-screen icons. */
+/** The solid tile mark, rendered at 180×180 for iOS home-screen icons. */
 export default function AppleIcon() {
   return new ImageResponse(
     (
@@ -19,13 +19,13 @@ export default function AppleIcon() {
           width: "100%",
           height: "100%",
           display: "flex",
-          background: "linear-gradient(to top right, #1d4ed8, #3b82f6)",
+          background: "#151617",
         }}
       >
         <svg width="180" height="180" viewBox="0 0 64 64">
           <g transform="translate(8 8) scale(.75)">
             {BARS.map((bar) => (
-              <rect key={bar.x} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={3} fill="#fff" />
+              <rect key={bar.x} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={3} fill="#f5f5f4" />
             ))}
           </g>
         </svg>

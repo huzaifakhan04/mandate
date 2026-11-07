@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import { Suspense } from "react";
 
+import { AuthActions, AuthHeading, AuthLead, AuthShell, AuthVia } from "@/components/ui/auth-shell";
+import { IconShield } from "@/components/ui/icons";
 import { sanitizeReturnTo } from "@/server/auth/session";
-
-import { VerifyCard } from "./_components/card";
 
 export const metadata: Metadata = {
   title: "Mandate · Verify with PayPal",
@@ -25,23 +25,28 @@ async function ReturnToField({ searchParams }: { searchParams: Promise<SearchPar
  */
 export default function VerifyPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
-    <VerifyCard>
-      <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink">Verify with PayPal</h1>
-      <p className="mt-3 text-base leading-relaxed text-ink/70">
-        Approve a $0.01 identity check in PayPal. It is never charged — Mandate only reads which PayPal account
-        approved it.
-      </p>
-      <form method="post" action="/verify/start" className="mt-6">
-        <Suspense fallback={null}>
-          <ReturnToField searchParams={searchParams} />
-        </Suspense>
-        <button
-          type="submit"
-          className="w-full rounded-xl bg-accent px-4 py-3 text-base font-semibold text-white hover:bg-accent/90"
-        >
-          Verify with PayPal
-        </button>
-      </form>
-    </VerifyCard>
+    <AuthShell>
+      <div>
+        <AuthHeading>Verify with PayPal</AuthHeading>
+        <AuthLead>
+          Approve a $0.01 identity check in PayPal. It is never charged — Mandate only reads which PayPal account
+          approved it.
+        </AuthLead>
+      </div>
+      <AuthActions>
+        <form method="post" action="/verify/start">
+          <Suspense fallback={null}>
+            <ReturnToField searchParams={searchParams} />
+          </Suspense>
+          <button type="submit" className="ui-btn primary lg">
+            Verify with PayPal
+          </button>
+        </form>
+      </AuthActions>
+      <AuthVia>
+        <IconShield size={14} />
+        via PayPal · sandbox · no real money moves
+      </AuthVia>
+    </AuthShell>
   );
 }

@@ -6,7 +6,7 @@ import { requirePagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
 import { MAX_PRIVATE_WORLDS, listPrivateWorlds } from "@/server/services/privateWorlds";
 
-import { DashFrame, LEGAL, LoadingFrame, TopBar } from "../_components/chrome";
+import { Crumb, LEGAL, LoadingFrame, OwnerShell } from "../_components/chrome";
 import { formatDate } from "../_components/format";
 import "../dashboard.css";
 
@@ -41,86 +41,92 @@ async function Worlds({ searchParams }: { searchParams: SearchParams }) {
   const full = worlds.length >= MAX_PRIVATE_WORLDS;
 
   return (
-    <DashFrame>
-      <TopBar principalId={session.principalId} current="worlds" />
-      <main className="page">
-        <div className="narrow">
-          <Link className="crumb" href="/dashboard">
-            ← Your agents
-          </Link>
-          <div className="head">
-            <div>
-              <h1>Sandbox worlds</h1>
-              <p className="sub">
-                A private bank of your own: simulated money only, never PayPal. Four lender bots fund the pool and six
-                borrower bots take invoice-backed loans as you move the clock; stress it with a default wave, a note run
-                or a rate spike.
-              </p>
-            </div>
+    <OwnerShell
+      principalId={session.principalId}
+      current="worlds"
+      crumb={<Crumb items={[{ label: "Your agents", href: "/dashboard" }, { label: "Sandbox worlds" }]} />}
+    >
+      <div className="narrow">
+        <div className="ph">
+          <div>
+            <h1>Sandbox worlds</h1>
+            <p>
+              A private bank of your own: simulated money only, never PayPal. Four lender bots fund the pool and six
+              borrower bots take invoice-backed loans as you move the clock; stress it with a default wave, a note run or
+              a rate spike.
+            </p>
           </div>
-          {error ? (
-            <div className="notice err" role="alert">
-              {error}
-            </div>
-          ) : null}
+        </div>
+        {error ? (
+          <div className="notice err" role="alert">
+            {error}
+          </div>
+        ) : null}
 
-          <section className="panel" aria-labelledby="worlds-h">
-            <h2 id="worlds-h">
-              Your worlds ({worlds.length} of {MAX_PRIVATE_WORLDS})
-            </h2>
-            {worlds.length === 0 ? (
-              <p>No sandbox worlds yet. Create one below.</p>
-            ) : (
-              <ul className="worldlist" data-testid="world-list">
-                {worlds.map((world) => (
-                  <li key={world.id}>
-                    <div>
-                      <b>{world.name}</b>
-                      <small>
-                        Simulated day {world.simDay} · {formatDate(world.simNow)}
-                      </small>
-                    </div>
-                    <Link className="btn sm" href={`/dashboard/worlds/${world.id}`}>
-                      Open
-                    </Link>
-                    <Link className="btn sm" href={`/dashboard?world=${world.id}`}>
-                      My agents here
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+        <section className="sec" aria-labelledby="worlds-h">
+          <div className="sec-h">
+            <h2 id="worlds-h">Your worlds</h2>
+            <span className="faint num">
+              {worlds.length} of {MAX_PRIVATE_WORLDS}
+            </span>
+          </div>
+          {worlds.length === 0 ? (
+            <p className="empty">No sandbox worlds yet. Create one below.</p>
+          ) : (
+            <ul className="worldlist" data-testid="world-list">
+              {worlds.map((world) => (
+                <li key={world.id}>
+                  <span className="ui-st sim" aria-hidden="true" />
+                  <div>
+                    <b>{world.name}</b>
+                    <small className="num">
+                      Simulated day {world.simDay} · {formatDate(world.simNow)}
+                    </small>
+                  </div>
+                  <Link className="ui-btn" href={`/dashboard/worlds/${world.id}`}>
+                    Open
+                  </Link>
+                  <Link className="ui-btn ghost" href={`/dashboard?world=${world.id}`}>
+                    My agents here
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
-          <section className="panel" aria-labelledby="create-h">
+        <section className="sec" aria-labelledby="create-h">
+          <div className="sec-h">
             <h2 id="create-h">Create a world</h2>
-            <p>Seeding takes a few seconds: the lender bots buy $200, $150, $150 and $100 of notes.</p>
-            <form method="post" action="/dashboard/worlds/create" style={{ display: "grid", gap: 12 }}>
-              <div className="field">
-                <label htmlFor="w-name">World name</label>
-                <input
-                  className="input"
-                  id="w-name"
-                  name="name"
-                  required
-                  maxLength={60}
-                  placeholder="Demo bank"
-                  disabled={full}
-                  aria-describedby="hint-w-name"
-                />
-                <span className="hint" id="hint-w-name">
-                  {full ? "You have the maximum of three; reset one to start over." : "Just for you; nobody else can see it."}
-                </span>
-              </div>
-              <button type="submit" className="btn primary block" disabled={full}>
+          </div>
+          <p className="sec-p">Seeding takes a few seconds: the lender bots buy $200, $150, $150 and $100 of notes.</p>
+          <form className="form-col" method="post" action="/dashboard/worlds/create">
+            <div className="field">
+              <label htmlFor="w-name">World name</label>
+              <input
+                className="ui-input"
+                id="w-name"
+                name="name"
+                required
+                maxLength={60}
+                placeholder="Demo bank"
+                disabled={full}
+                aria-describedby="hint-w-name"
+              />
+              <span className="hint" id="hint-w-name">
+                {full ? "You have the maximum of three; reset one to start over." : "Just for you; nobody else can see it."}
+              </span>
+            </div>
+            <div>
+              <button type="submit" className="ui-btn primary" disabled={full}>
                 Create world
               </button>
-            </form>
-          </section>
-          <p className="pagelegal">{LEGAL}</p>
-        </div>
-      </main>
-    </DashFrame>
+            </div>
+          </form>
+        </section>
+        <p className="ui-legal pagelegal">{LEGAL}</p>
+      </div>
+    </OwnerShell>
   );
 }
 

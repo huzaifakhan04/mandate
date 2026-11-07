@@ -1,19 +1,20 @@
 import type { TimelineKind } from "@/server/services/timeline";
 
 /**
- * P7 — Timeline colours, from the light tokens in globals.css: accent
- * (planned / active), money-in (paid / repaid), amber (late / missed),
- * risk (substandard / failed), ink (charged off), muted (disbursing).
+ * P7 — Timeline colours for the dark theme, from the tokens in globals.css:
+ * indigo (scheduled / planned / active), muted green (paid / repaid),
+ * amber (late / missed), red (substandard / failed), a deeper red
+ * (charged off, the guarantee), grey (disbursing).
  */
 export const TOKENS = {
-  accent: "#1d4ed8",
-  moneyIn: "#0f9d58",
-  moneyInInk: "#0a7a44",
-  amber: "#b26a00",
-  risk: "#d93025",
-  riskInk: "#8e1f17",
-  ink: "#15181d",
-  muted: "#5b6472",
+  accent: "#7f86e0",
+  moneyIn: "#5cb88a",
+  moneyInInk: "#4a9e76",
+  amber: "#d6a24a",
+  risk: "#e5675e",
+  riskInk: "#b8483f",
+  ink: "#b8483f",
+  muted: "#8b8d93",
 } as const;
 
 const LOAN: Record<string, string> = {

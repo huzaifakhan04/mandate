@@ -10,7 +10,7 @@
 import "@bryntum/core-enterprise/fontawesome/css/fontawesome.css";
 import "@bryntum/core-enterprise/fontawesome/css/solid.css";
 import "@bryntum/scheduler-enterprise/scheduler.css";
-import "@bryntum/scheduler-enterprise/svalbard-light.css";
+import "@bryntum/scheduler-enterprise/svalbard-dark.css";
 import "../../_bryntum/theme.css";
 
 import { StringHelper } from "@bryntum/core-enterprise";

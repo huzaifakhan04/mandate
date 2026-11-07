@@ -8,7 +8,7 @@
 import "@bryntum/core-enterprise/fontawesome/css/fontawesome.css";
 import "@bryntum/core-enterprise/fontawesome/css/solid.css";
 import "@bryntum/calendar-enterprise/calendar.css";
-import "@bryntum/calendar-enterprise/svalbard-light.css";
+import "@bryntum/calendar-enterprise/svalbard-dark.css";
 import "../../_bryntum/theme.css";
 
 import { BryntumCalendar } from "@bryntum/calendar-react-enterprise";

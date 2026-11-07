@@ -1,11 +1,14 @@
 import Link from "next/link";
 
+import { IconCheck, IconX } from "@/components/ui/icons";
+import { LEGAL } from "@/components/ui/legal";
+
 import { MANDATE_AGREEMENT_TEXT, MANDATE_BOUNDS } from "@/server/domain/mandate";
 import type { AgentDetailView, AgentEventView, LoanSummary } from "@/server/services/dashboard";
 import { KYA_DOCUMENT_KINDS } from "@/server/services/kyaDocs";
 
 import { STATUS_PILL, drawerHref, isDelinquentStatus, loanPill } from "./cards";
-import { LEGAL, Pill } from "./chrome";
+import { Pill } from "./chrome";
 import { DrawerKeys } from "./drawer-keys";
 import { approveHref, centsInputValue, formatBps, formatCents, formatDate, formatDateTime, loanLabel, shortId } from "./format";
 
@@ -94,7 +97,7 @@ function Notices({ params }: { params: DrawerParams }) {
     return null;
   }
   return (
-    <div style={{ padding: "14px 22px 0" }}>
+    <div className="dnotices">
       {shown.map((notice) => (
         <div
           key={notice.key}
@@ -111,10 +114,8 @@ function Notices({ params }: { params: DrawerParams }) {
 
 function Check({ done, label, detail }: { done: boolean; label: string; detail?: string }) {
   return (
-    <li>
-      <span className={`d ${done ? "done" : "todo"}`} aria-hidden="true">
-        {done ? "✓" : "·"}
-      </span>
+    <li className={done ? "done" : "todo"}>
+      {done ? <IconCheck size={16} /> : <span className="open" aria-hidden="true" />}
       <span>
         {label}
         <span className="sr-only">{done ? " (done)" : " (not yet)"}</span>
@@ -133,7 +134,7 @@ function KyaSection({ agent }: { agent: AgentDetailView }) {
         Know your agent{" "}
         <Pill tone={tier === 0 ? "warn" : tier === 1 ? "blue" : "ok"} label={`KYA tier T${tier}`}>
           <span data-testid="drawer-tier">T{tier}</span>
-          {tier === 2 ? " · verified ✓" : ""}
+          {tier === 2 ? " · verified" : ""}
         </Pill>
       </h3>
       <ul className="checks">
@@ -162,14 +163,9 @@ function KyaSection({ agent }: { agent: AgentDetailView }) {
           {agent.credit.score} / 100 · grade {agent.credit.grade} · limit {formatCents(agent.credit.limitCents)}
         </dd>
       </dl>
-      <ul className="checks" aria-label="Top score factors" data-testid="drawer-score-factors">
+      <ul className="factors" aria-label="Top score factors" data-testid="drawer-score-factors">
         {agent.credit.factors.map((factor) => (
-          <li key={factor}>
-            <span className="d todo" aria-hidden="true">
-              ·
-            </span>
-            <span>{factor}</span>
-          </li>
+          <li key={factor}>{factor}</li>
         ))}
       </ul>
     </section>
@@ -279,7 +275,7 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
         <div className="field">
           <label htmlFor="m-expires">Expires (optional)</label>
           <input
-            className="input"
+            className="ui-input"
             id="m-expires"
             name="expires_at"
             type="date"
@@ -294,7 +290,7 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
         <div className="field">
           <label htmlFor="m-name">Type your full name to sign</label>
           <input
-            className="input"
+            className="ui-input"
             id="m-name"
             name="typed_name"
             autoComplete="name"
@@ -311,7 +307,7 @@ function MandateForm({ agent, params }: { agent: AgentDetailView; params: Drawer
           I agree to the mandate above.
         </label>
         {err("agree")}
-        <button type="submit" className="btn primary block">
+        <button type="submit" className="ui-btn primary sign">
           {current ? `Sign version ${current.version + 1}` : "Sign mandate"}
         </button>
       </form>
@@ -364,14 +360,14 @@ function MandateSection({ agent, params }: { agent: AgentDetailView; params: Dra
       {current ? (
         <div className="actions">
           <form method="post" action={`/dashboard/agents/${agent.id}/mandate/revoke`}>
-            <button type="submit" className="btn danger sm">
+            <button type="submit" className="ui-btn ghost">
               Revoke mandate
             </button>
           </form>
         </div>
       ) : null}
       {older.length > 0 ? (
-        <p style={{ margin: "12px 0 0", fontSize: 12, color: "var(--faint)" }}>
+        <p className="older">
           Earlier versions:{" "}
           {older
             .map((m) => `v${m.version} ${m.status}${m.signedAt ? ` (${formatDate(m.signedAt)})` : ""}`)
@@ -395,12 +391,12 @@ function LoanCard({ loan }: { loan: LoanSummary }) {
         </span>
       </div>
       <div className="big num">{formatCents(loan.principalCents)}</div>
-      <div style={{ color: "var(--muted)", fontSize: 12, marginBottom: 12 }}>
+      <div className="loan-sub">
         {loan.termDays ? `${loan.termDays}-day term` : "Term —"}
         {loan.dayOfTerm !== null && loan.termDays ? ` · day ${loan.dayOfTerm} of ${loan.termDays}` : ""} · due{" "}
         {formatDate(loan.dueSimAt)} (bank time)
       </div>
-      <div className="prog" style={{ marginBottom: 14 }} aria-hidden="true">
+      <div className="prog" aria-hidden="true">
         <i style={{ width: `${progress}%` }} />
       </div>
       <dl className="rows num">
@@ -426,7 +422,7 @@ function LoanCard({ loan }: { loan: LoanSummary }) {
         <dd>{COLLATERAL_LABEL[loan.collateral]}</dd>
       </dl>
       {delinquent || loan.lateFeesCents > 0n || loan.penaltyCents > 0n || loan.waivedCents > 0n ? (
-        <dl className="rows num" data-testid="loan-delinquency" style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed var(--line)" }}>
+        <dl className="rows num sub-rows" data-testid="loan-delinquency">
           {delinquent ? (
             <>
               <dt>Days late</dt>
@@ -462,7 +458,7 @@ function LoanCard({ loan }: { loan: LoanSummary }) {
         </dl>
       ) : null}
       {loan.chargeOff ? (
-        <dl className="rows num" data-testid="loan-charge-off" style={{ marginTop: 10 }}>
+        <dl className="rows num sub-rows" data-testid="loan-charge-off">
           <dt>Written off</dt>
           <dd>{formatCents(loan.chargeOff.writtenOffCents)}</dd>
           <dt>Recovered</dt>
@@ -532,7 +528,7 @@ function eventText(event: AgentEventView): string {
   const label = EVENT_LABEL[event.type]?.text ?? event.type;
   const p = event.payload ?? {};
   if (event.type === "credit.limit_increased" && typeof p.to_grade === "string" && typeof p.limit_cents === "number") {
-    return `${label}: grade ${String(p.from_grade)} → ${p.to_grade}, per-loan limit ${formatCents(p.limit_cents)}`;
+    return `${label}: grade ${String(p.from_grade)} to ${p.to_grade}, per-loan limit ${formatCents(p.limit_cents)}`;
   }
   if (event.type === "loan.late" && typeof p.late_fee_cents === "number") {
     return `${label} (${formatCents(p.late_fee_cents)})`;
@@ -564,7 +560,7 @@ function Tabs({ agent, tab }: { agent: AgentDetailView; tab: DrawerTab }) {
             scroll={false}
             replace
           >
-            {t.label}
+            {t.label} <span className="c">{t.count}</span>
           </Link>
         ))}
       </div>
@@ -664,14 +660,20 @@ function RiskSection({ agent }: { agent: AgentDetailView }) {
                   <label htmlFor={`note-${flag.id}`} className="sr-only">
                     Review note
                   </label>
-                  <input id={`note-${flag.id}`} name="note" maxLength={500} placeholder="Why this is legitimate (optional)" />
-                  <button type="submit" className="btn">
+                  <input
+                    className="ui-input"
+                    id={`note-${flag.id}`}
+                    name="note"
+                    maxLength={500}
+                    placeholder="Why this is legitimate (optional)"
+                  />
+                  <button type="submit" className="ui-btn">
                     {flag.reviewRequestedAt ? "Update review request" : "Request review"}
                   </button>
                 </form>
                 {agent.canClearRiskFlags ? (
                   <form method="post" action={`/dashboard/agents/${agent.id}/risk/${flag.id}/clear`}>
-                    <button type="submit" className="btn">
+                    <button type="submit" className="ui-btn">
                       Clear flag (your sandbox world)
                     </button>
                   </form>
@@ -745,7 +747,7 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
                 {doc.reviewStatus}
               </Pill>
               <form method="post" action={`/dashboard/agents/${agent.id}/documents/${doc.id}`}>
-                <button type="submit" className="btn sm" aria-label={`Delete ${doc.fileName ?? "document"}`}>
+                <button type="submit" className="ui-btn ghost" aria-label={`Delete ${doc.fileName ?? "document"}`}>
                   Delete
                 </button>
               </form>
@@ -753,7 +755,7 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
           ))}
         </ul>
       ) : (
-        <p className="note" style={{ marginBottom: 12 }}>
+        <p className="note">
           No documents yet. One approved document plus a signing key lifts {agent.name} to T2 (loans up to $500.00).
         </p>
       )}
@@ -762,7 +764,7 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
           <label className="sr-only" htmlFor="doc-kind">
             Document type
           </label>
-          <select id="doc-kind" name="kind" defaultValue="operator_registration">
+          <select className="ui-input" id="doc-kind" name="kind" defaultValue="operator_registration">
             {KYA_DOCUMENT_KINDS.map((kind) => (
               <option key={kind} value={kind}>
                 {DOC_KIND_LABEL[kind]}
@@ -774,10 +776,10 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
           </label>
           <input id="doc-file" name="file" type="file" accept="application/pdf,image/png,image/jpeg" required />
         </div>
-        <button type="submit" className="btn sm" style={{ justifySelf: "start" }}>
+        <button type="submit" className="ui-btn">
           Upload document
         </button>
-        <span className="hint" style={{ fontSize: 11, color: "var(--faint)" }}>
+        <span className="hint">
           PDF, PNG or JPEG, up to 2 MB.
         </span>
       </form>
@@ -803,7 +805,7 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
         </div>
         {agent.signingKey ? (
           <form method="post" action={`/dashboard/agents/${agent.id}/key/revoke`}>
-            <button type="submit" className="btn danger sm">
+            <button type="submit" className="ui-btn danger">
               Revoke signing key
             </button>
           </form>
@@ -829,7 +831,7 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
           <label className="check">
             <input type="checkbox" name="read_only" value="on" data-testid="rotate-read-only" /> Read-only key
           </label>{" "}
-          <button type="submit" className="btn sm">
+          <button type="submit" className="ui-btn">
             Rotate API key
           </button>
         </form>
@@ -845,7 +847,7 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
         </div>
         {agent.status === "active" || agent.status === "restricted" || frozen ? (
           <form method="post" action={`/dashboard/agents/${agent.id}/${frozen ? "unfreeze" : "freeze"}`}>
-            <button type="submit" className={`btn sm${frozen ? " primary" : " danger"}`}>
+            <button type="submit" className="ui-btn danger">
               {frozen ? "Unfreeze agent" : "Freeze agent"}
             </button>
           </form>
@@ -871,21 +873,19 @@ export function AgentDrawer({
     <aside className="drawer" id="agent-drawer" aria-labelledby="drawer-title" tabIndex={-1} data-testid="agent-drawer">
       <DrawerKeys closeHref={closeHref} />
       <div className="dh">
-        <div className={`ag${agent.display === "active" ? "" : " muted"}`} aria-hidden="true">
-          {agent.name.slice(0, 1).toUpperCase()}
-        </div>
-        <div>
+        <div className="row">
           <h2 id="drawer-title">{agent.name}</h2>
-          <p>
-            {agent.operator} · {agent.model} · agt_{shortId(agent.id)}
-          </p>
+          <span data-testid="drawer-status">
+            <Pill tone={pill.tone}>{pill.label}</Pill>
+          </span>
+          <Link className="ui-btn ghost x" href={closeHref} aria-label="Close details" scroll={false}>
+            <IconX size={14} />
+          </Link>
         </div>
-        <span data-testid="drawer-status">
-          <Pill tone={pill.tone}>{pill.label}</Pill>
-        </span>
-        <Link className="x" href={closeHref} aria-label="Close details" scroll={false}>
-          ×
-        </Link>
+        <p>
+          {agent.operator} · {agent.model} · <span className="mono">agt_{shortId(agent.id)}</span> · score {agent.credit.score} ·{" "}
+          {agent.credit.grade}
+        </p>
       </div>
       <Notices params={params} />
       <KyaSection agent={agent} />
@@ -895,7 +895,7 @@ export function AgentDrawer({
       <DeclinesSection agent={agent} />
       <DocumentsSection agent={agent} />
       <KeysSection agent={agent} />
-      <div className="legal">{LEGAL}</div>
+      <div className="ui-legal dlegal">{LEGAL}</div>
     </aside>
   );
 }

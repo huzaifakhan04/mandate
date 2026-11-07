@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
-import { VerifyCard } from "../_components/card";
+import { AuthActions, AuthHeading, AuthShell, AuthVia } from "@/components/ui/auth-shell";
 
 export const metadata: Metadata = {
   title: "Mandate · Verification failed",
@@ -24,25 +24,29 @@ const MESSAGES: Record<string, string> = {
 
 const FALLBACK = "Something went wrong verifying with PayPal. Please try again.";
 
+const LEAD = "m-0 mt-2 text-[13.5px] leading-[1.55] text-t2";
+
 async function Reason({ searchParams }: { searchParams: Promise<SearchParams> }) {
   const reason = (await searchParams).reason;
   const message = (typeof reason === "string" && MESSAGES[reason]) || FALLBACK;
-  return <p className="mt-3 text-base leading-relaxed text-ink/70">{message}</p>;
+  return <p className={LEAD}>{message}</p>;
 }
 
 export default function VerifyErrorPage({ searchParams }: { searchParams: Promise<SearchParams> }) {
   return (
-    <VerifyCard>
-      <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink">Not verified</h1>
-      <Suspense fallback={<p className="mt-3 text-base text-ink/70">{FALLBACK}</p>}>
-        <Reason searchParams={searchParams} />
-      </Suspense>
-      <Link
-        href="/verify"
-        className="mt-6 inline-block rounded-xl bg-accent px-4 py-3 text-base font-semibold text-white hover:bg-accent/90"
-      >
-        Try again
-      </Link>
-    </VerifyCard>
+    <AuthShell>
+      <div>
+        <AuthHeading>Not verified</AuthHeading>
+        <Suspense fallback={<p className={LEAD}>{FALLBACK}</p>}>
+          <Reason searchParams={searchParams} />
+        </Suspense>
+      </div>
+      <AuthActions>
+        <Link href="/verify" className="ui-btn primary lg">
+          Try again
+        </Link>
+      </AuthActions>
+      <AuthVia>via PayPal · sandbox · no real money moves</AuthVia>
+    </AuthShell>
   );
 }

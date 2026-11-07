@@ -1,4 +1,5 @@
 import { mandateMarkSvg } from "@/components/brand/MandateLogo";
+import { LEGAL } from "@/components/ui/legal";
 
 import type { Db } from "../db/client";
 import { absoluteUrl } from "../http/publicUrl";
@@ -29,30 +30,34 @@ function plain(status: number, body: string): Response {
   return new Response(body, { status, headers: { "content-type": "text/plain", "cache-control": "no-store" } });
 }
 
-/** A self-contained 409 page in the light theme (globals.css tokens, inlined). */
+/** A self-contained 409 page in the dark theme (globals.css tokens, inlined). */
 function conflictPage(): Response {
   const html = `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex">
+<meta name="referrer" content="no-referrer"><meta name="robots" content="noindex"><meta name="color-scheme" content="dark">
 <title>Mandate · Agent already claimed</title>
 <style>
-body{margin:0;background:#f6f7f9;color:#15181d;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
-main{background:#fff;border:1px solid #e3e6eb;border-radius:16px;padding:32px;max-width:420px;width:100%;box-sizing:border-box;box-shadow:0 1px 2px rgba(21,24,29,.04),0 4px 16px rgba(21,24,29,.06)}
-.k{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#5b6472;margin:0}
-.k svg{border-radius:5px}
-.pill{display:inline-block;margin-top:16px;font-size:11px;font-weight:700;letter-spacing:.04em;padding:3px 9px;border-radius:999px;color:#d93025;background:#fcedec}
-h1{font-size:22px;letter-spacing:-.02em;margin:8px 0 0}
-p{color:#5b6472}
-a{display:inline-block;margin-top:8px;color:#1d4ed8;font-weight:600;text-decoration:none}
-small{display:block;margin-top:24px;color:#8a93a1;font-size:11px}
+html,body{background:#08090a}
+body{margin:0;color:#f5f5f4;font:400 13px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;-webkit-font-smoothing:antialiased;display:flex;justify-content:center;padding:72px 16px 32px;box-sizing:border-box;min-height:100vh}
+main{width:100%;max-width:400px;display:flex;flex-direction:column;gap:20px}
+.k{display:inline-flex;align-items:center;gap:8px;font-size:13px;font-weight:560;color:#f5f5f4;text-decoration:none;align-self:flex-start}
+.st{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#c8c9cc;margin:0 0 12px}
+.st::before{content:"";width:7px;height:7px;border-radius:50%;background:#e5675e}
+h1{font-size:20px;font-weight:560;letter-spacing:-.015em;line-height:1.25;margin:0}
+p{margin:8px 0 0;color:#8b8d93;font-size:13.5px;line-height:1.55}
+.act{border-top:1px solid rgba(255,255,255,.11);padding-top:20px}
+.btn{display:inline-flex;align-items:center;height:34px;padding:0 14px;border-radius:6px;background:#7f86e0;color:#f5f5f4;font-weight:500;text-decoration:none}
+.btn:hover{background:#8d93e6}
+a:focus-visible{outline:2px solid rgba(127,134,224,.6);outline-offset:2px}
+small{display:block;margin-top:24px;color:#5f6268;font-size:11.5px}
 </style></head>
 <body><main>
-<p class="k">${mandateMarkSvg(18)}Mandate</p>
-<span class="pill">409 · CONFLICT</span>
+<a class="k" href="/" aria-label="Mandate home">${mandateMarkSvg(16)}<span aria-hidden="true">Mandate</span></a>
+<div><p class="st">409 · Conflict</p>
 <h1>This agent has already been claimed</h1>
-<p>Another verified PayPal account owns this agent, so it can't be claimed again. If you think this is your agent, ask it for its status and contact the person who claimed it.</p>
-<a href="/dashboard">Go to your dashboard</a>
-<small>Sandbox model · simulated money · notes are not deposits and not FDIC-insured</small>
+<p>Another verified PayPal account owns this agent, so it can't be claimed again. If you think this is your agent, ask it for its status and contact the person who claimed it.</p></div>
+<div class="act"><a class="btn" href="/dashboard">Go to your dashboard</a></div>
+<small>${LEGAL}</small>
 </main></body></html>`;
   return new Response(html, {
     status: 409,

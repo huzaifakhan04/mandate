@@ -10,7 +10,7 @@ const BARS = [
   { x: 45.5, y: 9, width: 10, height: 46 },
 ];
 
-/** The default social share card: a dark navy field with the tile mark and the tagline. */
+/** The default social share card: a near-black field with the flat mark and the tagline. */
 export default function OpengraphImage() {
   return new ImageResponse(
     (
@@ -23,30 +23,18 @@ export default function OpengraphImage() {
           alignItems: "center",
           justifyContent: "center",
           gap: 28,
-          background: "#0a0f1c",
+          background: "#08090a",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: 24 }}>
-          <div
-            style={{
-              width: 96,
-              height: 96,
-              borderRadius: 24,
-              display: "flex",
-              background: "linear-gradient(to top right, #1d4ed8, #3b82f6)",
-            }}
-          >
-            <svg width="96" height="96" viewBox="0 0 64 64">
-              <g transform="translate(8 8) scale(.75)">
-                {BARS.map((bar) => (
-                  <rect key={bar.x} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={3} fill="#fff" />
-                ))}
-              </g>
-            </svg>
-          </div>
-          <span style={{ fontSize: 76, fontWeight: 600, letterSpacing: -2, color: "#fff" }}>Mandate</span>
+          <svg width="88" height="88" viewBox="0 0 64 64">
+            {BARS.map((bar) => (
+              <rect key={bar.x} x={bar.x} y={bar.y} width={bar.width} height={bar.height} rx={3} fill="#f5f5f4" />
+            ))}
+          </svg>
+          <span style={{ fontSize: 76, fontWeight: 600, letterSpacing: -2, color: "#f5f5f4" }}>Mandate</span>
         </div>
-        <span style={{ fontSize: 32, color: "#94a3b8" }}>Credit for the AI economy</span>
+        <span style={{ fontSize: 32, color: "#8b8d93" }}>Credit for the AI economy</span>
       </div>
     ),
     { ...size },

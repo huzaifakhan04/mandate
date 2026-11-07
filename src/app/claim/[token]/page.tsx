@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
-import { MandateMark } from "@/components/brand/MandateLogo";
+import { AuthActions, AuthHeading, AuthLead, AuthShell, AuthVia } from "@/components/ui/auth-shell";
+import { IconShield } from "@/components/ui/icons";
 import { getPagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
 import { claimView, type ClaimAgentSummary, type ClaimView } from "@/server/services/claims";
@@ -23,174 +24,195 @@ export const metadata: Metadata = {
   referrer: "same-origin",
 };
 
-const LEGAL = "Sandbox model · simulated money · notes are not deposits and not FDIC-insured";
+type Tone = "ok" | "warn" | "risk";
 
-function Shell({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex flex-1 flex-col bg-surface">
-      <header className="flex h-15 items-center gap-2 border-b border-ink/10 bg-background px-4 sm:px-6">
-        <MandateMark size={28} variant="tile" className="rounded-lg" />
-        <span className="text-[17px] font-bold tracking-tight text-ink">Mandate</span>
-      </header>
-      <div className="flex flex-1 items-start justify-center px-4 py-10 sm:items-center sm:py-16">
-        <main className="w-full max-w-md rounded-2xl border border-ink/10 bg-background p-6 shadow-[0_1px_2px_rgba(21,24,29,.04),0_4px_16px_rgba(21,24,29,.06)] sm:p-8">
-          {children}
-          <p className="mt-8 text-center text-[11px] text-ink/45">{LEGAL}</p>
-        </main>
-      </div>
-    </div>
-  );
+/** Glyph + label status (`.ui-st`), sentence case. */
+function Status({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+  return <span className={`ui-st ${tone}`}>{children}</span>;
 }
 
-type Tone = "blue" | "ok" | "warn" | "risk";
-
-const PILL: Record<Tone, string> = {
-  blue: "bg-accent/10 text-accent",
-  ok: "bg-money-in/10 text-money-in",
-  warn: "bg-amber-50 text-amber-700",
-  risk: "bg-risk/10 text-risk",
-};
-
-function Pill({ tone, children }: { tone: Tone; children: React.ReactNode }) {
+/** The agent in hairline rows: name + status, then operator / model / agent ID. */
+function AgentSummary({ agent, tone, label }: { agent: ClaimAgentSummary; tone: Tone; label: string }) {
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-0.5 text-[11px] font-bold tracking-wide ${PILL[tone]}`}
-    >
-      <span className="h-1.5 w-1.5 rounded-full bg-current" />
-      {children}
-    </span>
-  );
-}
-
-function AgentCard({ agent, tone, label }: { agent: ClaimAgentSummary; tone: Tone; label: string }) {
-  return (
-    <div className="mt-5 rounded-xl border border-ink/10 p-4">
-      <div className="flex items-center gap-3">
-        <span className="grid h-10 w-10 flex-none place-items-center rounded-xl bg-accent text-base font-bold text-white">
+    <section aria-label="Agent" className="border-y border-line py-3">
+      <div className="mb-2.5 flex min-w-0 items-center gap-2.5">
+        <span
+          aria-hidden="true"
+          className="grid size-[22px] flex-none place-items-center rounded-full border border-line-2 text-[11px] font-medium text-t2"
+        >
           {agent.name.slice(0, 1).toUpperCase()}
         </span>
-        <div className="min-w-0">
-          <h2 className="truncate text-base font-semibold text-ink" data-testid="agent-name">
-            {agent.name}
-          </h2>
-          <p className="truncate text-xs text-ink/50">AI agent</p>
-        </div>
+        <h2 className="m-0 min-w-0 truncate text-[13px] font-medium text-t1" data-testid="agent-name">
+          {agent.name}
+        </h2>
+        <span className="text-xs text-t3">AI agent</span>
         <span className="ml-auto">
-          <Pill tone={tone}>{label}</Pill>
+          <Status tone={tone}>{label}</Status>
         </span>
       </div>
-      <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-sm">
-        <dt className="text-ink/55">Operator</dt>
-        <dd className="min-w-0 text-right font-semibold [overflow-wrap:anywhere]">{agent.operator}</dd>
-        <dt className="text-ink/55">Model</dt>
-        <dd className="min-w-0 text-right font-semibold [overflow-wrap:anywhere]">{agent.model}</dd>
+      <dl className="m-0 grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1.5 text-[12.5px]">
+        <dt className="text-t3">Operator</dt>
+        <dd className="m-0 text-right text-t2 [overflow-wrap:anywhere]">{agent.operator}</dd>
+        <dt className="text-t3">Model</dt>
+        <dd className="m-0 text-right text-t2 [overflow-wrap:anywhere]">{agent.model}</dd>
+        <dt className="text-t3">Agent ID</dt>
+        <dd className="m-0 text-right font-mono text-xs text-t2 [overflow-wrap:anywhere]">{agent.id}</dd>
       </dl>
-    </div>
+    </section>
   );
 }
 
-const PRIMARY =
-  "block w-full rounded-xl bg-accent px-4 py-3 text-center text-base font-semibold text-white hover:bg-accent/90";
-const SECONDARY =
-  "block w-full rounded-xl border border-ink/15 px-4 py-3 text-center text-base font-semibold text-ink hover:bg-surface";
+const LIMITS: { label: string; detail: string }[] = [
+  { label: "Max per loan", detail: "the most it may borrow in one loan" },
+  { label: "Max total owed", detail: "its ceiling across every open loan" },
+  { label: "Max fee", detail: "the highest fee it may accept" },
+  { label: "Max term", detail: "the longest loan it may take" },
+];
 
-function Heading({ children }: { children: React.ReactNode }) {
-  return <h1 className="text-2xl font-semibold tracking-tight text-ink">{children}</h1>;
+/** What the owner signs next: the mandate's four fields, described (values are set on the dashboard). */
+function NextLimits() {
+  return (
+    <section aria-labelledby="limits-h">
+      <h2 id="limits-h" className="m-0 mb-2 text-xs font-normal text-t3">
+        You&apos;ll set these limits next, in the mandate you sign
+      </h2>
+      <dl className="m-0 grid grid-cols-2 border-t border-line">
+        {LIMITS.map((limit, i) => (
+          <div
+            key={limit.label}
+            className={`border-b border-line py-2.5 text-[12.5px] ${
+              i % 2 === 1 ? "border-l border-line pl-3" : "pr-3"
+            }`}
+          >
+            <dt className="font-medium text-t1">{limit.label}</dt>
+            <dd className="m-0 text-xs text-t3">{limit.detail}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  );
 }
 
-function Lead({ children }: { children: React.ReactNode }) {
-  return <p className="mt-2 text-[15px] leading-relaxed text-ink/65">{children}</p>;
+function Code({ children }: { children: React.ReactNode }) {
+  return <code className="font-mono text-xs text-t1">{children}</code>;
+}
+
+function Top({ status, children }: { status?: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div>
+      {status ? <div className="mb-3">{status}</div> : null}
+      {children}
+    </div>
+  );
 }
 
 function ClaimState({ state, token }: { state: ClaimView; token: string }) {
   switch (state.view) {
     case "invalid":
       return (
-        <div data-testid="claim-invalid">
-          <Pill tone="risk">INVALID LINK</Pill>
-          <div className="mt-3">
-            <Heading>This claim link doesn&apos;t work</Heading>
-          </div>
-          <Lead>
-            Check that you copied the whole link. Your agent can show its current claim link again — ask it to call{" "}
-            <code className="font-mono text-sm">get_status</code>.
-          </Lead>
+        <div data-testid="claim-invalid" className="flex flex-col gap-5">
+          <Top status={<Status tone="risk">Invalid link</Status>}>
+            <AuthHeading>This claim link doesn&apos;t work</AuthHeading>
+            <AuthLead>
+              Check that you copied the whole link. Your agent can show its current claim link again — ask it to call{" "}
+              <Code>get_status</Code>.
+            </AuthLead>
+          </Top>
         </div>
       );
     case "expired":
       return (
-        <div data-testid="claim-expired">
-          <Pill tone="warn">EXPIRED</Pill>
-          <div className="mt-3">
-            <Heading>This claim link has expired</Heading>
-          </div>
-          <Lead>
-            Claim links last 7 days. Ask {state.agent.name} for a fresh one — it gets a new link from{" "}
-            <code className="font-mono text-sm">get_status</code>.
-          </Lead>
-          <AgentCard agent={state.agent} tone="warn" label="UNCLAIMED" />
+        <div data-testid="claim-expired" className="flex flex-col gap-5">
+          <Top status={<Status tone="warn">Expired</Status>}>
+            <AuthHeading>This claim link has expired</AuthHeading>
+            <AuthLead>
+              Claim links last 7 days. Ask {state.agent.name} for a fresh one — it gets a new link from{" "}
+              <Code>get_status</Code>.
+            </AuthLead>
+          </Top>
+          <AgentSummary agent={state.agent} tone="warn" label="Unclaimed" />
         </div>
       );
     case "sign_in":
       return (
-        <div data-testid="claim-sign-in">
-          <Heading>Claim {state.agent.name}</Heading>
-          <Lead>
-            An AI agent asked you to become its owner. Owning it lets you set what it may borrow. First, verify who you
-            are with PayPal — a $0.01 check that is never charged.
-          </Lead>
-          <AgentCard agent={state.agent} tone="warn" label="UNCLAIMED" />
-          <form method="post" action="/verify/start" className="mt-6">
-            <input type="hidden" name="return_to" value={`/claim/${token}`} />
-            <button type="submit" className={PRIMARY}>
-              Verify with PayPal to claim {state.agent.name}
-            </button>
-          </form>
+        <div data-testid="claim-sign-in" className="flex flex-col gap-5">
+          <Top>
+            <p className="m-0 mb-3 text-xs text-t4">Step 1 of 2 · verify who you are</p>
+            <AuthHeading>Claim {state.agent.name}</AuthHeading>
+            <AuthLead>
+              An AI agent asked you to become its owner. Owning it lets you set what it may borrow. First, verify who
+              you are with PayPal — a $0.01 check that is never charged.
+            </AuthLead>
+          </Top>
+          <AgentSummary agent={state.agent} tone="warn" label="Unclaimed" />
+          <NextLimits />
+          <AuthActions>
+            <form method="post" action="/verify/start">
+              <input type="hidden" name="return_to" value={`/claim/${token}`} />
+              <button type="submit" className="ui-btn primary lg">
+                Verify with PayPal to claim {state.agent.name}
+              </button>
+            </form>
+          </AuthActions>
+          <AuthVia>
+            <IconShield size={14} />
+            via PayPal · sandbox · no real money moves
+          </AuthVia>
         </div>
       );
     case "confirm":
       return (
-        <div data-testid="claim-confirm">
-          <Heading>Claim {state.agent.name}?</Heading>
-          <Lead>
-            You&apos;ll become this agent&apos;s owner. It can lend right away; it can borrow only after you sign a
-            mandate that sets its limits.
-          </Lead>
-          <AgentCard agent={state.agent} tone="warn" label="UNCLAIMED" />
-          <form method="post" action={`/claim/${token}/accept`} className="mt-6">
-            <button type="submit" className={PRIMARY}>
-              Claim agent
-            </button>
-          </form>
+        <div data-testid="claim-confirm" className="flex flex-col gap-5">
+          <Top>
+            <p className="m-0 mb-3 text-xs text-t4">Step 2 of 2 · confirm</p>
+            <AuthHeading>Claim {state.agent.name}?</AuthHeading>
+            <AuthLead>
+              You&apos;ll become this agent&apos;s owner. It can lend right away; it can borrow only after you sign a
+              mandate that sets its limits.
+            </AuthLead>
+          </Top>
+          <AgentSummary agent={state.agent} tone="warn" label="Unclaimed" />
+          <NextLimits />
+          <AuthActions>
+            <form method="post" action={`/claim/${token}/accept`}>
+              <button type="submit" className="ui-btn primary lg">
+                Claim agent
+              </button>
+            </form>
+          </AuthActions>
+          <AuthVia>Next: sign a mandate in your dashboard.</AuthVia>
         </div>
       );
     case "yours":
       return (
-        <div data-testid="claim-yours">
-          <Pill tone="ok">CLAIMED</Pill>
-          <div className="mt-3">
-            <Heading>{state.agent.name} is yours</Heading>
-          </div>
-          <Lead>Next, sign a mandate in your dashboard so your agent can borrow within the limits you set.</Lead>
-          <AgentCard agent={state.agent} tone="ok" label="YOURS" />
-          <Link href="/dashboard" className={`mt-6 ${PRIMARY}`}>
-            Go to dashboard
-          </Link>
+        <div data-testid="claim-yours" className="flex flex-col gap-5">
+          <Top status={<Status tone="ok">Claimed</Status>}>
+            <AuthHeading>{state.agent.name} is yours</AuthHeading>
+            <AuthLead>Next, sign a mandate in your dashboard so your agent can borrow within the limits you set.</AuthLead>
+          </Top>
+          <AgentSummary agent={state.agent} tone="ok" label="Yours" />
+          <NextLimits />
+          <AuthActions>
+            <Link href="/dashboard" className="ui-btn primary lg">
+              Go to dashboard
+            </Link>
+          </AuthActions>
         </div>
       );
     case "taken":
       return (
-        <div data-testid="claim-taken">
-          <Pill tone="risk">409 · ALREADY CLAIMED</Pill>
-          <div className="mt-3">
-            <Heading>This agent has already been claimed</Heading>
-          </div>
-          <Lead>
-            Another verified PayPal account owns {state.agent.name}, so it can&apos;t be claimed again.
-          </Lead>
-          <Link href="/dashboard" className={`mt-6 ${SECONDARY}`}>
-            Go to your dashboard
-          </Link>
+        <div data-testid="claim-taken" className="flex flex-col gap-5">
+          <Top status={<Status tone="risk">409 · Already claimed</Status>}>
+            <AuthHeading>This agent has already been claimed</AuthHeading>
+            <AuthLead>
+              Another verified PayPal account owns {state.agent.name}, so it can&apos;t be claimed again.
+            </AuthLead>
+          </Top>
+          <AuthActions>
+            <Link href="/dashboard" className="ui-btn lg">
+              Go to your dashboard
+            </Link>
+          </AuthActions>
         </div>
       );
   }
@@ -205,10 +227,10 @@ async function ClaimContent({ params }: { params: Promise<{ token: string }> }) 
 
 export default function ClaimPage({ params }: { params: Promise<{ token: string }> }) {
   return (
-    <Shell>
-      <Suspense fallback={<p className="text-base text-ink/60">Loading…</p>}>
+    <AuthShell>
+      <Suspense fallback={<p className="m-0 text-[13px] text-t3">Loading…</p>}>
         <ClaimContent params={params} />
       </Suspense>
-    </Shell>
+    </AuthShell>
   );
 }

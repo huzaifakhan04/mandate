@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test("landing page shows heading and light theme background", async ({ page }) => {
+test("landing page shows heading and dark theme background", async ({ page }) => {
   await page.goto("/");
 
   await expect(page.getByRole("heading", { name: /Mandate/ })).toBeVisible();
@@ -8,7 +8,7 @@ test("landing page shows heading and light theme background", async ({ page }) =
   const backgroundColor = await page.evaluate(
     () => window.getComputedStyle(document.body).backgroundColor,
   );
-  expect(backgroundColor).toBe("rgb(255, 255, 255)");
+  expect(backgroundColor).toBe("rgb(8, 9, 10)");
 });
 
 test("I3: checkout return/cancel landing pages render; unknown kinds 404", async ({ page, request }) => {

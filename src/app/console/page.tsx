@@ -12,7 +12,7 @@ import {
   resolveConsoleWorld,
 } from "@/server/services/console";
 
-import { MandateMark } from "@/components/brand/MandateLogo";
+import { MandateLogo } from "@/components/brand/MandateLogo";
 
 import { ConsoleApp } from "./_components/console-app";
 import "./console.css";
@@ -57,15 +57,20 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
 
 function Loading() {
   return (
-    <div className="mc">
-      <header className="top">
-        <span className="brand">
-          <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate <em>· Mission control</em>
+    <div className="shell mc">
+      <aside className="shell-side" aria-label="Console">
+        <span className="shell-brand">
+          <MandateLogo size={16} />
         </span>
-      </header>
-      <main className="shell" aria-busy="true">
-        <p className="note">Loading the bank…</p>
-      </main>
+      </aside>
+      <div className="shell-main">
+        <header className="shell-head">
+          <span className="crumb">Mission control</span>
+        </header>
+        <main className="shell-body" aria-busy="true">
+          <p className="world-line">Loading the bank…</p>
+        </main>
+      </div>
     </div>
   );
 }

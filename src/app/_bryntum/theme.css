@@ -1,49 +1,93 @@
 /*
- * P7 — Bryntum (Scheduler / Calendar 8.x, Svalbard light) tuned to the light
+ * P7 — Bryntum (Scheduler / Calendar 8.x, Svalbard dark) tuned to the dark
  * tokens in src/app/globals.css. Imported after the structural sheet and
  * the theme by the two client-only Bryntum components, so it only loads
  * where a Bryntum view is on the page. The selector out-specifies the
  * theme's own `:root:not(.b-nothing)` block, and sits on :root so floating
  * tooltips/popups (rendered outside the component) are themed too.
+ * No gradients, no shadows: surfaces and hairlines only.
  */
 html:root:not(.b-nothing) {
-  --b-primary: #1d4ed8;
-  --b-widget-border-radius: 10px;
-  --b-widget-border-color: #e3e6eb;
-  --b-grid-header-color: #5b6472;
-  --b-grid-row-border-color: #eef0f3;
-  --b-panel-background: #ffffff;
+  --b-primary: var(--acc);
+  --b-font-family: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --b-widget-border-radius: var(--r2);
+  --b-widget-border-radius-large: var(--r3);
+  --b-widget-border-color: var(--line-2);
+  --b-elevation-1: none;
+  --b-elevation-2: none;
+
+  /* the neutral ramp, remapped onto the warm near-black surfaces */
+  --b-neutral-100: var(--panel);
+  --b-neutral-99: #101112;
+  --b-neutral-98: #121314;
+  --b-neutral-97: var(--raised);
+  --b-neutral-96: #18191a;
+  --b-neutral-95: var(--hover);
+  --b-neutral-94: #1e1f21;
+  --b-neutral-93: #202123;
+  --b-neutral-92: var(--press);
+  --b-neutral-91: #242528;
+  --b-neutral-90: #26272a;
+  --b-neutral-85: #2c2d30;
+  --b-neutral-80: #333438;
+  --b-mix: var(--panel);
+
+  --b-panel-background: var(--panel);
+  --b-popup-background: var(--raised);
+  --b-menu-background: var(--raised);
+  --b-tooltip-rich-background: var(--raised);
+  --b-tooltip-plain-background: var(--raised);
+  --b-grid-header-color: var(--t3);
+  --b-grid-header-font-weight: 500;
+  --b-grid-header-background: var(--panel);
+  --b-grid-row-border-color: var(--line);
+  --b-grid-cell-color: var(--t2);
+  --b-column-lines-tick-color: var(--line);
+  --b-column-lines-major-color: var(--line-2);
+  --b-splitter-color: var(--line-2);
 }
 
 .bry-host {
-  font: 13px/1.45 var(--font-geist-sans), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  color: #15181d;
-  border: 1px solid #e3e6eb;
-  border-radius: 12px;
+  font: 13px/1.45 var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  color: var(--t1);
+  border: 1px solid var(--line);
+  border-radius: var(--r3);
   overflow: hidden;
-  background: #fff;
+  background: var(--panel);
   width: 100%;
   min-width: 0;
 }
+.bry-host .b-grid-header-container,
+.bry-host .b-grid-header,
+.bry-host .b-sch-header-timeaxis-cell { background: var(--panel); color: var(--t3); }
+.bry-host .b-grid-cell { color: var(--t2); }
+.bry-host .b-grid-row.b-selected,
+.bry-host .b-grid-row:hover { background: var(--hover); }
 
 /* Timeline: milestones (installments, ladder steps, repayments) as compact labelled diamonds. */
-.bry-host .b-sch-event-wrap.b-milestone-wrap .b-sch-event-content { font-size: 11px; font-weight: 600; color: #15181d; }
-/* `cls` lands on .b-sch-event (inside the wrap). State glyphs so colour is never the only cue. */
-.bry-host .b-sch-event.tl-paid .b-sch-event-content::before { content: "✓ "; }
-.bry-host .b-sch-event.tl-failed .b-sch-event-content::before { content: "✕ "; }
-.bry-host .b-sch-event.tl-missed .b-sch-event-content::before { content: "! "; }
+.bry-host .b-sch-event-wrap.b-milestone-wrap .b-sch-event-content { font-size: 11px; font-weight: 500; color: var(--t1); }
+/* `cls` lands on .b-sch-event (inside the wrap). State words so colour is never the only cue. */
+.bry-host .b-sch-event.tl-installment.tl-paid .b-sch-event-content::before { content: "paid · "; color: var(--t3); }
+.bry-host .b-sch-event.tl-installment.tl-failed .b-sch-event-content::before { content: "failed · "; color: var(--t3); }
+.bry-host .b-sch-event.tl-installment.tl-missed .b-sch-event-content::before { content: "missed · "; color: var(--t3); }
 
-/* Loan bands (disbursed → due) behind the milestones, tinted by the loan's state; the "Due" milestone names the loan. */
-.bry-host .b-sch-resource-time-range.tl-band { --b-primary: #1d4ed8; --b-resource-time-range-background-transparency: 91%; color: transparent; border-inline-start: 3px solid color-mix(in srgb, var(--b-primary) 60%, transparent); }
-.bry-host .b-sch-resource-time-range.tl-band-repaid, .bry-host .b-sch-resource-time-range.tl-band-recovered { --b-primary: #0f9d58; }
-.bry-host .b-sch-resource-time-range.tl-band-late { --b-primary: #b26a00; }
-.bry-host .b-sch-resource-time-range.tl-band-substandard { --b-primary: #d93025; }
-.bry-host .b-sch-resource-time-range.tl-band-charged_off { --b-primary: #15181d; }
-.bry-host .b-sch-resource-time-range.tl-band-disbursing { --b-primary: #5b6472; }
+/* Loan bands (disbursed → due) behind the milestones, a flat tint of the loan's state; the "Due" milestone names the loan. */
+.bry-host .b-sch-resource-time-range.tl-band { --b-primary: #7f86e0; --b-resource-time-range-background-transparency: 86%; color: transparent; border-radius: var(--r1); }
+.bry-host .b-sch-resource-time-range.tl-band-repaid,
+.bry-host .b-sch-resource-time-range.tl-band-recovered { --b-primary: #5cb88a; }
+.bry-host .b-sch-resource-time-range.tl-band-late { --b-primary: #d6a24a; }
+.bry-host .b-sch-resource-time-range.tl-band-substandard { --b-primary: #e5675e; }
+.bry-host .b-sch-resource-time-range.tl-band-charged_off { --b-primary: #b8483f; }
+.bry-host .b-sch-resource-time-range.tl-band-disbursing { --b-primary: #8b8d93; }
 
 /* The sim-time "now" line. */
-.bry-host .b-sch-timerange.b-sch-line { --b-sch-timerange-line-color: #d93025; }
+.bry-host .b-sch-timerange.b-sch-line { --b-sch-timerange-line-color: var(--warn); }
 
-.bry-tip { font-size: 12px; line-height: 1.45; max-width: 280px; }
-.bry-tip b { display: block; font-size: 12.5px; margin-bottom: 2px; }
-.bry-tip span { display: block; color: #5b6472; }
+/* Calendar: quiet day cells, today in indigo. */
+.bry-host .b-calendar .b-cal-cell-header,
+.bry-host .b-calendar .b-calendar-day-header { color: var(--t3); }
+.bry-host .b-calendar .b-today .b-day-num { background: var(--acc); color: var(--acc-ink); }
+
+.bry-tip { font-size: 12px; line-height: 1.45; max-width: 280px; color: var(--t1); }
+.bry-tip b { display: block; font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }
+.bry-tip span { display: block; color: var(--t3); }

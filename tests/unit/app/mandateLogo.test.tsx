@@ -10,10 +10,10 @@ describe("MandateMark", () => {
     expect((html.match(/<rect/g) ?? []).length).toBe(4);
   });
 
-  it("tile variant adds a gradient-filled rounded square behind the bars", () => {
+  it("tile variant adds a solid rounded square behind the bars, never a gradient", () => {
     const html = renderToStaticMarkup(<MandateMark variant="tile" />);
-    expect(html).toContain("linearGradient");
-    expect(html).toContain('rx="16"');
+    expect(html).not.toContain("linearGradient");
+    expect(html).toContain('rx="14"');
     // 4 bars + the background square = 5 rects.
     expect((html.match(/<rect/g) ?? []).length).toBe(5);
   });
@@ -26,10 +26,11 @@ describe("MandateMark", () => {
 });
 
 describe("MandateLogo", () => {
-  it("renders the mark and, by default, the Mandate wordmark", () => {
+  it("renders the flat mark and, by default, the Mandate wordmark", () => {
     const html = renderToStaticMarkup(<MandateLogo />);
     expect(html).toContain("Mandate");
-    expect((html.match(/<rect/g) ?? []).length).toBe(5);
+    expect(html).toContain("currentColor");
+    expect((html.match(/<rect/g) ?? []).length).toBe(4);
   });
 
   it("omits the wordmark when withWordmark is false", () => {
@@ -43,6 +44,7 @@ describe("mandateMarkSvg", () => {
     const svg = mandateMarkSvg(18);
     expect(svg).toContain("<svg");
     expect(svg).toContain('width="18"');
-    expect((svg.match(/<rect/g) ?? []).length).toBe(5);
+    expect(svg).not.toContain("linearGradient");
+    expect((svg.match(/<rect/g) ?? []).length).toBe(4);
   });
 });

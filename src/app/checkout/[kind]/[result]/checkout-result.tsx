@@ -1,6 +1,7 @@
 import { after, connection } from "next/server";
 
-import { MandateMark } from "@/components/brand/MandateLogo";
+import { AuthHeading, AuthLead, AuthShell, AuthVia } from "@/components/ui/auth-shell";
+import { IconCheck, IconX } from "@/components/ui/icons";
 import { getDb } from "@/server/db/client";
 import { type CheckoutPageCopy, settleOnReturn } from "@/server/services/checkoutReturn";
 
@@ -29,35 +30,21 @@ export async function SettleOnReturn({ searchParams }: { searchParams: Promise<S
 export function CheckoutResultView({ copy, children }: { copy: CheckoutPageCopy; children?: React.ReactNode }) {
   const approved = copy.result === "return";
   return (
-    <div className="flex flex-1 flex-col items-center justify-center bg-surface px-4 py-16">
-      <main
-        className="w-full max-w-md rounded-2xl border border-ink/10 bg-background p-8 text-center shadow-sm"
-        data-kind={copy.kind}
-        data-result={copy.result}
-      >
-        <p className="flex items-center justify-center gap-1.5 text-sm font-semibold tracking-tight text-ink/60">
-          <MandateMark size={16} variant="flat" />
-          Mandate
-        </p>
-        <div
+    <AuthShell data-kind={copy.kind} data-result={copy.result}>
+      <div>
+        <span
           aria-hidden="true"
-          className={`mx-auto mt-6 flex h-12 w-12 items-center justify-center rounded-full ${
-            approved ? "bg-money-in/10 text-money-in" : "bg-ink/5 text-ink/60"
+          className={`mb-4 grid size-7 place-items-center rounded-full border border-line-2 ${
+            approved ? "text-money-in" : "text-risk"
           }`}
         >
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" className="h-6 w-6">
-            {approved ? (
-              <path d="M5 12.5l4.5 4.5L19 7.5" strokeLinecap="round" strokeLinejoin="round" />
-            ) : (
-              <path d="M7 7l10 10M17 7L7 17" strokeLinecap="round" strokeLinejoin="round" />
-            )}
-          </svg>
-        </div>
-        <h1 className="mt-4 text-2xl font-semibold tracking-tight text-ink">{copy.title}</h1>
-        <p className="mt-3 text-base leading-relaxed text-ink/70">{copy.message}</p>
-        <p className="mt-8 text-xs text-ink/40">PayPal sandbox · no real money moves</p>
-        {children}
-      </main>
-    </div>
+          {approved ? <IconCheck size={14} /> : <IconX size={14} />}
+        </span>
+        <AuthHeading>{copy.title}</AuthHeading>
+        <AuthLead>{copy.message}</AuthLead>
+      </div>
+      <AuthVia>via PayPal · sandbox · no real money moves</AuthVia>
+      {children}
+    </AuthShell>
   );
 }

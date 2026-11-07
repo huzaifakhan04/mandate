@@ -1,5 +1,3 @@
-import { useId } from "react";
-
 /**
  * The approved Mandate mark ("Option A · rising bars"): four rounded bars
  * forming an M that climbs, on a 64×64 viewBox.
@@ -23,14 +21,17 @@ function Bars({ fill }: { fill: string }) {
 
 export type MandateMarkVariant = "tile" | "flat";
 
+/** Solid colours for the app-icon tile (favicon, apple icon, OG). No gradient. */
+export const MARK_TILE_BG = "#151617";
+export const MARK_TILE_FG = "#f5f5f4";
+
 /**
  * The Mandate mark on its own.
  *
- * - `variant="tile"` — a rounded-square tile with a blue gradient
- *   background and the bars in white (favicons, app icons, anywhere the
- *   mark needs to stand alone on a light or dark surface).
- * - `variant="flat"` — just the bars in `currentColor` (inline next to a
- *   text wordmark, where the surrounding element already sets color).
+ * - `variant="flat"` (default): just the bars in `currentColor`. Use this
+ *   everywhere inside the app, next to the wordmark or alone.
+ * - `variant="tile"`: the bars on a solid graphite rounded square, for app
+ *   icons and favicons that need their own ground.
  */
 export function MandateMark({
   size = 24,
@@ -41,28 +42,12 @@ export function MandateMark({
   variant?: MandateMarkVariant;
   className?: string;
 }) {
-  const reactId = useId();
-  const gradientId = `mandate-mark-gradient-${reactId}`;
-
   if (variant === "tile") {
     return (
-      <svg
-        width={size}
-        height={size}
-        viewBox="0 0 64 64"
-        role="img"
-        aria-label="Mandate"
-        className={className}
-      >
-        <defs>
-          <linearGradient id={gradientId} x1="0" y1="64" x2="64" y2="0">
-            <stop offset="0" stopColor="#1d4ed8" />
-            <stop offset="1" stopColor="#3b82f6" />
-          </linearGradient>
-        </defs>
-        <rect width="64" height="64" rx="16" fill={`url(#${gradientId})`} />
+      <svg width={size} height={size} viewBox="0 0 64 64" role="img" aria-label="Mandate" className={className}>
+        <rect width="64" height="64" rx="14" fill={MARK_TILE_BG} />
         <g transform="translate(8 8) scale(.75)">
-          <Bars fill="#fff" />
+          <Bars fill={MARK_TILE_FG} />
         </g>
       </svg>
     );
@@ -79,9 +64,9 @@ export function MandateMark({
  * The mark plus the "Mandate" wordmark, in the app's Geist font.
  */
 export function MandateLogo({
-  size = 24,
+  size = 18,
   withWordmark = true,
-  variant = "tile",
+  variant = "flat",
   className,
 }: {
   size?: number;
@@ -93,22 +78,20 @@ export function MandateLogo({
     <span className={`inline-flex items-center gap-2 ${className ?? ""}`}>
       <MandateMark size={size} variant={variant} />
       {withWordmark ? (
-        <span className="font-semibold" style={{ letterSpacing: "-0.02em" }}>
-          Mandate
-        </span>
+        <span style={{ fontWeight: 560, letterSpacing: "-0.015em" }}>Mandate</span>
       ) : null}
     </span>
   );
 }
 
 /**
- * The tile mark as a standalone SVG string, for the server-rendered,
+ * The flat mark as a standalone SVG string, for the server-rendered,
  * HTML-string pages (`simApproveRoutes.ts`, `claimRoutes.ts`) that can't
- * use React components or `useId`.
+ * use React components. Bars in the light text colour, for the dark ground.
  */
 export function mandateMarkSvg(size = 24): string {
   const bars = BARS.map(
-    (bar) => `<rect x="${bar.x}" y="${bar.y}" width="${bar.width}" height="${bar.height}" rx="3" fill="#fff"/>`,
+    (bar) => `<rect x="${bar.x}" y="${bar.y}" width="${bar.width}" height="${bar.height}" rx="3" fill="${MARK_TILE_FG}"/>`,
   ).join("");
-  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" role="img" aria-label="Mandate" xmlns="http://www.w3.org/2000/svg"><defs><linearGradient id="mandate-mark-gradient-static" x1="0" y1="64" x2="64" y2="0"><stop offset="0" stop-color="#1d4ed8"/><stop offset="1" stop-color="#3b82f6"/></linearGradient></defs><rect width="64" height="64" rx="16" fill="url(#mandate-mark-gradient-static)"/><g transform="translate(8 8) scale(.75)">${bars}</g></svg>`;
+  return `<svg width="${size}" height="${size}" viewBox="0 0 64 64" role="img" aria-label="Mandate" xmlns="http://www.w3.org/2000/svg">${bars}</svg>`;
 }

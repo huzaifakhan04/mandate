@@ -3,88 +3,41 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import { MandateMark } from "@/components/brand/MandateLogo";
+import { MandateLogo } from "@/components/brand/MandateLogo";
+import {
+  IconAgent,
+  IconBox,
+  IconCalendar,
+  IconCode,
+  IconConsole,
+  IconDoc,
+  IconLedger,
+  IconLoan,
+  IconNote,
+  IconShield,
+} from "@/components/ui/icons";
+import { LEGAL } from "@/components/ui/legal";
 import type { ConsoleSnapshot, ConsoleWorldChoice } from "@/server/services/console";
 
 import { MoneyFlow } from "./flow";
-import { ConsoleGrids } from "./grids";
-import { RiskDesk } from "./risk";
-import { logTime, money, moneyShort, pct, simDate, simTime, statusLabel, toneFor } from "./format";
+import { logTime, simDate, simTime } from "./format";
+import { ConsoleGrids, type TabId } from "./grids";
+import { KpiArea } from "./kpis";
+import { Movements } from "./movements";
 
 export const POLL_MS = 2000;
-const LEGAL = "Sandbox model · simulated money · notes are not deposits and not FDIC-insured";
 
 type Choice = ConsoleWorldChoice;
 type FeedState = "live" | "paused" | "error";
 
-/** A 56×22 sparkline of `values` (flat line when there is nothing to show). */
-function Sparkline({ values, color }: { values: number[]; color: string }) {
-  if (values.length < 2) {
-    return (
-      <svg viewBox="0 0 56 22" aria-hidden="true">
-        <path d="M0,11 L56,11" fill="none" stroke="#8a93a1" strokeWidth="1.8" strokeLinecap="round" />
-      </svg>
-    );
-  }
-  const min = Math.min(...values);
-  const max = Math.max(...values);
-  const span = max - min || 1;
-  const d = values
-    .map((v, i) => {
-      const x = (i / (values.length - 1)) * 56;
-      const y = max === min ? 11 : 19 - ((v - min) / span) * 16;
-      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(" ");
-  return (
-    <svg viewBox="0 0 56 22" aria-hidden="true">
-      <path d={d} fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function Kpi({
-  label,
-  value,
-  sub,
-  values,
-  color,
-  testId,
-  risk = false,
-}: {
-  label: string;
-  value: string;
-  sub: string;
-  values: number[];
-  color: string;
-  testId: string;
-  risk?: boolean;
-}) {
-  return (
-    <div className="k" data-testid={testId}>
-      <span>{label}</span>
-      <b className="num">{value}</b>
-      <Sparkline values={values} color={color} />
-      <small className={risk ? "risk" : undefined}>{sub}</small>
-    </div>
-  );
-}
-
-function deltaText(values: number[], format: (n: number) => string): string {
-  if (values.length < 2) {
-    return "no history yet";
-  }
-  const delta = values[values.length - 1]! - values[0]!;
-  if (delta === 0) {
-    return `flat · ${values.length}d`;
-  }
-  return `${delta > 0 ? "+" : "−"}${format(Math.abs(delta))} · ${values.length}d`;
-}
-
-function opLine(op: ConsoleSnapshot["paypalLog"][number]): string {
-  const purpose = op.purpose ? statusLabel(op.purpose) : "operation";
-  return `${op.kind} ${purpose}`;
-}
+const NAV: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
+  { id: "ledger", label: "Ledger", icon: <IconLedger size={16} /> },
+  { id: "loans", label: "Loans", icon: <IconLoan size={16} /> },
+  { id: "notes", label: "Notes", icon: <IconNote size={16} /> },
+  { id: "agents", label: "Agents", icon: <IconAgent size={16} /> },
+  { id: "risk", label: "Risk desk", icon: <IconShield size={16} /> },
+  { id: "calendar", label: "Calendar", icon: <IconCalendar size={16} /> },
+];
 
 export function ConsoleApp({
   initial,
@@ -105,7 +58,9 @@ export function ConsoleApp({
   const [now, setNow] = useState(() => Date.now());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
+  const [tab, setTab] = useState<TabId>("ledger");
   const inFlight = useRef(false);
+  const recordsRef = useRef<HTMLDivElement>(null);
 
   const refresh = useCallback(async () => {
     if (inFlight.current) {
@@ -199,24 +154,36 @@ export function ConsoleApp({
     }
   }
 
-  const { kpis, series, clock, world } = snapshot;
+  function openTab(id: TabId) {
+    setTab(id);
+    recordsRef.current?.scrollIntoView({ block: "start" });
+  }
+
+  const { clock, world } = snapshot;
   const sim = new Date(new Date(clock.simNow).getTime() + Math.max(0, now - fetchedAt) * clock.speed);
-  const s = (pick: (row: ConsoleSnapshot["series"][number]) => number) => series.map(pick);
   const ageSeconds = Math.max(0, Math.round((now - fetchedAt) / 1000));
-  const memo = kpis.memo;
+  const simulated = world.kind === "demo" || world.rail === "sim";
+  const counts: Partial<Record<TabId, number>> = {
+    ledger: snapshot.ledgerEntries,
+    loans: snapshot.loans.length,
+    notes: snapshot.notes.length,
+    agents: snapshot.agents.length,
+    risk: snapshot.risk.open,
+  };
+  const feedTone = feed === "live" ? "in" : feed === "paused" ? "ring" : "risk";
 
   return (
-    <div className="mc">
+    <div className="shell mc">
       <a className="skip" href="#console-main">
         Skip to content
       </a>
-      <header className="top">
-        <Link className="brand" href="/" aria-label="Mandate home">
-          <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate <em>· Mission control</em>
+      <aside className="shell-side" aria-label="Console">
+        <Link className="shell-brand" href="/" aria-label="Mandate home">
+          <MandateLogo size={16} />
         </Link>
-        <div className="worldsw" data-testid="console-world-switcher">
+        <div className="shell-world" data-testid="console-world-switcher">
           {choices.length > 1 ? (
-            <form method="get" action="/console" className="worldsw">
+            <form method="get" action="/console">
               <label className="sr-only" htmlFor="console-world">
                 World
               </label>
@@ -233,203 +200,126 @@ export function ConsoleApp({
                 ))}
               </select>
               <noscript>
-                <button type="submit" className="btn">
+                <button type="submit" className="ui-btn">
                   Go
                 </button>
               </noscript>
             </form>
           ) : (
-            <span className="static">{world.kind === "main" ? "Main world" : world.name}</span>
+            <span className="world-static">{world.kind === "main" ? "Main world" : world.name}</span>
           )}
+          <div className="world-meta">
+            {simulated && world.kind !== "demo" ? <span className="ui-tag sim">Simulated</span> : null}
+            {world.kind === "demo" ? null : (
+              <span className={simulated ? "world-rail" : "ui-tag"}>{world.rail === "paypal" ? "PayPal sandbox" : "sim rail"}</span>
+            )}
+          </div>
+        </div>
+        <nav className="shell-nav" aria-label="Console sections">
+          <a href="#console-main" aria-current="page">
+            <IconConsole size={16} />
+            Console
+          </a>
+          {NAV.map((n) => (
+            <button key={n.id} type="button" onClick={() => openTab(n.id)}>
+              {n.icon}
+              {n.label}
+              {counts[n.id] !== undefined ? <span className="count">{counts[n.id]!.toLocaleString("en-US")}</span> : null}
+            </button>
+          ))}
+        </nav>
+        <div className="shell-foot">
+          <div className="shell-sec">Developers</div>
+          <nav className="shell-nav" aria-label="Developers">
+            <a href="/agents.md">
+              <IconDoc size={16} />
+              agents.md
+            </a>
+            <a href="/openapi.json">
+              <IconCode size={16} />
+              OpenAPI
+            </a>
+            <Link href="/sdks">
+              <IconBox size={16} />
+              SDKs
+            </Link>
+          </nav>
+        </div>
+      </aside>
+
+      <div className="shell-main">
+        <header className="shell-head">
+          <span className="crumb">Mission control</span>
           {world.kind === "demo" ? (
-            <span className="tag demo" data-testid="demo-badge" title="Simulated bots on a simulated rail — the clock moves a day every 10 minutes">
+            <span
+              className="ui-tag sim"
+              data-testid="demo-badge"
+              title="Simulated bots on a simulated rail — the clock moves a day every 10 minutes"
+            >
               Demo world · simulated money
             </span>
-          ) : (
-            <span className={`tag ${world.rail === "paypal" ? "sb" : "sim"}`}>{world.rail === "paypal" ? "PayPal sandbox" : "sim rail"}</span>
-          )}
-        </div>
-        <div className="clock" data-testid="bank-clock">
-          <span className="day" aria-label={`Bank clock: day ${clock.simDay}, ${simDate(sim)} ${simTime(sim)} UTC`}>
-            <span className={`live-dot ${feed === "live" ? "" : feed === "paused" ? "paused" : "err"}`} aria-hidden="true" />
-            <span className="num" data-testid="console-sim-day">
-              Day {clock.simDay}
-            </span>
-            <small className="num">
-              {simDate(sim)} · {simTime(sim)} UTC
-            </small>
-          </span>
-          <span className="feed num" data-testid="clock-speed">
-            {world.kind === "demo" ? "1 day / 10 min" : clock.speed > 0 ? `${clock.speed}× real time` : "manual clock"}
-          </span>
-          {world.kind === "private" ? (
-            <>
-              <button type="button" className="btn" disabled={busy} onClick={() => advance(1)} data-testid="advance-1">
-                +1d
-              </button>
-              <button type="button" className="btn" disabled={busy} onClick={() => advance(7)} data-testid="advance-7">
-                +7d
-              </button>
-            </>
           ) : null}
-          <span className="feed" role="status" aria-live="polite" data-testid="feed-status">
-            {message || (feed === "live" ? `live · ${ageSeconds}s ago` : feed === "paused" ? "paused (tab hidden)" : "reconnecting…")}
-          </span>
-        </div>
-      </header>
+          <span className="grow" />
+          <div className="clock" data-testid="bank-clock">
+            <span className="day" aria-label={`Bank clock: day ${clock.simDay}, ${simDate(sim)} ${simTime(sim)} UTC`}>
+              <b className="num" data-testid="console-sim-day">
+                Day {clock.simDay}
+              </b>
+              <span className="num when">
+                {simDate(sim)} {simTime(sim)} UTC
+              </span>
+            </span>
+            <span className="sep" aria-hidden="true" />
+            <span className="num speed" data-testid="clock-speed">
+              {world.kind === "demo" ? "1 day / 10 min" : clock.speed > 0 ? `${clock.speed}× real time` : "manual clock"}
+            </span>
+            {world.kind === "private" ? (
+              <>
+                <button type="button" className="ui-btn" disabled={busy} onClick={() => advance(1)} data-testid="advance-1">
+                  +1 day
+                </button>
+                <button type="button" className="ui-btn" disabled={busy} onClick={() => advance(7)} data-testid="advance-7">
+                  +7 days
+                </button>
+              </>
+            ) : null}
+            <span className={`ui-st ${feedTone} feed`} role="status" aria-live="polite" data-testid="feed-status">
+              {message ||
+                (feed === "live" ? `live · updated ${ageSeconds}s ago` : feed === "paused" ? "paused (tab hidden)" : "reconnecting…")}
+            </span>
+          </div>
+        </header>
 
-      <main className="shell" id="console-main">
-        <h1 className="sr-only">Mandate bank console — {world.kind === "main" ? "main world" : world.name}</h1>
-        {world.kind === "demo" ? (
-          <p className="demo-note" data-testid="demo-note">
-            You are watching the <b>demo world</b>: simulated lender and borrower bots on a simulated rail, one bank day every
-            10 minutes, with a mild stress event every third day. Nothing here touches PayPal.{" "}
-            <Link href="/console?world=main">Switch to the main world (real PayPal sandbox)</Link>.
-          </p>
-        ) : null}
-        <section className="kstrip" aria-label="Key figures" data-testid="kpi-strip">
-          <Kpi
-            testId="kpi-cash"
-            label="Cash"
-            value={moneyShort(kpis.cashCents)}
-            sub={deltaText(s((r) => r.cashCents), (n) => money(n))}
-            values={s((r) => r.cashCents)}
-            color="#0f9d58"
-          />
-          <Kpi
-            testId="kpi-loans"
-            label="Loans outstanding"
-            value={moneyShort(kpis.loansOutstandingCents)}
-            sub={`${kpis.loansTotal} loans ever`}
-            values={s((r) => r.loansCents)}
-            color="#1d4ed8"
-          />
-          <Kpi
-            testId="kpi-notes"
-            label="Notes outstanding"
-            value={moneyShort(kpis.notesOutstandingCents)}
-            sub={deltaText(s((r) => r.notesCents), (n) => money(n))}
-            values={s((r) => r.notesCents)}
-            color="#0f9d58"
-          />
-          <Kpi
-            testId="kpi-utilization"
-            label="Utilization"
-            value={pct(kpis.utilizationBps)}
-            sub="loans ÷ (cash + loans)"
-            values={s((r) => r.utilizationBps)}
-            color="#1d4ed8"
-          />
-          <Kpi
-            testId="kpi-base-rate"
-            label="Base rate"
-            value={pct(kpis.baseRateBps)}
-            sub="simulated walk"
-            values={s((r) => r.baseRateBps)}
-            color="#8a93a1"
-          />
-          <Kpi
-            testId="kpi-inflation"
-            label="Inflation"
-            value={pct(kpis.inflationRateBps)}
-            sub={`real rate ${pct(kpis.baseRateBps - kpis.inflationRateBps)}`}
-            values={s((r) => r.inflationRateBps)}
-            color="#8a93a1"
-          />
-          <Kpi
-            testId="kpi-reserve"
-            label="Reserve ratio"
-            value={pct(kpis.reserveRatioBps)}
-            sub="cash ÷ notes outstanding"
-            values={s((r) => r.reserveRatioBps)}
-            color="#0f9d58"
-          />
-          <Kpi
-            testId="kpi-allowance"
-            label="Allowance (CECL)"
-            value={moneyShort(kpis.allowanceCents)}
-            sub="gross of holder loss sharing"
-            values={s((r) => r.allowanceCents)}
-            color="#b26a00"
-          />
-          <Kpi
-            testId="kpi-defaults"
-            label="Defaults"
-            value={String(kpis.defaults)}
-            sub={`charged off of ${kpis.loansTotal} loans`}
-            values={s((r) => r.defaults)}
-            color="#d93025"
-            risk={kpis.defaults > 0}
-          />
-          <Kpi
-            testId="kpi-memo-day"
-            label="Treasury memo"
-            value={memo ? `Day ${memo.simDay}` : "—"}
-            sub={memo ? `${memo.source} · advisory` : "written daily"}
-            values={[]}
-            color="#8a93a1"
-          />
-        </section>
-        <div className="memo" data-testid="treasury-headline">
-          <b>Treasury memo</b>
-          <p>{memo ? memo.headline : "No treasury memo yet — the treasury officer writes one each simulated day."}</p>
-          {memo ? <small>day {memo.simDay}</small> : null}
-        </div>
+        <main className="shell-body" id="console-main">
+          <h1 className="sr-only">Mandate bank console — {world.kind === "main" ? "main world" : world.name}</h1>
+          {world.kind === "demo" ? (
+            <p className="world-line" data-testid="demo-note">
+              <span className="ui-st sim" aria-hidden="true" />
+              <span>
+                You are watching the demo world: simulated lender and borrower bots on a simulated rail, one bank day every 10
+                minutes, with a mild stress event every third day. Nothing here touches PayPal.{" "}
+                <Link href="/console?world=main">Switch to the main world (real PayPal sandbox)</Link>
+              </span>
+            </p>
+          ) : null}
 
-        <div className="duo">
-          <section className="panel" aria-labelledby="flow-h">
-            <div className="ph">
-              <h2 id="flow-h">Money flow</h2>
-              <span className="pill blue">live</span>
-              <span className="r">green into the bank · blue out · purple invoices</span>
-            </div>
-            <div className="pb flow-wrap">
-              <MoneyFlow snapshot={snapshot} />
-            </div>
-          </section>
-          <section className="panel logpanel" aria-labelledby="log-h">
-            <div className="ph">
-              <span className={`live-dot ${feed === "live" ? "" : feed === "paused" ? "paused" : "err"}`} aria-hidden="true" />
-              <h2 id="log-h">PayPal API log</h2>
-              <span className="r">latest {snapshot.paypalLog.length} · bodies redacted</span>
-            </div>
-            <div className="pb" tabIndex={0} aria-label="PayPal API log, newest first">
-              {snapshot.paypalLog.length === 0 ? (
-                <p className="empty">No PayPal operations yet.</p>
-              ) : (
-                <ul className="log" data-testid="paypal-log">
-                  {snapshot.paypalLog.map((op) => (
-                    <li key={op.id} data-testid="paypal-log-row">
-                      <time className="num" dateTime={op.at}>
-                        {logTime(op.at)}
-                      </time>
-                      <span className="line">
-                        <span className="m">{opLine(op)}</span>
-                        {op.httpStatus ? <span className="ref"> → {op.httpStatus}</span> : null}
-                        {op.amountCents !== null ? <span className="ref"> · {money(op.amountCents)}</span> : null}
-                        {op.paypalId ? <span className="ref"> · {op.paypalId}</span> : null}
-                      </span>
-                      <span className="meta">
-                        <span className={`pill ${toneFor(op.status)}`}>{statusLabel(op.status)}</span>
-                        {op.latencyMs !== null ? <span className="ref num">{op.latencyMs} ms</span> : null}
-                        <span className={`tag ${op.rail === "paypal" ? "sb" : "sim"}`}>{op.rail === "paypal" ? "sandbox" : "simulated"}</span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          </section>
-        </div>
+          <KpiArea snapshot={snapshot} />
 
-        <RiskDesk snapshot={snapshot} worldParam={worldParam} />
+          <MoneyFlow snapshot={snapshot} />
 
-        <ConsoleGrids snapshot={snapshot} worldParam={worldParam} licenseKey={licenseKey} />
+          <Movements snapshot={snapshot} ageSeconds={ageSeconds} live={feed === "live"} onOpenLog={() => openTab("paypal")} />
 
-        <footer className="legal">
-          {LEGAL} · <Link href="/agents.md">agents.md</Link> · updated {logTime(snapshot.generatedAt)} UTC
-        </footer>
-      </main>
+          <div ref={recordsRef} className="records">
+            <ConsoleGrids snapshot={snapshot} worldParam={worldParam} licenseKey={licenseKey} tab={tab} onTab={setTab} />
+          </div>
+
+          <footer className="legal">
+            <span>{LEGAL}</span>
+            <a href="/agents.md">agents.md</a>
+            <span className="num">updated {logTime(snapshot.generatedAt)} UTC</span>
+          </footer>
+        </main>
+      </div>
     </div>
   );
 }

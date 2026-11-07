@@ -14,8 +14,8 @@ import {
 import type { StressEventView } from "@/server/services/stress";
 
 import { drawerHref, loanPill } from "../../_components/cards";
-import { DashFrame, LEGAL, LoadingFrame, Pill, TopBar } from "../../_components/chrome";
-import { formatBps, formatCents, formatDate, loanLabel } from "../../_components/format";
+import { Crumb, LEGAL, LoadingFrame, OwnerShell, Pill } from "../../_components/chrome";
+import { formatBps, formatCents, formatDate, formatShortDate, loanLabel } from "../../_components/format";
 import "../../dashboard.css";
 
 export const metadata: Metadata = {
@@ -68,7 +68,9 @@ function stressDetail(event: StressEventView): string {
     case "rate_spike":
       return `+${String(params.bump_bps ?? 500)} bps on day ${String(params.apply_sim_day ?? event.simDay + 1)}, then mean-reverts`;
     case "note_run": {
-      const requests = Array.isArray(params.requests) ? (params.requests as Array<{ bot: string; amount_cents: number; status: string }>) : [];
+      const requests = Array.isArray(params.requests)
+        ? (params.requests as Array<{ bot: string; amount_cents: number; status: string }>)
+        : [];
       return requests.length === 0
         ? "no lender held redeemable notes"
         : requests.map((r) => `${r.bot} ${formatCents(r.amount_cents)} ${r.status.toLowerCase()}`).join(" · ");
@@ -80,45 +82,46 @@ function stressDetail(event: StressEventView): string {
 function EconomyPanel({ economy }: { economy: WorldEconomyView }) {
   const realBps = economy.baseRateBps - economy.inflationRateBps;
   return (
-    <section className="panel" aria-labelledby="econ-h" data-testid="economy-panel">
-      <h2 id="econ-h">Economy · day {economy.simDay}</h2>
-      <div className="kv">
-        <span>Base rate</span>
-        <b className="num" data-testid="econ-base-rate">
+    <section className="sec" aria-labelledby="econ-h" data-testid="economy-panel">
+      <div className="sec-h">
+        <h2 id="econ-h">Economy · day {economy.simDay}</h2>
+      </div>
+      <dl className="drows num">
+        <dt>Base rate</dt>
+        <dd data-testid="econ-base-rate">
           {formatBps(economy.baseRateBps)}
           {economy.rateSpike ? " (rate spike)" : ""}
-        </b>
-        <span>Inflation (index)</span>
-        <b className="num">
-          {formatBps(economy.inflationRateBps)} ({(economy.inflationIndexBp / 10000).toFixed(4)}) · real {formatBps(realBps)}
-        </b>
-        <span>Utilization (premium)</span>
-        <b className="num" data-testid="econ-utilization">
+        </dd>
+        <dt>Inflation (index)</dt>
+        <dd>
+          {formatBps(economy.inflationRateBps)} ({(economy.inflationIndexBp / 10000).toFixed(4)}) · real{" "}
+          {formatBps(realBps)}
+        </dd>
+        <dt>Utilization (premium)</dt>
+        <dd data-testid="econ-utilization">
           {formatBps(economy.utilizationBps)} (+{economy.utilizationPremiumBps} bps)
-        </b>
-        <span>Reserve ratio (floor)</span>
-        <b className="num">
+        </dd>
+        <dt>Reserve ratio (floor)</dt>
+        <dd>
           {formatBps(economy.reserveRatioBps)} ({formatCents(economy.reserveFloorCents)})
-        </b>
-        <span>Loss allowance (gross of note-holder loss sharing)</span>
-        <b className="num" data-testid="econ-allowance">
-          {formatCents(economy.allowanceCents)}
-        </b>
-        <span>Cash</span>
-        <b className="num">{formatCents(economy.cashCents)}</b>
-        <span>Today&apos;s lending budget used</span>
-        <b className="num">
+        </dd>
+        <dt>Loss allowance (gross of note-holder loss sharing)</dt>
+        <dd data-testid="econ-allowance">{formatCents(economy.allowanceCents)}</dd>
+        <dt>Cash</dt>
+        <dd>{formatCents(economy.cashCents)}</dd>
+        <dt>Today&apos;s lending budget used</dt>
+        <dd>
           {economy.dailyBudgetCents === null
             ? `${formatCents(economy.budgetUsedCents)} (no budget yet)`
             : `${formatCents(economy.budgetUsedCents)} of ${formatCents(economy.dailyBudgetCents)}`}
-        </b>
-        <span>Redemption queue</span>
-        <b className="num" data-testid="econ-queue">
+        </dd>
+        <dt>Redemption queue</dt>
+        <dd data-testid="econ-queue">
           {economy.queuedRedemptions} ({formatCents(economy.queuedRedemptionCents)})
-        </b>
-      </div>
+        </dd>
+      </dl>
       {economy.memo ? (
-        <div data-testid="treasury-memo">
+        <div className="memo" data-testid="treasury-memo">
           <h3>
             Treasury memo · day {economy.memo.sim_day} <small>({economy.memo.source}, advisory)</small>
           </h3>
@@ -138,29 +141,30 @@ function EconomyPanel({ economy }: { economy: WorldEconomyView }) {
 
 function BotCard({ bot }: { bot: BotView }) {
   return (
-    <div className="bot" data-testid="bot-card">
-      <h3>
-        <span>{bot.name}</span>
+    <li className="bot" data-testid="bot-card">
+      <span className="bot-n">
+        <b>{bot.name}</b>
+        {bot.archetype ? (
+          <small data-testid="bot-archetype">{ARCHETYPE_LABEL[bot.archetype] ?? bot.archetype}</small>
+        ) : (
+          <small>Mandate bot · simulated</small>
+        )}
+      </span>
+      <span className="bot-r">
         <Pill tone={bot.role === "lender" ? "ok" : "blue"}>{bot.role === "lender" ? "Lender" : "Borrower"}</Pill>
-      </h3>
-      {bot.archetype ? <small data-testid="bot-archetype">{ARCHETYPE_LABEL[bot.archetype] ?? bot.archetype}</small> : null}
+      </span>
       {bot.role === "lender" ? (
-        <div className="kv">
-          <span>Notes held</span>
-          <b className="num">{formatCents(bot.notesCents)}</b>
-        </div>
+        <span className="bot-f num">
+          <span className="faint">Notes held</span> {formatCents(bot.notesCents)}
+        </span>
       ) : (
-        <div className="kv">
-          <span>Open loan</span>
-          <b className="num">{bot.openLoan ? formatCents(bot.openLoan.outstandingCents) : "—"}</b>
-          <span>Due</span>
-          <b>{bot.openLoan ? formatDate(bot.openLoan.dueSimAt) : "—"}</b>
-          <span>Loans repaid</span>
-          <b className="num">{bot.loansRepaid}</b>
-        </div>
+        <span className="bot-f num">
+          <span className="faint">Open loan</span> {bot.openLoan ? formatCents(bot.openLoan.outstandingCents) : "—"}
+          <span className="faint"> · due</span> {bot.openLoan ? formatShortDate(bot.openLoan.dueSimAt) : "—"}
+          <span className="faint"> · repaid</span> {bot.loansRepaid}
+        </span>
       )}
-      <small>Mandate bots · simulated</small>
-    </div>
+    </li>
   );
 }
 
@@ -175,27 +179,35 @@ const STEP_LABEL: Record<string, string> = {
 function OwnerLoanRow({ loan, simDay }: { loan: OwnerLoanView; simDay: number }) {
   const pill = loanPill(loan.status);
   return (
-    <li data-testid="world-loan" data-loan-id={loan.loanId}>
-      <div>
-        <b>
-          {loan.agentName} · <span className="mono">{loanLabel(loan.loanId)}</span>
-        </b>{" "}
-        <span className="num">{formatCents(loan.principalCents)}</span>
-        <small data-testid="world-loan-due">
-          Due day {loan.dueDay}
-          {loan.daysLate > 0 ? ` · ${loan.daysLate} ${loan.daysLate === 1 ? "day" : "days"} late` : simDay <= loan.dueDay && loan.next ? ` · ${loan.dueDay - simDay} days to go` : ""}
-          {loan.dueNowCents > 0n ? ` · ${formatCents(loan.dueNowCents)} ${loan.status === "charged_off" ? "recoverable" : "to settle"}` : ""}
-        </small>
-        <small data-testid="world-loan-step">
-          Ladder step: {loan.step ? STEP_LABEL[loan.step] ?? loan.step : "none yet"}
-          {loan.next ? ` · next: ${loan.next.step.replace("_", " ")} on day ${loan.next.day}` : ""}
-        </small>
-      </div>
-      <Pill tone={pill.tone}>{pill.label}</Pill>
-      <a className="btn sm" href={drawerHref(loan.agentId)}>
-        Details
-      </a>
-    </li>
+    <tr data-testid="world-loan" data-loan-id={loan.loanId}>
+      <td>
+        <b>{loan.agentName}</b> <span className="mono faint">{loanLabel(loan.loanId)}</span>
+      </td>
+      <td className="n">{formatCents(loan.principalCents)}</td>
+      <td data-testid="world-loan-due">
+        Due day {loan.dueDay}
+        {loan.daysLate > 0
+          ? ` · ${loan.daysLate} ${loan.daysLate === 1 ? "day" : "days"} late`
+          : simDay <= loan.dueDay && loan.next
+            ? ` · ${loan.dueDay - simDay} days to go`
+            : ""}
+        {loan.dueNowCents > 0n
+          ? ` · ${formatCents(loan.dueNowCents)} ${loan.status === "charged_off" ? "recoverable" : "to settle"}`
+          : ""}
+      </td>
+      <td data-testid="world-loan-step">
+        Ladder step: {loan.step ? (STEP_LABEL[loan.step] ?? loan.step) : "none yet"}
+        {loan.next ? ` · next: ${loan.next.step.replace("_", " ")} on day ${loan.next.day}` : ""}
+      </td>
+      <td>
+        <Pill tone={pill.tone}>{pill.label}</Pill>
+      </td>
+      <td className="n">
+        <a className="ui-btn ghost" href={drawerHref(loan.agentId)}>
+          Details
+        </a>
+      </td>
+    </tr>
   );
 }
 
@@ -217,37 +229,20 @@ async function World({ params, searchParams }: { params: Params; searchParams: S
   const failed = one(query.error);
 
   return (
-    <DashFrame>
-      <TopBar principalId={session.principalId} worldId={view.world.id} current="worlds" />
-      <main className="page">
-        <Link className="crumb" href="/dashboard/worlds">
-          ← Sandbox worlds
-        </Link>
-        <div className="head">
+    <OwnerShell
+      principalId={session.principalId}
+      worldId={view.world.id}
+      current="worlds"
+      clock="controls"
+      crumb={<Crumb items={[{ label: "Sandbox worlds", href: "/dashboard/worlds" }]} />}
+    >
+      <div className="dl world">
+        <div className="ph">
           <div>
-            <h1 data-testid="world-name">{view.world.name}</h1>
-            <p className="sub">
-              Private sandbox · sim rail only · <span data-testid="sim-date">Day {view.simDay} · {formatDate(view.simNow)}</span>
+            <h1>{view.world.name}</h1>
+            <p>
+              <span className="ui-tag sim">Private sandbox</span> sim rail only: simulated money, never PayPal.
             </p>
-          </div>
-          <div className="clock" data-testid="clock-controls">
-            <form method="post" action={`/dashboard/worlds/${view.world.id}/advance`}>
-              <input type="hidden" name="days" value="1" />
-              <button type="submit" className="btn">
-                +1 day
-              </button>
-            </form>
-            <form method="post" action={`/dashboard/worlds/${view.world.id}/advance`}>
-              <input type="hidden" name="days" value="7" />
-              <button type="submit" className="btn primary">
-                +7 days
-              </button>
-            </form>
-            <form method="post" action={`/dashboard/worlds/${view.world.id}/reset`}>
-              <button type="submit" className="btn danger">
-                Reset
-              </button>
-            </form>
           </div>
         </div>
 
@@ -277,33 +272,33 @@ async function World({ params, searchParams }: { params: Params; searchParams: S
           </div>
         ) : null}
 
-        <div className="stats" role="list" aria-label="Pool">
-          <div className="stat" role="listitem" data-testid="stat-notes">
-            <b className="num">{formatCents(view.notesOutstandingCents)}</b>
-            <span>Notes outstanding</span>
+        <div className="sum" role="list" aria-label="Pool">
+          <div role="listitem" data-testid="stat-notes">
+            Notes outstanding<b className="num">{formatCents(view.notesOutstandingCents)}</b>
           </div>
-          <div className="stat" role="listitem" data-testid="stat-loans">
+          <div role="listitem" data-testid="stat-loans">
+            Lent out · {view.openLoans} open, {view.repaidLoans} repaid
             <b className="num">{formatCents(view.loansOutstandingCents)}</b>
-            <span>
-              Lent out · {view.openLoans} open, {view.repaidLoans} repaid
-            </span>
           </div>
-          <div className="stat" role="listitem" data-testid="stat-liquidity">
-            <b className="num">{formatCents(view.liquidityCents)}</b>
-            <span>Available to lend</span>
+          <div role="listitem" data-testid="stat-liquidity">
+            Available to lend<b className="num">{formatCents(view.liquidityCents)}</b>
           </div>
         </div>
 
         {view.economy ? <EconomyPanel economy={view.economy} /> : null}
 
-        <section className="panel" aria-labelledby="stress-h" data-testid="stress-panel">
-          <h2 id="stress-h">Stress scenarios</h2>
-          <p>Test how the bank copes. Each one is recorded below; move the clock to watch it play out.</p>
-          <div className="clock">
+        <section className="sec" aria-labelledby="stress-h" data-testid="stress-panel">
+          <div className="sec-h">
+            <h2 id="stress-h">Stress scenarios</h2>
+          </div>
+          <p className="sec-p">
+            Test how the bank copes. Each one is recorded below; move the clock to watch it play out.
+          </p>
+          <div className="btnrow">
             {STRESS_BUTTONS.map((button) => (
               <form key={button.scenario} method="post" action={`/dashboard/worlds/${view.world.id}/stress`}>
                 <input type="hidden" name="scenario" value={button.scenario} />
-                <button type="submit" className="btn" title={button.what} data-testid={`stress-${button.scenario}`}>
+                <button type="submit" className="ui-btn" title={button.what} data-testid={`stress-${button.scenario}`}>
                   {button.label}
                 </button>
               </form>
@@ -326,39 +321,60 @@ async function World({ params, searchParams }: { params: Params; searchParams: S
         </section>
 
         {view.ownerLoans.length > 0 ? (
-          <section className="panel" aria-labelledby="ladder-h" data-testid="world-loans">
-            <h2 id="ladder-h">Your agents&apos; loans</h2>
-            <p>
-              Due days are on this world&apos;s clock (today is day {view.simDay}). Unpaid after the due day, a loan walks
-              the ladder: +1 late fee, +3 rate penalty, +7 substandard, +10 charged off and your guarantee invoked. Use
-              +1 / +7 to watch it happen.
+          <section className="sec" aria-labelledby="ladder-h" data-testid="world-loans">
+            <div className="sec-h">
+              <h2 id="ladder-h">Your agents&apos; loans</h2>
+            </div>
+            <p className="sec-p">
+              Due days are on this world&apos;s clock (today is day {view.simDay}). Unpaid after the due day, a loan
+              walks the ladder: +1 late fee, +3 rate penalty, +7 substandard, +10 charged off and your guarantee
+              invoked. Use +1 / +7 to watch it happen.
             </p>
-            <ul className="ladder">
-              {view.ownerLoans.map((loan) => (
-                <OwnerLoanRow key={loan.loanId} loan={loan} simDay={view.simDay} />
-              ))}
-            </ul>
+            <table className="t ladder">
+              <thead>
+                <tr>
+                  <th>Loan</th>
+                  <th className="n">Principal</th>
+                  <th>Due</th>
+                  <th>Ladder</th>
+                  <th>Status</th>
+                  <th className="n">
+                    <span className="sr-only">Details</span>
+                  </th>
+                </tr>
+              </thead>
+              <tbody>
+                {view.ownerLoans.map((loan) => (
+                  <OwnerLoanRow key={loan.loanId} loan={loan} simDay={view.simDay} />
+                ))}
+              </tbody>
+            </table>
           </section>
         ) : null}
 
-        <section className="panel" aria-labelledby="bots-h">
-          <h2 id="bots-h">Bots</h2>
-          <p>
+        <section className="sec" aria-labelledby="bots-h">
+          <div className="sec-h">
+            <h2 id="bots-h">Bots</h2>
+            <span className="faint num">{view.bots.length}</span>
+          </div>
+          <p className="sec-p">
             They use the same tools as any agent (buy_notes, apply_for_loan, accept_offer, repay_loan). Lenders buy more
-            when the real return is above 2% and redeem when it is below 0; borrowers are good payers (their invoice client
-            pays before the due date), late payers (+3 days) or defaulters.
+            when the real return is above 2% and redeem when it is below 0; borrowers are good payers (their invoice
+            client pays before the due date), late payers (+3 days) or defaulters.
           </p>
-          <div className="botgrid">
+          <ul className="botlist">
             {view.bots.map((bot) => (
               <BotCard key={bot.id} bot={bot} />
             ))}
-          </div>
+          </ul>
         </section>
 
-        <section className="panel" aria-labelledby="log-h">
-          <h2 id="log-h">Recent days</h2>
+        <section className="sec" aria-labelledby="log-h">
+          <div className="sec-h">
+            <h2 id="log-h">Recent days</h2>
+          </div>
           {view.recentDays.length === 0 ? (
-            <p>Nothing yet — move the clock.</p>
+            <p className="empty">Nothing yet — move the clock.</p>
           ) : (
             <ul className="daylog" data-testid="day-log">
               {view.recentDays.map((day) => (
@@ -387,27 +403,29 @@ async function World({ params, searchParams }: { params: Params; searchParams: S
           )}
         </section>
 
-        <section className="panel" aria-labelledby="mine-h">
-          <h2 id="mine-h">Your agents here</h2>
-          <p>
+        <section className="sec" aria-labelledby="mine-h">
+          <div className="sec-h">
+            <h2 id="mine-h">Your agents here</h2>
+          </div>
+          <p className="sec-p">
             Register an agent into this world to trade with the bots. Its API key works only here; trial balance{" "}
             <span className="num" data-testid="trial-balance">
               {formatCents(view.trialBalanceCents)}
             </span>
             .
           </p>
-          <div className="clock">
-            <Link className="btn primary" href={`/dashboard/agents/new?world=${view.world.id}`}>
+          <div className="btnrow">
+            <Link className="ui-btn primary" href={`/dashboard/agents/new?world=${view.world.id}`}>
               + Register an agent here
             </Link>
-            <Link className="btn" href={`/dashboard?world=${view.world.id}`}>
+            <Link className="ui-btn" href={`/dashboard?world=${view.world.id}`}>
               My agents in this world
             </Link>
           </div>
         </section>
-        <p className="pagelegal">{LEGAL}</p>
-      </main>
-    </DashFrame>
+        <p className="ui-legal pagelegal">{LEGAL}</p>
+      </div>
+    </OwnerShell>
   );
 }
 
