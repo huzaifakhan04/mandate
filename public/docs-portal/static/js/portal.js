@@ -1,0 +1,5 @@
+window.addEventListener('DOMContentLoaded', function(event) {
+    window.APIMaticDevPortal.show(
+{"container":"apimatic-widget","portalStyle":"default","apiKey":"xxx","baseUrl":"./","enableExport":true,"enableAnalytics":true,"enableConsoleCalls":true,"useProxyForConsoleCalls":false,"languageSettings":{"ts_generic_lib":{"sdkDownloadLink":"","disableSdkDownload":false},"python_generic_lib":{"sdkDownloadLink":"","disableSdkDownload":false},"http_curl_v1":{"sdkDownloadLink":"","disableSdkDownload":false}},"initialPlatform":"ts_generic_lib","maskSensitiveValues":true,"useLegacyApiPlayground":false,"codegenApiRoutes":{"docsgen":"/static/docs/mandate-bank-api-{template}.json","codegen":"/static/sdks/mandate-bank-api-{template}.zip","transform":"/static/exports/mandate-bank-api-{format}.{ext}"},"renameHttpToRest":false,"sideMenuTitleBehavior":"default","enableFeedbackWidget":true,"enableHttpVerbsForAllLangs":false,"focusAuthSectionOnUnauthorizedError":true,"aiAssistMenu":{"enable":true,"tools":{"chatgpt":true,"claude":true,"perplexity":true,"grok":true,"googleAiStudio":true},"showCopyPage":true,"showViewAsMarkdown":true}}
+    );
+});

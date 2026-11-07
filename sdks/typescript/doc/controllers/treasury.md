@@ -1,0 +1,194 @@
+# Treasury
+
+```ts
+const treasuryApi = new TreasuryApi(client);
+```
+
+## Class Name
+
+`TreasuryApi`
+
+## Methods
+
+* [Redeem Notes](../../doc/controllers/treasury.md#redeem-notes)
+* [Cancel Redemption](../../doc/controllers/treasury.md#cancel-redemption)
+* [Get Statement](../../doc/controllers/treasury.md#get-statement)
+
+
+# Redeem Notes
+
+Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it.
+
+```ts
+async redeemNotes(
+  body: ApiV1RedeemNotesRequest,
+  requestOptions?: RequestOptions
+): Promise<ApiResponse<Envelope>>
+```
+
+## Authentication
+
+This endpoint requires [bearerAuth](../../doc/auth/oauth-2-bearer-token.md)
+
+## Parameters
+
+| Parameter | Type | Tags | Description |
+|  --- | --- | --- | --- |
+| `body` | [`ApiV1RedeemNotesRequest`](../../doc/models/api-v1-redeem-notes-request.md) | Body, Required | - |
+| `requestOptions` | `RequestOptions \| undefined` | Optional | Pass additional request options. |
+
+## Response Type
+
+**200**: Envelope response
+
+This method returns an [`ApiResponse`](../../doc/api-response.md) instance. The `result` property of this instance returns the response data which is of type [`Envelope`](../../doc/models/envelope.md).
+
+## Example Usage
+
+```ts
+const body: ApiV1RedeemNotesRequest = {
+  amountCents: 1000,
+};
+
+try {
+  const response = await treasuryApi.redeemNotes(body);
+
+  // Extracting fully parsed response body.
+  console.log(response.result);
+
+  // Extracting response status code.
+  console.log(response.statusCode);
+  // Extracting response headers.
+  console.log(response.headers);
+  // Extracting response body of type `string | Stream`
+  console.log(response.body);
+} catch (error) {
+  if (error instanceof ApiError) {
+    // Extracting response error status code.
+    console.log(error.statusCode);
+    // Extracting response error headers.
+    console.log(error.headers);
+    // Extracting response error body of type `string | Stream`.
+    console.log(error.body);
+  }
+}
+```
+
+
+# Cancel Redemption
+
+Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).
+
+```ts
+async cancelRedemption(
+  body: ApiV1CancelRedemptionRequest,
+  requestOptions?: RequestOptions
+): Promise<ApiResponse<Envelope>>
+```
+
+## Authentication
+
+This endpoint requires [bearerAuth](../../doc/auth/oauth-2-bearer-token.md)
+
+## Parameters
+
+| Parameter | Type | Tags | Description |
+|  --- | --- | --- | --- |
+| `body` | [`ApiV1CancelRedemptionRequest`](../../doc/models/api-v1-cancel-redemption-request.md) | Body, Required | - |
+| `requestOptions` | `RequestOptions \| undefined` | Optional | Pass additional request options. |
+
+## Response Type
+
+**200**: Envelope response
+
+This method returns an [`ApiResponse`](../../doc/api-response.md) instance. The `result` property of this instance returns the response data which is of type [`Envelope`](../../doc/models/envelope.md).
+
+## Example Usage
+
+```ts
+const body: ApiV1CancelRedemptionRequest = {
+  noteTxId: '4e8b2c6d-5a1f-4d3e-9b7c-1a2b3c4d5e44',
+};
+
+try {
+  const response = await treasuryApi.cancelRedemption(body);
+
+  // Extracting fully parsed response body.
+  console.log(response.result);
+
+  // Extracting response status code.
+  console.log(response.statusCode);
+  // Extracting response headers.
+  console.log(response.headers);
+  // Extracting response body of type `string | Stream`
+  console.log(response.body);
+} catch (error) {
+  if (error instanceof ApiError) {
+    // Extracting response error status code.
+    console.log(error.statusCode);
+    // Extracting response error headers.
+    console.log(error.headers);
+    // Extracting response error body of type `string | Stream`.
+    console.log(error.body);
+  }
+}
+```
+
+
+# Get Statement
+
+Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back.
+
+```ts
+async getStatement(
+  body: unknown,
+  requestOptions?: RequestOptions
+): Promise<ApiResponse<Envelope>>
+```
+
+## Authentication
+
+This endpoint requires [bearerAuth](../../doc/auth/oauth-2-bearer-token.md)
+
+## Parameters
+
+| Parameter | Type | Tags | Description |
+|  --- | --- | --- | --- |
+| `body` | `unknown` | Body, Required | - |
+| `requestOptions` | `RequestOptions \| undefined` | Optional | Pass additional request options. |
+
+## Response Type
+
+**200**: Envelope response
+
+This method returns an [`ApiResponse`](../../doc/api-response.md) instance. The `result` property of this instance returns the response data which is of type [`Envelope`](../../doc/models/envelope.md).
+
+## Example Usage
+
+```ts
+const body = {  };
+
+try {
+  const response = await treasuryApi.getStatement(body);
+
+  // Extracting fully parsed response body.
+  console.log(response.result);
+
+  // Extracting response status code.
+  console.log(response.statusCode);
+  // Extracting response headers.
+  console.log(response.headers);
+  // Extracting response body of type `string | Stream`
+  console.log(response.body);
+} catch (error) {
+  if (error instanceof ApiError) {
+    // Extracting response error status code.
+    console.log(error.statusCode);
+    // Extracting response error headers.
+    console.log(error.headers);
+    // Extracting response error body of type `string | Stream`.
+    console.log(error.body);
+  }
+}
+```
+

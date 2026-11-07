@@ -22,7 +22,12 @@ npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
 | `--model <m>` | CLI default | Passed to `claude --model`. |
 | `--max-turns <n>` | 40 | Turn limit for each `claude -p` invocation. |
 | `--timeout-min <n>` | 10 | Wall-clock limit for each `claude -p` invocation. |
+| `--browser <b>` | `local` | P7: where PayPal checkout approvals run — `local` (Playwright Chromium) or `kernel` (a [Kernel](https://www.kernel.sh) cloud browser via `tests/helpers/kernelApprove.ts`, needs `KERNEL_API_KEY`). The human's claim/mandate steps on the bank's own site stay in a local browser. `APPROVAL_BROWSER=kernel` does the same for `npm run test:sandbox`. |
 | `--scenario <s>` | `core` | `core` (below) or `collections` (P4, local only, no PayPal). |
+
+## Kernel approvals (P7)
+
+`npm run test:kernel` is a focused check: it creates one $1.00 sandbox order (never captured), approves it as LENDER in a Kernel cloud browser (create browser → Playwright over CDP → the same page logic as `paypalApprove.ts` → delete browser) and passes when PayPal reports the order `APPROVED`. `-- --browser local` runs the same check locally. Kernel's stealth mode / CAPTCHA solver is never enabled: a challenge stops the run as `BLOCKED`. This is test/operator tooling only — the bank never approves PayPal pages server-side.
 
 ## Requirements
 

@@ -42,12 +42,14 @@ import { claimAndSignMandateAsHuman, signMandateInDrawer, type MandateFormValues
 import { type ApproveResult } from "../helpers/paypalApprove";
 import {
   approveAs,
+  type ApprovalBrowser,
   ledgerReport,
   type LocalServer,
   payerIdFor,
   reconcile,
   requireEnv,
   type SandboxAccount,
+  setApprovalBrowser,
   startLocalServer,
 } from "../helpers/sandboxServer";
 
@@ -112,10 +114,12 @@ interface Options {
   maxTurns: number;
   timeoutMs: number;
   port: number;
+  /** P7: where PayPal checkout approvals run (claim/mandate steps on our own site stay local). */
+  browser: ApprovalBrowser;
 }
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { scenario: "happy", base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140 };
+  const opts: Options = { scenario: "happy", base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140, browser: "local" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => {
@@ -153,6 +157,14 @@ function parseArgs(argv: string[]): Options {
       case "--port":
         opts.port = Number(value());
         break;
+      case "--browser": {
+        const browser = value();
+        if (browser !== "local" && browser !== "kernel") {
+          throw new Error(`--browser must be local or kernel, not ${browser}`);
+        }
+        opts.browser = browser;
+        break;
+      }
       case "--":
         break;
       default:
@@ -807,6 +819,21 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
             : "borrower agent never gave its human the claim_url within 6 follow-ups",
         );
       }
+      if (loanId) {
+        // P7: the disbursement payout can sit PENDING in PayPal sandbox for
+        // more than a minute (one P7 run failed with the agent correctly
+        // reporting DISBURSING six times in ~50 s). Let real time pass —
+        // driving the reconcile cron locally — before telling the agent so.
+        const waitUntil = Date.now() + 3 * 60_000;
+        while (Date.now() < waitUntil) {
+          const loan = await tool(base, "get_loan", { loan_id: loanId }, borrower.apiKey);
+          if (loan.data.status !== "DISBURSING") {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 10_000));
+          await settle();
+        }
+      }
       borrowerTurn = await borrower.say(
         loanId
           ? "Some time has passed. Continue toward your goal: I need the payment link to forward to the client."
@@ -1311,6 +1338,10 @@ function renderResults(options: Options, runs: RunResult[], startedAt: Date, loc
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  setApprovalBrowser(options.browser);
+  if (options.browser === "kernel") {
+    log("PayPal checkout approvals run in Kernel cloud browsers (tests/helpers/kernelApprove.ts)");
+  }
   if (options.scenario === "collections") {
     await mainCollections(options);
     return;

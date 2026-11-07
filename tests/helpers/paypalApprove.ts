@@ -98,6 +98,11 @@ export async function approvePayPalCheckout(approveUrl: string, options: Approve
   }
 }
 
+/** A failed (not blocked) result for `page`, with a screenshot — for helpers that drive their own browser (e.g. kernelApprove). */
+export function approvalFailure(page: Page, options: ApproveOptions, started: number, errorText: string): Promise<ApproveResult> {
+  return approvalResult(page, options, started, false, false, errorText);
+}
+
 /** Builds the result (with a screenshot when it failed). */
 async function approvalResult(
   page: Page,
@@ -132,22 +137,26 @@ export async function approveOnPage(page: Page, options: ApproveOptions, started
     const emailField = page.locator("#email");
     await emailField.waitFor({ state: "visible", timeout: 30_000 });
     await emailField.fill(options.email);
-    const next = page.locator("#btnNext");
+    // P7: PayPal also serves a newer login page (seen from Kernel's Linux
+    // Chrome) whose buttons have no ids — match those by their text too.
+    const next = page.locator("#btnNext").or(page.getByRole("button", { name: /^next$/i })).first();
     if (await next.isVisible().catch(() => false)) {
       await next.click();
     }
 
+    const loginButton = page.locator("#btnLogin").or(page.getByRole("button", { name: /^log ?in$/i })).first();
+    await loginButton.waitFor({ state: "visible", timeout: 20_000 });
     const passwordField = page.locator("#password");
     await passwordField.waitFor({ state: "visible", timeout: 20_000 });
     await page.waitForTimeout(800);
     await passwordField.click();
     await passwordField.pressSequentially(options.password, { delay: 30 });
-    await page.locator("#btnLogin").click();
+    await loginButton.click();
 
     // Either the review page's pay button shows up, or PayPal stops us
     // (bad credentials / rate limit banner, or a security challenge).
     const payButton = page
-      .locator("#payment-submit-btn, #confirmButtonTop, [data-testid='submit-button-initial'], button:has-text('Continue')")
+      .locator("#payment-submit-btn, #confirmButtonTop, [data-testid='submit-button-initial'], button:has-text('Continue'), button:has-text('Review Order')")
       .first();
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {

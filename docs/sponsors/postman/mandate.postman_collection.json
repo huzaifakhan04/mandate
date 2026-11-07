@@ -1,0 +1,783 @@
+{
+  "info": {
+    "name": "Mandate Bank API (PayPal AI Hackathon)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Mandate is a sandbox bank for AI agents on PayPal sandbox — lend (buy notes), borrow (ALA application → offer → accept), repay. Every request here is also an MCP tool.\n\n**Start here:** run `register_agent` (it saves `apiKey` to the collection variables), then any folder top to bottom; ids (`checkout_id`, `offer_id`, `disclosure_hash`, `loan_id`) are captured from each response. Steps that return a `human_approval` next action need a human to open the PayPal sandbox URL and approve before `confirm_checkout`.\n\nAgent guide: https://agentic-bank-mu.vercel.app/agents.md · OpenAPI: https://agentic-bank-mu.vercel.app/openapi.json · Live console: https://agentic-bank-mu.vercel.app/console. Sandbox only — no real money."
+  },
+  "item": [
+    {
+      "name": "Start here",
+      "item": [
+        {
+          "name": "get_bank_guide",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/get_bank_guide",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "get_bank_guide"
+              ]
+            },
+            "description": "Orientation: what the bank is, every tool, the money rules.\n\nReturns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool.\n\n**Auth:** none · **Hints:** read-only, idempotent · Also an MCP tool: `get_bank_guide` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "register_agent",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Acme Ops Agent\",\n  \"operator\": \"Acme Ops\",\n  \"model\": \"claude-sonnet\",\n  \"payout_email\": \"agent@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/register_agent",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "register_agent"
+              ]
+            },
+            "description": "Register with a PayPal payout account (no API key needed).\n\nCreates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow.\n\n**Auth:** none · **Hints:** mutating · Also an MCP tool: `register_agent` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "get_status",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/get_status",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "get_status"
+              ]
+            },
+            "description": "Your agent, KYA tier, mandate, positions and open items.\n\nReturns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_status` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "register_public_key",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"public_key\": \"MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/register_public_key",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "register_public_key"
+              ]
+            },
+            "description": "Register an Ed25519 public key (base64) to sign requests.\n\nRegisters the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, idempotent · Also an MCP tool: `register_public_key` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Lend",
+      "item": [
+        {
+          "name": "buy_notes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_cents\": 3000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/buy_notes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "buy_notes"
+              ]
+            },
+            "description": "Fund the bank with $30 of notes (returns a PayPal checkout to approve).\n\nBuys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, reaches PayPal · Also an MCP tool: `buy_notes` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "confirm_checkout",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"checkout_id\": \"{{checkout_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/confirm_checkout",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "confirm_checkout"
+              ]
+            },
+            "description": "Capture a checkout after your human approved it.\n\nCaptures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, idempotent, reaches PayPal · Also an MCP tool: `confirm_checkout` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Borrow",
+      "item": [
+        {
+          "name": "check_eligibility",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_cents\": 1000,\n  \"term_days\": 7,\n  \"collateral\": \"invoice_link\",\n  \"invoice_amount_cents\": 1500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/check_eligibility",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "check_eligibility"
+              ]
+            },
+            "description": "Quote $10 for 7 days against a $15 invoice.\n\nChecks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `check_eligibility` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "apply_for_loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_cents\": 1000,\n  \"term_days\": 7,\n  \"purpose\": \"Buy materials for invoice INV-1042\",\n  \"identity\": {\n    \"operator\": \"Acme Ops\",\n    \"model\": \"claude-sonnet\"\n  },\n  \"invoice\": {\n    \"client_email\": \"client@example.com\",\n    \"amount_cents\": 1500,\n    \"due_in_days\": 7,\n    \"description\": \"INV-1042: website build\"\n  },\n  \"declarations\": {\n    \"no_other_debt\": true\n  },\n  \"consent_bank_records\": true,\n  \"attest\": true\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/apply_for_loan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "apply_for_loan"
+              ]
+            },
+            "description": "Apply (ALA A–H): $10 for 7 days, invoice-backed, with the required declarations and attestation.\n\nApplies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering < 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating · Also an MCP tool: `apply_for_loan` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "accept_offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offer_id\": \"{{offer_id}}\",\n  \"disclosure_hash\": \"{{disclosure_hash}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/accept_offer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "accept_offer"
+              ]
+            },
+            "description": "Accept an offer with the disclosure hash it returned (disburses the loan).\n\nAccepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason).\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, destructive, reaches PayPal · Also an MCP tool: `accept_offer` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "decline_offer",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"offer_id\": \"{{offer_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/decline_offer",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "decline_offer"
+              ]
+            },
+            "description": "Decline an offer you don't want.\n\nDeclines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, destructive, idempotent · Also an MCP tool: `decline_offer` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "get_application",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"application_id\": \"{{application_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/get_application",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "get_application"
+              ]
+            },
+            "description": "Re-read a decision, its reasons and adverse action.\n\nReturns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_application` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Repay",
+      "item": [
+        {
+          "name": "get_loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_id\": \"{{loan_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/get_loan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "get_loan"
+              ]
+            },
+            "description": "Loan status, balance, repayment link and history.\n\nReturns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_loan` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "repay_loan",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_id\": \"{{loan_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/repay_loan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "repay_loan"
+              ]
+            },
+            "description": "Repay the full outstanding balance (PayPal checkout).\n\nRepays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, reaches PayPal · Also an MCP tool: `repay_loan` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "repay_loan — Repay part of it",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"loan_id\": \"{{loan_id}}\",\n  \"amount_cents\": 500\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/repay_loan",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "repay_loan"
+              ]
+            },
+            "description": "Repay part of it.\n\nRepays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, reaches PayPal · Also an MCP tool: `repay_loan` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Collections",
+      "item": [
+        {
+          "name": "ack_notices",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/ack_notices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "ack_notices"
+              ]
+            },
+            "description": "Acknowledge every open notice (late, dunning, rate change).\n\nMarks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, idempotent · Also an MCP tool: `ack_notices` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "ack_notices — Acknowledge specific notices",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notice_ids\": [\n    \"6f2a8d4c-7b3e-4c1a-8d5f-2b3c4d5e6f55\"\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/ack_notices",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "ack_notices"
+              ]
+            },
+            "description": "Acknowledge specific notices.\n\nMarks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, idempotent · Also an MCP tool: `ack_notices` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Treasury",
+      "item": [
+        {
+          "name": "redeem_notes",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount_cents\": 1000\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/redeem_notes",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "redeem_notes"
+              ]
+            },
+            "description": "Redeem $10 of notes to your PayPal payout receiver.\n\nRedeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, destructive, reaches PayPal · Also an MCP tool: `redeem_notes` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "cancel_redemption",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"note_tx_id\": \"{{note_tx_id}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/cancel_redemption",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "cancel_redemption"
+              ]
+            },
+            "description": "Withdraw a queued redemption.\n\nCancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, destructive, idempotent · Also an MCP tool: `cancel_redemption` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "get_statement",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/get_statement",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "get_statement"
+              ]
+            },
+            "description": "Your ledger statement: notes, loans, fees, payouts.\n\nReturns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_statement` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Mandate: Authorization: Bearer {{apiKey}} on every agent-scoped call.",
+          "(function () {",
+          "const noAuth = [\"get_bank_guide\",\"register_agent\"];",
+          "const tool = pm.request.url.getPath().split('/').pop();",
+          "const key = pm.variables.get('apiKey');",
+          "if (!noAuth.includes(tool) && key && !pm.request.headers.has('Authorization')) {",
+          "  pm.request.headers.upsert({ key: 'Authorization', value: 'Bearer ' + key });",
+          "}",
+          "})();"
+        ]
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Mandate: every response is the same envelope, over REST and MCP. (Scoped: the sandbox has its own `data` global.)",
+          "(function () {",
+          "const envelope = pm.response.json();",
+          "pm.test('envelope has status, summary, reason_codes, data, next_actions, docs_url', () => {",
+          "  pm.expect(envelope).to.include.all.keys('status', 'summary', 'reason_codes', 'data', 'next_actions', 'docs_url');",
+          "  pm.expect(envelope.status).to.be.a('string');",
+          "  pm.expect(envelope.summary).to.be.a('string');",
+          "  pm.expect(envelope.reason_codes).to.be.an('array');",
+          "  pm.expect(envelope.next_actions).to.be.an('array');",
+          "});",
+          "pm.test('every next_action names a tool and args', () => {",
+          "  (envelope.next_actions || []).forEach((a) => { pm.expect(a.tool).to.be.a('string'); pm.expect(a.args).to.be.an('object'); });",
+          "});",
+          "// Capture ids for the next request in the flow (register -> buy -> apply -> accept -> repay).",
+          "const captured = [\"checkout_id\",\"offer_id\",\"disclosure_hash\",\"application_id\",\"loan_id\",\"note_tx_id\"];",
+          "const save = (k, v) => { if (typeof v === 'string' && v) { pm.collectionVariables.set(k, v); } };",
+          "const payload = envelope.data || {};",
+          "captured.forEach((k) => save(k, payload[k]));",
+          "(envelope.next_actions || []).forEach((a) => {",
+          "  const args = Object.assign({}, a.args || {}, (a.args && a.args.then && a.args.then.args) || {});",
+          "  captured.forEach((k) => save(k, args[k]));",
+          "});",
+          "if (payload.loan && typeof payload.loan === 'object') { save('loan_id', payload.loan.id || payload.loan.loan_id); }",
+          "if (typeof payload.api_key === 'string') {",
+          "  pm.collectionVariables.set('apiKey', payload.api_key);",
+          "  if (pm.environment.has('apiKey')) { pm.environment.set('apiKey', payload.api_key); }",
+          "  console.log('Mandate: apiKey saved to the collection variables (shown once — keep it).');",
+          "}",
+          "})();"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://agentic-bank-mu.vercel.app",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "checkout_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "offer_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "disclosure_hash",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "application_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "loan_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "note_tx_id",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

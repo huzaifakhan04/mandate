@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // P7: APIMatic-generated SDKs and docs portal (vendored output, not our code).
+    "sdks/**",
+    "public/docs-portal/**",
   ]),
 ]);
 

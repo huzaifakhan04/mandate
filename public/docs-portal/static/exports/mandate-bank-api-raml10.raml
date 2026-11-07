@@ -1,0 +1,916 @@
+#%RAML 1.0
+title: Mandate Bank API
+version: 1.0.0
+baseUri: https://agentic-bank-mu.vercel.app
+baseUriParameters: {}
+protocols:
+- HTTPS
+documentation:
+- title: Mandate Bank API
+  content: 'Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.'
+securitySchemes: {}
+securedBy: []
+types:
+  Envelope:
+    displayName: Envelope
+    type: object
+    properties:
+      status:
+        required: true
+        displayName: status
+        type: string
+      summary:
+        required: true
+        displayName: summary
+        type: string
+      reason_codes:
+        required: true
+        displayName: reason_codes
+        type: array
+        items:
+          type: string
+      data:
+        required: true
+        displayName: data
+        type: object
+        properties: {}
+      next_actions:
+        required: true
+        displayName: next_actions
+        type: array
+        items:
+          type: NextAction
+      docs_url:
+        required: true
+        displayName: docs_url
+        type: string
+  ApiV1AcceptOfferRequest:
+    displayName: ApiV1AcceptOfferRequest
+    type: object
+    properties:
+      offer_id:
+        required: true
+        displayName: offer_id
+        type: any
+      disclosure_hash:
+        required: true
+        displayName: disclosure_hash
+        type: string
+        minLength: 1
+  ApiV1AckNoticesRequest:
+    displayName: ApiV1AckNoticesRequest
+    type: object
+    properties:
+      notice_ids:
+        required: false
+        displayName: notice_ids
+        type: array
+        uniqueItems: false
+        minItems: 1
+        maxItems: 100
+        items:
+          type: any
+  ApiV1ApplyForLoanRequest:
+    displayName: ApiV1ApplyForLoanRequest
+    type: object
+    properties:
+      identity:
+        required: false
+        displayName: identity
+        type: Identity
+      amount_cents:
+        required: true
+        displayName: amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      term_days:
+        required: true
+        displayName: term_days
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      purpose:
+        required: true
+        displayName: purpose
+        type: string
+        minLength: 5
+        maxLength: 200
+      invoice:
+        required: false
+        displayName: invoice
+        type: Invoice
+      declarations:
+        required: false
+        displayName: declarations
+        type: Declarations
+      consent_bank_records:
+        required: false
+        displayName: consent_bank_records
+        type: boolean
+      mandate_version:
+        required: false
+        displayName: mandate_version
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      attest:
+        required: false
+        displayName: attest
+        type: boolean
+  ApiV1BuyNotesRequest:
+    displayName: ApiV1BuyNotesRequest
+    type: object
+    properties:
+      amount_cents:
+        required: true
+        displayName: amount_cents
+        type: integer
+        minimum: 1000
+        maximum: 100000
+        format: int32
+  ApiV1CancelRedemptionRequest:
+    displayName: ApiV1CancelRedemptionRequest
+    type: object
+    properties:
+      note_tx_id:
+        required: true
+        displayName: note_tx_id
+        type: any
+  ApiV1CheckEligibilityRequest:
+    displayName: ApiV1CheckEligibilityRequest
+    type: object
+    properties:
+      amount_cents:
+        required: true
+        displayName: amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      term_days:
+        required: true
+        displayName: term_days
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      collateral:
+        required: false
+        displayName: collateral
+        type: string
+        enum:
+        - invoice_link
+        - none
+      invoice_amount_cents:
+        required: false
+        displayName: invoice_amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+  ApiV1ConfirmCheckoutRequest:
+    displayName: ApiV1ConfirmCheckoutRequest
+    type: object
+    properties:
+      checkout_id:
+        required: true
+        displayName: checkout_id
+        type: string
+        minLength: 1
+  ApiV1DeclineOfferRequest:
+    displayName: ApiV1DeclineOfferRequest
+    type: object
+    properties:
+      offer_id:
+        required: true
+        displayName: offer_id
+        type: any
+  ApiV1GetApplicationRequest:
+    displayName: ApiV1GetApplicationRequest
+    type: object
+    properties:
+      application_id:
+        required: true
+        displayName: application_id
+        type: any
+  ApiV1GetLoanRequest:
+    displayName: ApiV1GetLoanRequest
+    type: object
+    properties:
+      loan_id:
+        required: true
+        displayName: loan_id
+        type: any
+  ApiV1RedeemNotesRequest:
+    displayName: ApiV1RedeemNotesRequest
+    type: object
+    properties:
+      amount_cents:
+        required: true
+        displayName: amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+  ApiV1RegisterAgentRequest:
+    displayName: ApiV1RegisterAgentRequest
+    type: object
+    properties:
+      name:
+        required: true
+        displayName: name
+        type: string
+        minLength: 2
+        maxLength: 60
+      operator:
+        required: false
+        displayName: operator
+        type: string
+      model:
+        required: false
+        displayName: model
+        type: string
+      payout_email:
+        required: false
+        displayName: payout_email
+        description: The PayPal account (by email) that receives loans and redemptions. Give this or payout_paypal_id.
+        type: string
+        pattern: ^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$
+      payout_paypal_id:
+        required: false
+        displayName: payout_paypal_id
+        description: The PayPal account (by payer ID) that receives loans and redemptions, instead of payout_email — use it when that account's email is unconfirmed (payouts to an unconfirmed email go UNCLAIMED).
+        type: string
+        pattern: ^[A-Z0-9]{13}$
+  ApiV1RegisterPublicKeyRequest:
+    displayName: ApiV1RegisterPublicKeyRequest
+    type: object
+    properties:
+      public_key:
+        required: true
+        displayName: public_key
+        description: 'Your Ed25519 public key, base64: the raw 32 bytes or the SPKI DER encoding.'
+        type: string
+        minLength: 1
+        maxLength: 512
+  ApiV1RepayLoanRequest:
+    displayName: ApiV1RepayLoanRequest
+    type: object
+    properties:
+      loan_id:
+        required: true
+        displayName: loan_id
+        type: any
+      amount_cents:
+        required: false
+        displayName: amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+  Declarations:
+    displayName: Declarations
+    type: object
+    properties:
+      no_other_debt:
+        required: true
+        displayName: no_other_debt
+        type: boolean
+  Identity:
+    displayName: Identity
+    type: object
+    properties:
+      operator:
+        required: false
+        displayName: operator
+        type: string
+        maxLength: 200
+      model:
+        required: false
+        displayName: model
+        type: string
+        maxLength: 200
+      code_manifest_hash:
+        required: false
+        displayName: code_manifest_hash
+        type: string
+        maxLength: 200
+  Invoice:
+    displayName: Invoice
+    type: object
+    properties:
+      client_email:
+        required: true
+        displayName: client_email
+        type: string
+        pattern: ^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$
+      amount_cents:
+        required: true
+        displayName: amount_cents
+        type: integer
+        minimum: 1
+        maximum: 9007199254740991
+        format: int32
+      due_in_days:
+        required: true
+        displayName: due_in_days
+        type: integer
+        minimum: 1
+        maximum: 60
+        format: int32
+      description:
+        required: true
+        displayName: description
+        type: string
+        minLength: 1
+        maxLength: 500
+  NextAction:
+    displayName: NextAction
+    type: object
+    properties:
+      tool:
+        required: true
+        displayName: tool
+        type: string
+      args:
+        required: true
+        displayName: args
+        type: object
+        properties: {}
+/api/v1:
+  /get_bank_guide:
+    post:
+      displayName: get_bank_guide
+      description: "Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: 'Orientation: what the bank is, every tool, the money rules'
+              value: {}
+          displayName: body
+          type: object
+          properties: {}
+      securedBy: []
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /register_agent:
+    post:
+      displayName: register_agent
+      description: "Creates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Register with a PayPal payout account (no API key needed)
+              value:
+                name: Acme Ops Agent
+                operator: Acme Ops
+                model: claude-sonnet
+                payout_email: agent@example.com
+          displayName: body
+          type: ApiV1RegisterAgentRequest
+      securedBy: []
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /get_status:
+    post:
+      displayName: get_status
+      description: "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Your agent, KYA tier, mandate, positions and open items
+              value: {}
+          displayName: body
+          type: object
+          properties: {}
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /register_public_key:
+    post:
+      displayName: register_public_key
+      description: "Registers the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Register an Ed25519 public key (base64) to sign requests
+              value:
+                public_key: MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=
+          displayName: body
+          type: ApiV1RegisterPublicKeyRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /buy_notes:
+    post:
+      displayName: buy_notes
+      description: "Buys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Fund the bank with $30 of notes (returns a PayPal checkout to approve)
+              value:
+                amount_cents: 3000
+          displayName: body
+          type: ApiV1BuyNotesRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /confirm_checkout:
+    post:
+      displayName: confirm_checkout
+      description: Captures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Capture a checkout after your human approved it
+              value:
+                checkout_id: <checkout_id from buy_notes or repay_loan>
+          displayName: body
+          type: ApiV1ConfirmCheckoutRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /check_eligibility:
+    post:
+      displayName: check_eligibility
+      description: "Checks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Quote $10 for 7 days against a $15 invoice
+              value:
+                amount_cents: 1000
+                term_days: 7
+                collateral: invoice_link
+                invoice_amount_cents: 1500
+          displayName: body
+          type: ApiV1CheckEligibilityRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /apply_for_loan:
+    post:
+      displayName: apply_for_loan
+      description: "Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering < 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: 'Apply (ALA A–H): $10 for 7 days, invoice-backed, with the required declarations and attestation'
+              value:
+                amount_cents: 1000
+                term_days: 7
+                purpose: Buy materials for invoice INV-1042
+                identity:
+                  operator: Acme Ops
+                  model: claude-sonnet
+                invoice:
+                  client_email: client@example.com
+                  amount_cents: 1500
+                  due_in_days: 7
+                  description: 'INV-1042: website build'
+                declarations:
+                  no_other_debt: true
+                consent_bank_records: true
+                attest: true
+          displayName: body
+          type: ApiV1ApplyForLoanRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /accept_offer:
+    post:
+      displayName: accept_offer
+      description: "Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason)."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Accept an offer with the disclosure hash it returned (disburses the loan)
+              value:
+                offer_id: 2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11
+                disclosure_hash: sha256:<disclosure_hash from apply_for_loan>
+          displayName: body
+          type: ApiV1AcceptOfferRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /decline_offer:
+    post:
+      displayName: decline_offer
+      description: Declines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Decline an offer you don't want
+              value:
+                offer_id: 2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11
+          displayName: body
+          type: ApiV1DeclineOfferRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /get_application:
+    post:
+      displayName: get_application
+      description: "Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Re-read a decision, its reasons and adverse action
+              value:
+                application_id: 7d3a9e52-1f6b-4b28-8c0d-5e4f1a2b3c22
+          displayName: body
+          type: ApiV1GetApplicationRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /get_loan:
+    post:
+      displayName: get_loan
+      description: "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Loan status, balance, repayment link and history
+              value:
+                loan_id: 9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33
+          displayName: body
+          type: ApiV1GetLoanRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /repay_loan:
+    post:
+      displayName: repay_loan
+      description: "Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Repay the full outstanding balance (PayPal checkout)
+              value:
+                loan_id: 9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33
+            example_2:
+              displayName: Repay part of it
+              value:
+                loan_id: 9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33
+                amount_cents: 500
+          displayName: body
+          type: ApiV1RepayLoanRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /ack_notices:
+    post:
+      displayName: ack_notices
+      description: Marks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Acknowledge every open notice (late, dunning, rate change)
+              value: {}
+            example_2:
+              displayName: Acknowledge specific notices
+              value:
+                notice_ids:
+                - 6f2a8d4c-7b3e-4c1a-8d5f-2b3c4d5e6f55
+          displayName: body
+          type: ApiV1AckNoticesRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /redeem_notes:
+    post:
+      displayName: redeem_notes
+      description: "Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Redeem $10 of notes to your PayPal payout receiver
+              value:
+                amount_cents: 1000
+          displayName: body
+          type: ApiV1RedeemNotesRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /cancel_redemption:
+    post:
+      displayName: cancel_redemption
+      description: Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: Withdraw a queued redemption
+              value:
+                note_tx_id: 4e8b2c6d-5a1f-4d3e-9b7c-1a2b3c4d5e44
+          displayName: body
+          type: ApiV1CancelRedemptionRequest
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope
+  /get_statement:
+    post:
+      displayName: get_statement
+      description: "Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back."
+      body:
+        application/json:
+          examples:
+            default:
+              displayName: 'Your ledger statement: notes, loans, fees, payouts'
+              value: {}
+          displayName: body
+          type: object
+          properties: {}
+      securedBy:
+      - bearerAuth
+      headers:
+        Content-Type:
+          required: true
+          example:
+            value: application/json
+          displayName: Content-Type
+          type: string
+          enum:
+          - application/json
+      responses:
+        '200':
+          description: Envelope response
+          body:
+            application/json:
+              displayName: response200
+              description: ''
+              type: Envelope

@@ -1,0 +1,302 @@
+_type: export
+__export_format: 4
+__export_source: apimatic.transformer
+resources:
+- name: Mandate Bank API
+  _type: workspace
+  _id: wrk_938451caa6df4669b3a497f420f3162a
+  description: 'Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.'
+- name: Start here
+  _type: request_group
+  _id: fld_85218f580f8c4ae792c9761b40704578
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: Lend
+  _type: request_group
+  _id: fld_eadc53e9d2734ce3a235b7e6e020911d
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: Borrow
+  _type: request_group
+  _id: fld_249f4b41c9a444a1839f20f6215b85ac
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: Repay
+  _type: request_group
+  _id: fld_fa42b49210b34cd8918f3b8c2d4ce842
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: Collections
+  _type: request_group
+  _id: fld_54b140ea426f4feca4855652948dd17a
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: Treasury
+  _type: request_group
+  _id: fld_548c3b719d73471882a4cc2afad9dd31
+  parentId: wrk_938451caa6df4669b3a497f420f3162a
+- name: get_bank_guide
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide
+  body:
+    mimeType: application/json
+    text: '{}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication: {}
+  _type: request
+  _id: req_0e524654891142e2ab21e66b3ea42b01
+  parentId: fld_85218f580f8c4ae792c9761b40704578
+  description: "Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool."
+- name: register_agent
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/register_agent
+  body:
+    mimeType: application/json
+    text: '{"name":"Acme Ops Agent","operator":"Acme Ops","model":"claude-sonnet","payout_email":"agent@example.com"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication: {}
+  _type: request
+  _id: req_e1dffcfd979243f9bc06e0435fea6d37
+  parentId: fld_85218f580f8c4ae792c9761b40704578
+  description: "Creates a new agent and an API key for it. Call this first, before any other tool — every other call authenticates with the returned api_key. Creates a fresh agent every time it's called (no dedupe), so call it once per agent and store the key immediately: it is never shown again. The agent starts ACTIVE at KYA tier 0: it can lend (buy/redeem notes) but not borrow. Give your human the returned claim_url (valid 7 days; get_status shows it again) — once they claim you and sign a mandate, you can borrow."
+- name: get_status
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/get_status
+  body:
+    mimeType: application/json
+    text: '{}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_ac59bdffa9a940a696bf825097725e26
+  parentId: fld_85218f580f8c4ae792c9761b40704578
+  description: "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan."
+- name: register_public_key
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/register_public_key
+  body:
+    mimeType: application/json
+    text: '{"public_key":"MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE="}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_8a7d1ba241774bbf86a99f75c2a9bfe0
+  parentId: fld_85218f580f8c4ae792c9761b40704578
+  description: "Registers the calling agent's Ed25519 request-signing key (optional; together with an approved KYA document it unlocks KYA tier T2). The request itself must be signed by the key being registered (X-Mandate-Timestamp + X-Mandate-Signature, see 'Signing requests' in agents.md). Once a key is registered, every mutating call from this agent must be signed by it (unsigned → SIGNATURE_REQUIRED). Registering a different key rotates: also send X-Mandate-Previous-Signature from the current key; the old key is revoked."
+- name: buy_notes
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/buy_notes
+  body:
+    mimeType: application/json
+    text: '{"amount_cents":3000}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_0afb1d9e115143768c628f626f036298
+  parentId: fld_eadc53e9d2734ce3a235b7e6e020911d
+  description: "Buys lender notes in Mandate Pool A, funded by a PayPal checkout the agent's human must approve. Returns an approve_url: present it to the human, then call confirm_checkout once they've approved."
+- name: confirm_checkout
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/confirm_checkout
+  body:
+    mimeType: application/json
+    text: '{"checkout_id":"<checkout_id from buy_notes or repay_loan>"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_9068a3db732947fc81dd16adc046e361
+  parentId: fld_eadc53e9d2734ce3a235b7e6e020911d
+  description: Captures a PayPal checkout once the human has approved it, and applies its effect (crediting notes, settling a repayment, …) exactly once. Call it again if it comes back AWAITING_APPROVAL or PENDING.
+- name: check_eligibility
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/check_eligibility
+  body:
+    mimeType: application/json
+    text: '{"amount_cents":1000,"term_days":7,"collateral":"invoice_link","invoice_amount_cents":1500}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_26cc9152a12f4d2fb05c913914267e1b
+  parentId: fld_249f4b41c9a444a1839f20f6215b85ac
+  description: "Checks, without committing to anything, whether the calling agent could borrow amount_cents for term_days right now (P1: 1000–50000 cents, 7–30 days, one open loan, enough pool liquidity, and KYA tier ≥ 1: claimed by your human and covered by a signed mandate) and quotes the fee, APR and total repayment. data.mandate shows the limits your human signed (max per loan, max total owed across all their agents, max fee in bps of the principal, max term, eligible collateral) and the headroom left; breaking one gives a mandate_* reason, and a loan above your tier's cap (T1 25000, T2 50000 cents) gives tier_per_loan. Pass collateral to also check the collateral rule. data.credit is your Agent Credit Score (0–100), grade A–E, grade limit and top 3 factors; pass invoice_amount_cents to include invoice collateral (coverage ≥ 1.5× scores 20 points, ≥ 1.1× scores 12; below 1.1× gives insufficient_collateral). The same underwriting rules as apply_for_loan run: grade E declines (insufficient_credit_history / score_too_low), effective_cap_cents = min(grade limit, tier cap, mandate max_per_loan), grade D above 5000 cents gives manual_review_declined. The quote is risk-based (grade, score, rate components, apr_flag) and null for grade E. Call it before apply_for_loan; if eligible, call apply_for_loan with the same amount and term. While unclaimed, reasons include claim_required and data.claim_url is the link to give your human."
+- name: apply_for_loan
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/apply_for_loan
+  body:
+    mimeType: application/json
+    text: '{"amount_cents":1000,"term_days":7,"purpose":"Buy materials for invoice INV-1042","identity":{"operator":"Acme Ops","model":"claude-sonnet"},"invoice":{"client_email":"client@example.com","amount_cents":1500,"due_in_days":7,"description":"INV-1042: website build"},"declarations":{"no_other_debt":true},"consent_bank_records":true,"attest":true}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_98e0402aff5b44b5b23179b463dec4b2
+  parentId: fld_249f4b41c9a444a1839f20f6215b85ac
+  description: "Applies for a loan of amount_cents over term_days (optionally backed by an invoice the bank will collect via a payment link; invoice.amount_cents must cover the principal plus the fee, i.e. at least amount_cents + the fee check_eligibility quotes). Returns either DECLINED with reason codes, or OFFERED with a disclosure and its disclosure_hash, valid for one simulated day. Review the disclosure, then call accept_offer with offer_id and disclosure_hash, or decline_offer. Needs KYA tier ≥ 1: an unclaimed agent gets 403 CLAIM_REQUIRED (data.claim_url is the link for your human), a claimed agent without a signed mandate gets 403 MANDATE_REQUIRED. An offer that breaks your owner's mandate is DECLINED with mandate_per_loan / mandate_total_owed / mandate_fee / mandate_term / mandate_collateral, or tier_per_loan above your tier's cap. Applications are underwritten by your Agent Credit Score: grade E declines (insufficient_credit_history / score_too_low), above your grade's limit gives amount_exceeds_limit, grade D above 5000 cents gives manual_review_declined, an invoice covering < 1.1× the amount gives insufficient_collateral (new agents: start with a small invoice-backed loan, invoice ≥ 1.5× the amount). The fee is risk-based; the disclosure shows your score, grade and the rate components, and names the mandate_id and mandate_version it was made under. The application has sections A–H: identity {operator, model, code_manifest_hash} (optional), purpose, amount_cents/term_days, invoice (optional), declarations.no_other_debt (REQUIRED true), consent_bank_records (optional), mandate_version (optional: the mandate version you expect — 409 MANDATE_CHANGED if it is no longer current) and attest (REQUIRED true: the application is accurate). Without declarations.no_other_debt and attest it is DECLINED with declaration_missing. A DECLINED response carries adverse_action {reasons [{code, text}], score, grade, score_factors, notice, explanation}; every response carries an explanation. Re-read either later with get_application."
+- name: accept_offer
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/accept_offer
+  body:
+    mimeType: application/json
+    text: '{"offer_id":"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11","disclosure_hash":"sha256:<disclosure_hash from apply_for_loan>"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_fb73c42b844046bba4028dcbaf0c7039
+  parentId: fld_249f4b41c9a444a1839f20f6215b85ac
+  description: "Accepts a loan offer from apply_for_loan. disclosure_hash must equal the hash returned with the offer (proof the disclosure was read). The bank re-checks your KYA tier (403 CLAIM_REQUIRED / MANDATE_REQUIRED if you may no longer borrow), your owner's mandate (409 MANDATE_REVOKED if the mandate the offer was made under was revoked or replaced — apply again; 400 MANDATE_LIMIT with mandate_* reasons if the offer no longer fits, e.g. your owner's other agents borrowed meanwhile) liquidity and the bank's treasury policy (409 TREASURY_LIMIT with reserve_floor, concentration_limit or daily_budget_exhausted — apply again later or for less), creates the loan and pays the principal to the agent's PayPal payout receiver: the result is ACTIVE, DISBURSING (poll get_loan) or DISBURSEMENT_FAILED (with the reason)."
+- name: decline_offer
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/decline_offer
+  body:
+    mimeType: application/json
+    text: '{"offer_id":"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_2414b222d9ee4ba881ed8f3888968b70
+  parentId: fld_249f4b41c9a444a1839f20f6215b85ac
+  description: Declines one of the calling agent's open loan offers (from apply_for_loan), so it can no longer be accepted. Nothing is charged. Call apply_for_loan again later for a new offer, or get_status to see the agent's current position.
+- name: get_application
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/get_application
+  body:
+    mimeType: application/json
+    text: '{"application_id":"7d3a9e52-1f6b-4b28-8c0d-5e4f1a2b3c22"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_79dd4d513abc47668819529db85ff563
+  parentId: fld_249f4b41c9a444a1839f20f6215b85ac
+  description: "Returns one of the calling agent's loan applications: its status — OFFERED (the bank made an offer; the application stays OFFERED after the offer is accepted, declined or expires, so use get_loan / get_status for what happened next) or DECLINED (see adverse_action) — the decision, the principal reasons [{code, text}], the adverse_action notice of a decline (your statement of specific reasons), the latest explanation (the loan officer's text, or its template when the AI was unavailable), the offer_id of an offered application, and an echo of the application sections A–H (ala) as submitted. Read-only."
+- name: get_loan
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/get_loan
+  body:
+    mimeType: application/json
+    text: '{"loan_id":"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_91d6c4d565a8490e8ddb97228c1e4997
+  parentId: fld_fa42b49210b34cd8918f3b8c2d4ce842
+  description: "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan."
+- name: repay_loan
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/repay_loan
+  body:
+    mimeType: application/json
+    text: '{"loan_id":"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_b314383fca91473fa89345f2d8ad3647
+  parentId: fld_fa42b49210b34cd8918f3b8c2d4ce842
+  description: "Repays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout."
+- name: ack_notices
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/ack_notices
+  body:
+    mimeType: application/json
+    text: '{}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_87b4a4a68dd5428ab211abfb86e2bc1a
+  parentId: fld_54b140ea426f4feca4855652948dd17a
+  description: Marks the calling agent's notices (late fee, rate penalty, substandard, cured — listed by get_status and get_loan) as read. Pass notice_ids to acknowledge specific ones, or nothing to acknowledge all unread notices. It changes nothing about the loan or what is owed.
+- name: redeem_notes
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/redeem_notes
+  body:
+    mimeType: application/json
+    text: '{"amount_cents":1000}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_753fce3877f5438fac9ef6f018c6b3ee
+  parentId: fld_548c3b719d73471882a4cc2afad9dd31
+  description: "Redeems lender notes for cash, paid out to the agent's PayPal payout receiver. Fails with INSUFFICIENT_NOTE_BALANCE if the amount exceeds the agent's redeemable balance (position minus any other redemption still settling or queued), or PAYOUT_RECEIVER_MISSING if the agent has no payout receiver on file. If paying now would take the bank's cash below its reserve floor (or others are already queued), the redemption is QUEUED instead: data.queue says its position, why, and how much more cash is needed; the bank pays the queue in order automatically, and cancel_redemption withdraws it."
+- name: cancel_redemption
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/cancel_redemption
+  body:
+    mimeType: application/json
+    text: '{"note_tx_id":"4e8b2c6d-5a1f-4d3e-9b7c-1a2b3c4d5e44"}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_ed8148be941f424e8f53780bef39f11c
+  parentId: fld_548c3b719d73471882a4cc2afad9dd31
+  description: Cancels one of the calling agent's QUEUED note redemptions (redeem_notes returns QUEUED with note_tx_id when the bank's reserve floor gates a payout). The units are yours again at once; nothing was paid. A redemption already being paid out (PENDING) can't be cancelled (409 INVALID_TRANSITION).
+- name: get_statement
+  method: POST
+  url: https://agentic-bank-mu.vercel.app/api/v1/get_statement
+  body:
+    mimeType: application/json
+    text: '{}'
+  headers:
+  - name: Content-Type
+    value: application/json
+    disabled: false
+  authentication:
+    type: bearer
+  _type: request
+  _id: req_861be83bbd1f4b7b86a737f7da04ed6d
+  parentId: fld_548c3b719d73471882a4cc2afad9dd31
+  description: "Returns the calling agent's own statement: its note balance and the interest it has earned (with the nominal annualised return and the real return = nominal − inflation, in bps), its loans, and every ledger line on its own accounts (positive amount_cents = the bank owes you more). Call it to reconcile what you lent, earned, borrowed and were paid back."
