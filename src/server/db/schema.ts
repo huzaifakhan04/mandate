@@ -1139,3 +1139,91 @@ export const treasuryPolicy = pgTable("treasury_policy", {
     .notNull()
     .defaultNow(),
 });
+
+// -----------------------------------------------------------------------
+// P7: the Risk Desk (Elastic)
+// -----------------------------------------------------------------------
+
+/**
+ * P7: the Elastic outbox watermark — per world and per stream (`events`,
+ * `agents`, `applications`, `paypal_ops`, `note_redemptions`), the
+ * `(cursor_at, cursor_id)` of the last row shipped to Elasticsearch; rows
+ * are shipped in `(timestamp, id)` order, so the next tick resumes right
+ * after it. The `detectors` stream records when the world's detectors
+ * last ran (`cursor_at`, real time; hourly).
+ */
+export const elasticCursors = pgTable(
+  "elastic_cursors",
+  {
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    stream: text("stream").notNull(),
+    cursorAt: timestamp("cursor_at", { withTimezone: true }),
+    cursorId: text("cursor_id"),
+    shipped: bigint("shipped", { mode: "bigint" }).notNull().default(sql`0`),
+    lastError: text("last_error"),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [uniqueIndex("elastic_cursors_world_stream_idx").on(table.worldId, table.stream)],
+);
+
+/**
+ * P7: a risk flag raised by a deterministic ES|QL detector
+ * (`elastic/detectors.ts`) — one per (agent, kind, window). While a flag
+ * is `open` the agent borrows as if at tier T0 (`risk_review`); lending is
+ * unaffected. `case_file` is the risk investigator's advisory report
+ * (`{summary, evidence[], recommendation}`); clearing is an owner (private
+ * world) or admin action, or automatic after 7 sim days without new
+ * evidence (`cleared_by = 'expired'`).
+ */
+export const riskFlags = pgTable(
+  "risk_flags",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    principalId: uuid("principal_id").references(() => principals.id),
+    /** `self_dealing | score_farming | sybil_burst | probing | velocity`. */
+    kind: text("kind").notNull(),
+    /** The detection window (`w<sim week>`): one flag per (agent, kind, window). */
+    windowKey: text("window_key").notNull(),
+    /** `open | cleared`. */
+    status: text("status").notNull().default("open"),
+    /** The detector's evidence (JSON-safe, no PII: hashed ids, counts, sim times). */
+    evidence: jsonb("evidence").notNull(),
+    firstSimAt: timestamp("first_sim_at", { withTimezone: true }).notNull(),
+    /** The sim time of the latest evidence; an open flag expires 7 sim days after it. */
+    lastEvidenceSimAt: timestamp("last_evidence_sim_at", { withTimezone: true }).notNull(),
+    /** The risk investigator's advisory case file; `null` until it has run. */
+    caseFile: jsonb("case_file"),
+    /** When an investigation claimed this flag (at most one investigator at a time). */
+    investigationClaimedAt: timestamp("investigation_claimed_at", { withTimezone: true }),
+    aiRunId: uuid("ai_run_id").references(() => aiRuns.id),
+    /** The owner's "Request review" note (plain text, ≤ 500 chars). */
+    ownerNote: text("owner_note"),
+    reviewRequestedAt: timestamp("review_requested_at", { withTimezone: true }),
+    clearedAt: timestamp("cleared_at", { withTimezone: true }),
+    /** `expired | owner | admin`. */
+    clearedBy: text("cleared_by"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow()
+      .$onUpdate(() => new Date()),
+  },
+  (table) => [
+    uniqueIndex("risk_flags_agent_kind_window_idx").on(table.worldId, table.agentId, table.kind, table.windowKey),
+    index("risk_flags_world_status_idx").on(table.worldId, table.status),
+    check("risk_flags_status", sql`${table.status} in ('open', 'cleared')`),
+  ],
+);

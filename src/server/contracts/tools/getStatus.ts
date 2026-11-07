@@ -12,6 +12,7 @@ import { daysLate } from "../../domain/delinquency";
 import { isOwingStatus } from "../../domain/loanMachine";
 import { noticeView, unreadNotices } from "../../services/collections";
 import { queuedRedemptionsFor } from "../../services/notes";
+import { activeRiskFlags, RISK_KIND_TEXT, RISK_REVIEW_TEXT, type RiskKind } from "../../services/riskFlags";
 
 const outputSchema = z.object({
   agent: z.object({
@@ -63,6 +64,15 @@ const outputSchema = z.object({
   }),
   /** Your Agent Credit Score (0–100), grade A–E, grade limit and the top 3 factors (no collateral without an application). */
   credit: creditSchema,
+  /**
+   * P7: the Risk Desk. While `open` is true you borrow as tier T0 (apply_for_loan declines with
+   * risk_review; accept_offer refuses); lending is unaffected. Flags clear after 7 sim days without
+   * new evidence, or when an admin clears them — your human can request a review from the dashboard.
+   */
+  risk_review: z.object({
+    open: z.boolean(),
+    flags: z.array(z.object({ kind: z.string(), reason: z.string(), since_sim_at: z.string(), expires_sim_at: z.string() })),
+  }),
   sim_now: z.string(),
 });
 
@@ -89,6 +99,7 @@ export const getStatusTool = defineTool({
     const status = await getAgentStatus(ctx.db, ctx.worldId, ctx.agentId);
     const credit = await scoreAgent(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow);
     const notices = await unreadNotices(ctx.db, ctx.worldId, ctx.agentId);
+    const riskFlags = await activeRiskFlags(ctx.db, ctx.worldId, ctx.agentId, ctx.simNow);
 
     const data = {
       agent: {
@@ -145,6 +156,15 @@ export const getStatusTool = defineTool({
         tier_max_per_loan_cents: status.kya.tier.maxPerLoanCents,
       },
       credit: creditView(credit),
+      risk_review: {
+        open: riskFlags.length > 0,
+        flags: riskFlags.map((flag) => ({
+          kind: flag.kind,
+          reason: RISK_KIND_TEXT[flag.kind as RiskKind] ?? flag.kind,
+          since_sim_at: flag.firstSimAt.toISOString(),
+          expires_sim_at: new Date(flag.lastEvidenceSimAt.getTime() + 7 * 86_400_000).toISOString(),
+        })),
+      },
       sim_now: ctx.simNow.toISOString(),
     };
     const blockers = status.kya.tier.borrowBlockers;
@@ -195,13 +215,15 @@ export const getStatusTool = defineTool({
           `${data.open_loan.penalty_cents} penalty). Repay it with repay_loan.`
         : "";
     const noticeText = notices.length > 0 ? ` ${notices.length} unread notice(s).` : "";
+    const riskText = riskFlags.length > 0 ? ` ${RISK_REVIEW_TEXT}` : "";
     return ok(data, {
       status: "OK",
       summary:
         `Agent ${status.agent.name} is ${data.agent.status} at ${tierText} ` +
         `Agent Credit Score ${credit.score} (grade ${credit.grade}).` +
         loanText +
-        noticeText,
+        noticeText +
+        riskText,
       next_actions: nextActions,
     });
   },

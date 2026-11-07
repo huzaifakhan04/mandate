@@ -16,7 +16,8 @@ import { loanTreasuryReasons, type LoanTreasuryFacts } from "./treasury";
  * reason that decides. Every reason is a hard failure.
  *
  *   0. product range       amount_out_of_range, term_out_of_range (P1 limits)
- *   1. tier / claim        tier_per_loan (the claim itself is the tool's tier gate)
+ *   1. tier / claim        tier_per_loan (the claim itself is the tool's tier gate);
+ *                          risk_review (P7: an open Risk Desk flag caps borrowing at tier T0)
  *   2. mandate             mandate_missing | mandate_per_loan, _total_owed, _fee, _term, _collateral;
  *                          delinquent_principal (P4: a loan of the principal's is substandard)
  *   3. sanctions stub      sanctions_hit (agent name or operator matches SANCTIONS_STUB)
@@ -57,6 +58,12 @@ export interface ApplicationFacts {
   hasHistory: boolean;
   /** The agent's KYA tier per-loan cap in cents. */
   tierCapCents: bigint;
+  /**
+   * P7: the agent has an open Risk Desk flag — borrowing is capped at tier
+   * T0 (a 0 cap), declined with `risk_review` instead of `tier_per_loan`.
+   * Optional: absent = false.
+   */
+  riskReview?: boolean;
   /** The current mandate's limits; `null` without one. */
   mandate: MandateLimits | null;
   /** The principal's current exposure across all their agents (not counting this application). */
@@ -151,7 +158,8 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
   const { amountCents, termDays, credit, mandate } = facts;
   const reasons: ReasonCode[] = [];
   const gradeLimitCents = BigInt(GRADE_LIMIT_CENTS[credit.grade]);
-  const effectiveCapCents = mandate ? minBig(gradeLimitCents, facts.tierCapCents, mandate.maxPerLoanCents) : 0n;
+  const tierCapCents = facts.riskReview ? 0n : facts.tierCapCents;
+  const effectiveCapCents = mandate ? minBig(gradeLimitCents, tierCapCents, mandate.maxPerLoanCents) : 0n;
   const utilization = facts.utilizationBps ?? 0;
 
   const price =
@@ -170,7 +178,9 @@ export function evaluateApplication(facts: ApplicationFacts): ApplicationDecisio
   reasons.push(...rangeReasons(amountCents, termDays));
 
   // 1. Tier / claim.
-  if (mandate && amountCents > facts.tierCapCents) {
+  if (facts.riskReview) {
+    reasons.push("risk_review");
+  } else if (mandate && amountCents > facts.tierCapCents) {
     reasons.push("tier_per_loan");
   }
 

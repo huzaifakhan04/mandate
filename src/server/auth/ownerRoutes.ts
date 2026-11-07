@@ -6,6 +6,7 @@ import {
   rotateApiKey,
   setAgentFrozen,
 } from "../services/owner";
+import { clearRiskFlag, requestRiskReview } from "../services/riskFlags";
 import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
 import { isUuid } from "./ownership";
@@ -25,6 +26,9 @@ import { isSameOriginPost } from "./routes";
  * - `POST /dashboard/agents/<id>/api-key/rotate` — new API key, old ones
  *   revoked. 303 → the one-time key page.
  * - `POST /dashboard/claim` — "Paste claim link": 303 → `/claim/<token>`.
+ * - P7: `POST /dashboard/agents/<id>/risk/<flagId>/review` (form: `note`) —
+ *   "Request review" on an open risk flag; `…/risk/<flagId>/clear` — clear
+ *   it, only in the owner's own private world (403 in the main world).
  *
  * Every route: same origin (403), a session (401; a browser goes to
  * /verify), and for an agent route, ownership — anyone else's agent, an
@@ -292,7 +296,46 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     return wantsHtml(request) ? seeOther(request, `/claim/${token}`) : json(200, { location: `/claim/${token}` });
   }
 
+  function riskAction(kind: "review" | "clear") {
+    return async (request: Request, agentId: string, flagId: string): Promise<Response> => {
+      if (!isUuid(flagId)) {
+        return failure(request, 404, "not_found", "Flag not found.", null);
+      }
+      const fields = kind === "review" ? await readFields(request.clone()) : null;
+      return agentAction(request, agentId, async (principalId): Promise<ActionResult> => {
+        const db = await getDb();
+        if (kind === "review") {
+          const note = typeof fields?.note === "string" ? fields.note : "";
+          const outcome = await requestRiskReview(db, { principalId, agentId, flagId, note });
+          if (outcome === "not_found") return { status: 404, code: "not_found", message: "Flag not found.", notice: {} };
+          if (outcome === "not_open") {
+            return { status: 409, code: "flag_not_open", message: "This flag is no longer open.", notice: { risk_error: "flag_not_open" } };
+          }
+          return { status: 200, code: "review_requested", message: "", notice: { risk: "review_requested" } };
+        }
+        const outcome = await clearRiskFlag(db, { by: "owner", principalId, agentId, flagId });
+        switch (outcome) {
+          case "not_found":
+            return { status: 404, code: "not_found", message: "Flag not found.", notice: {} };
+          case "forbidden":
+            return {
+              status: 403,
+              code: "forbidden",
+              message: "In the main world only an admin can clear a risk flag; request a review instead.",
+              notice: { risk_error: "forbidden" },
+            };
+          case "not_open":
+            return { status: 409, code: "flag_not_open", message: "This flag is no longer open.", notice: { risk_error: "flag_not_open" } };
+          case "cleared":
+            return { status: 200, code: "cleared", message: "", notice: { risk: "cleared" } };
+        }
+      });
+    };
+  }
+
   return {
+    riskReview: riskAction("review"),
+    riskClear: riskAction("clear"),
     register,
     freeze: freeze(true),
     unfreeze: freeze(false),

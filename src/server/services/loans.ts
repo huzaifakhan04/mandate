@@ -20,6 +20,7 @@ import { evaluateApplication, sanctionsStubList, type ApplicationDecision } from
 import { computeScore, type Grade, type ScoreResult } from "../domain/scorecard";
 import { TIER_MAX_PER_LOAN_CENTS, type KyaTier } from "../domain/kya";
 import type { MandateCollateral } from "../domain/mandate";
+import { hasActiveRiskFlag } from "./riskFlags";
 import { invoiceCoverageBps, recordScore, scoreFacts } from "./credit";
 import type { LoanOfficerInput, RiskOfficerInput } from "../ai/schemas";
 import {
@@ -252,6 +253,8 @@ async function underwrite(
     sanctions: { name: agent.name, operator: agent.operator, list: sanctionsStubList() },
     declarations: request.declarations,
     delinquentPrincipal: await principalHasDelinquentLoan(db, worldId, agent.principalId),
+    // P7: an open Risk Desk flag caps borrowing at T0 (DB read; no Elastic here).
+    riskReview: await hasActiveRiskFlag(db, worldId, agentId, simNow),
     openLoanExists: await hasOpenLoan(db, worldId, agentId),
     availableLiquidityCents,
     baseRateBps: economy.baseRateBps,
@@ -827,6 +830,8 @@ export type AcceptOfferOutcome =
   | { outcome: "mandate_limit"; reasons: Array<MandateReason | TierReason>; mandate: MandateSummary; retry: EligibilityArgs }
   /** P4: a loan of the principal's is substandard — the mandate is frozen for new loans. */
   | { outcome: "delinquent_principal" }
+  /** P7: the agent has an open Risk Desk flag — borrowing is capped at tier T0. */
+  | { outcome: "risk_review" }
   /**
    * P5 Task 3 (Review Focus 2): the treasury policy, re-checked under the
    * series lock, no longer allows this loan (another acceptance used the
@@ -923,6 +928,11 @@ export async function beginAcceptOffer(
   // P4 mandate freeze, under the series lock (the ladder's substandard step takes it too).
   if (await principalHasDelinquentLoan(tx, worldId, kyaAgent.principalId)) {
     return { outcome: "delinquent_principal" };
+  }
+
+  // P7: an open Risk Desk flag (raised after the offer) caps borrowing at T0.
+  if (await hasActiveRiskFlag(tx, worldId, agentId, simNow)) {
+    return { outcome: "risk_review" };
   }
 
   if (await hasOpenLoan(tx, worldId, agentId)) {

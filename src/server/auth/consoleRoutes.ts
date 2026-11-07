@@ -1,6 +1,7 @@
 import type { Db } from "../db/client";
 import { createTokenBucket, clientKey } from "../http/rateLimit";
 import { cachedConsoleSnapshot, resolveConsoleWorld } from "../services/console";
+import { consoleSearch } from "../services/consoleSearch";
 import { principalFromRequest } from "./guard";
 
 /**
@@ -18,6 +19,10 @@ import { principalFromRequest } from "./guard";
 
 export const SNAPSHOT_BURST = 30;
 export const SNAPSHOT_REFILL_PER_SECOND = 2;
+/** P7: the search box — each query costs an embedding + a rerank, so a tighter bucket. */
+export const SEARCH_BURST = 10;
+export const SEARCH_REFILL_PER_SECOND = 0.5;
+export const SEARCH_MAX_QUERY = 200;
 
 const NO_STORE = { "cache-control": "no-store" };
 
@@ -31,10 +36,12 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 export function createConsoleHandlers({
   getDb,
   limiter = createTokenBucket({ capacity: SNAPSHOT_BURST, refillPerSecond: SNAPSHOT_REFILL_PER_SECOND }),
+  searchLimiter = createTokenBucket({ capacity: SEARCH_BURST, refillPerSecond: SEARCH_REFILL_PER_SECOND }),
   now = () => new Date(),
 }: {
   getDb: () => Promise<Db>;
   limiter?: ReturnType<typeof createTokenBucket>;
+  searchLimiter?: ReturnType<typeof createTokenBucket>;
   now?: () => Date;
 }) {
   return {
@@ -58,6 +65,40 @@ export function createConsoleHandlers({
         return jsonResponse(200, { ok: true, snapshot: await cachedConsoleSnapshot(db, world, () => now().getTime()) });
       } catch (err) {
         console.error(`[console] snapshot failed: ${err instanceof Error ? err.name : "unknown error"}`);
+        return jsonResponse(500, { ok: false, error: "error", message: "Something went wrong." });
+      }
+    },
+
+    /**
+     * P7 — `GET /api/console/search?world=<main|id>&q=<text>`: the Risk Desk
+     * search box (semantic over application purposes + keyword over events),
+     * world-scoped exactly like the snapshot (same 404s), no-store, rate
+     * limited per IP (burst 10, one query per 2 s sustained), scrubbed.
+     */
+    async search(request: Request): Promise<Response> {
+      const limit = searchLimiter.take(clientKey(request), now().getTime());
+      if (!limit.allowed) {
+        return jsonResponse(
+          429,
+          { ok: false, error: "rate_limited", message: "Too many searches; slow down." },
+          { "retry-after": String(limit.retryAfterSeconds) },
+        );
+      }
+      const params = new URL(request.url).searchParams;
+      const q = params.get("q") ?? "";
+      if (q.length > SEARCH_MAX_QUERY) {
+        return jsonResponse(400, { ok: false, error: "query_too_long", message: `Queries are at most ${SEARCH_MAX_QUERY} characters.` });
+      }
+      const session = principalFromRequest(request);
+      try {
+        const db = await getDb();
+        const world = await resolveConsoleWorld(db, session?.principalId ?? null, params.get("world"));
+        if (!world) {
+          return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });
+        }
+        return jsonResponse(200, { ok: true, result: await consoleSearch(db, world, q) });
+      } catch (err) {
+        console.error(`[console] search failed: ${err instanceof Error ? err.name : "unknown error"}`);
         return jsonResponse(500, { ok: false, error: "error", message: "Something went wrong." });
       }
     },

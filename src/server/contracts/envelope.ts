@@ -114,6 +114,7 @@ const STATUS_HTTP: Record<string, number> = {
   MANDATE_LIMIT: 400,
   // P4 Task 1: a loan of the principal's is substandard — no new loans for any of their agents.
   MANDATE_FROZEN: 409,
+  RISK_REVIEW: 409,
   // P3 Task 4 (ALA G): apply_for_loan named a mandate version that is no longer current.
   MANDATE_CHANGED: 409,
   // P5 Task 3: accept_offer re-checks the treasury policy (reserve floor, concentration, daily budget).

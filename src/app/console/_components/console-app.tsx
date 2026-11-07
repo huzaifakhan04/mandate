@@ -7,6 +7,7 @@ import type { ConsoleSnapshot } from "@/server/services/console";
 
 import { MoneyFlow } from "./flow";
 import { ConsoleGrids } from "./grids";
+import { RiskDesk } from "./risk";
 import { logTime, money, moneyShort, pct, simDate, simTime, statusLabel, toneFor } from "./format";
 
 export const POLL_MS = 2000;
@@ -403,6 +404,8 @@ export function ConsoleApp({
             </div>
           </section>
         </div>
+
+        <RiskDesk snapshot={snapshot} worldParam={worldParam} />
 
         <ConsoleGrids snapshot={snapshot} />
 

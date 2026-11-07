@@ -13,6 +13,7 @@ import {
   noteTransactions,
   offers,
   paypalOperations,
+  riskFlags,
 } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { utilizationBps } from "../domain/economy";
@@ -20,6 +21,8 @@ import { OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
 import { dailyMovements, latestJournalLines } from "../ledger/consoleLedger";
 import { listOwnedPrivateWorlds, ownedPrivateWorld } from "./privateWorldAccess";
 import type { StoredTreasuryMemo } from "./treasuryMemo";
+import { ELASTIC_DISABLED_NOTE, elasticConfigured } from "../elastic/config";
+import { openRiskCounts, RISK_KIND_LABEL, RISK_KINDS, type RiskKind } from "./riskFlags";
 import { ensureMainWorldOnce } from "./worlds";
 
 /**
@@ -154,7 +157,28 @@ export interface ConsoleSnapshot {
     status: string;
     bot: boolean;
   }>;
+  /** P7: the Risk Desk — open risk flags by kind and the latest few (advisory case-file verdicts). */
+  risk: {
+    /** Elastic configured (shipping, detectors and search run); `note` says why not. */
+    enabled: boolean;
+    note: string | null;
+    open: number;
+    byKind: Array<{ kind: string; label: string; open: number }>;
+    recent: Array<{
+      id: string;
+      flag: string;
+      kind: string;
+      label: string;
+      agent: string;
+      status: string;
+      sinceSimAt: string;
+      recommendation: string | null;
+      source: string | null;
+    }>;
+  };
 }
+
+export const CONSOLE_RISK_RECENT = 8;
 
 const EMAIL_RE = /[^\s@]+@[^\s@]+/g;
 
@@ -526,6 +550,43 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
     });
   }
 
+  // --- P7: the Risk Desk panel (DB only; counts and the latest flags, no evidence details). ---
+  const counts = await openRiskCounts(db, world.id);
+  const recentFlags = await w.selectFields(
+    riskFlags,
+    {
+      id: riskFlags.id,
+      agentId: riskFlags.agentId,
+      kind: riskFlags.kind,
+      status: riskFlags.status,
+      firstSimAt: riskFlags.firstSimAt,
+      caseFile: riskFlags.caseFile,
+    },
+    undefined,
+    desc(riskFlags.createdAt),
+    CONSOLE_RISK_RECENT,
+  );
+  const risk: ConsoleSnapshot["risk"] = {
+    enabled: elasticConfigured(),
+    note: elasticConfigured() ? null : ELASTIC_DISABLED_NOTE,
+    open: counts.total,
+    byKind: RISK_KINDS.map((kind) => ({ kind, label: RISK_KIND_LABEL[kind], open: counts.byKind[kind] })),
+    recent: recentFlags.map((f) => {
+      const caseFile = (f.caseFile ?? null) as { recommendation?: unknown; source?: unknown } | null;
+      return {
+        id: f.id,
+        flag: shortLabel("RF", f.id),
+        kind: f.kind,
+        label: RISK_KIND_LABEL[f.kind as RiskKind] ?? f.kind,
+        agent: nameOf.get(f.agentId) ?? "—",
+        status: f.status,
+        sinceSimAt: f.firstSimAt.toISOString(),
+        recommendation: typeof caseFile?.recommendation === "string" ? caseFile.recommendation : null,
+        source: typeof caseFile?.source === "string" ? caseFile.source : null,
+      };
+    }),
+  };
+
   return {
     generatedAt: realNow.toISOString(),
     world,
@@ -557,6 +618,7 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
     loans: loansView,
     notes: notesView,
     agents: agentsView,
+    risk,
   };
 }
 

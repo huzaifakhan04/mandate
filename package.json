@@ -22,6 +22,7 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@elastic/elasticsearch": "^9.5.1",
     "@modelcontextprotocol/server": "^2.4.0",
     "@neondatabase/serverless": "^1.2.0",
     "@paypal/paypal-server-sdk": "^2.5.0",

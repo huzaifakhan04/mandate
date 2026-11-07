@@ -33,6 +33,7 @@ const NEXT_STEP: Partial<Record<ReasonCode, string>> = {
   term_out_of_range: "Apply for a term between 7 and 30 days.",
   claim_required: "Ask your human to claim you and verify their identity.",
   tier_per_loan: "Apply for a smaller amount, or raise your KYA tier (signing key and an approved document).",
+  risk_review: "Call get_status to see the open risk flag; your human can request a review from the dashboard.",
   mandate_missing: "Ask your human to sign a current mandate that authorizes borrowing.",
   mandate_per_loan: "Apply for an amount within your mandate's per-loan limit, or ask your human to raise it.",
   mandate_total_owed: "Repay existing loans or ask your human to raise the mandate's total-owed limit.",
