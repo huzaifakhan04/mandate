@@ -590,6 +590,14 @@ async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
       latencyMs: sent.latencyMs,
     });
   }
+  if (kind === "payout.send" && isDuplicatePayoutBatch(sent.body)) {
+    // The batch with this sender_batch_id (= the operation id) already
+    // exists: an earlier attempt reached PayPal and money may well have
+    // moved. Never terminal (that would book a sent payout as failed) —
+    // retryable like any unknown payout outcome (Ruling V), so it surfaces
+    // as an operation_retrying anomaly for reconcile.
+    return failure("failed_retryable", sent.httpStatus, error, sent.attempts, sent.latencyMs);
+  }
   return failure(
     classifyFailureStatus(sent.httpStatus),
     sent.httpStatus,
@@ -597,6 +605,31 @@ async function runClaimed(db: Db, row: OperationRow): Promise<Outcome> {
     sent.attempts,
     sent.latencyMs,
   );
+}
+
+/**
+ * APIMatic audit (Payouts is outside the SDK, so this follows PayPal's REST
+ * docs): PayPal rejects a second batch with a used `sender_batch_id` — or a
+ * replayed `PayPal-Request-Id` outside its window — with a 4xx whose
+ * `name`/`details[]` name the duplicate. Matched loosely on purpose: a false
+ * positive only delays a genuinely failed payout (retries + anomaly); a
+ * false negative would book a sent payout as failed.
+ */
+function isDuplicatePayoutBatch(body: unknown): boolean {
+  if (hasErrorCode(body, "DUPLICATE_REQUEST_ID")) {
+    return true;
+  }
+  const record =
+    body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const texts: unknown[] = [record.message];
+  for (const detail of Array.isArray(record.details) ? record.details : []) {
+    if (detail !== null && typeof detail === "object") {
+      const d = detail as Record<string, unknown>;
+      texts.push(d.field, d.issue, d.description);
+    }
+  }
+  const joined = texts.filter((text): text is string => typeof text === "string").join(" ");
+  return /sender_batch_id/i.test(joined) && /already|duplicate|exist|used/i.test(joined);
 }
 
 /**

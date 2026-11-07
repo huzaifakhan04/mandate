@@ -46,7 +46,7 @@ export interface PaypalHttpRequest {
   method: "GET" | "POST" | "PATCH";
   path: string;
   body?: unknown;
-  /** Sent as `PayPal-Request-Id` on every attempt of this call, including retries. */
+  /** Sent as `PayPal-Request-Id` on every attempt of a POST/PATCH, including retries (not on GET). */
   requestId: string;
   /**
    * Optional per-call total deadline (ms), used only when shorter than the
@@ -180,7 +180,8 @@ function describeOAuthFailure(err: unknown): Record<string, unknown> {
  * nothing about `paypal_operations` — `operations.ts` owns every status,
  * attempts, backoff and `claimed_at` write (Ruling H).
  *
- * - Sends `PayPal-Request-Id: req.requestId` on every attempt.
+ * - Sends `PayPal-Request-Id: req.requestId` on every attempt of a write
+ *   (POST/PATCH); a GET is a read and carries no idempotency key.
  * - Caches the OAuth token; on a 401 refreshes it once and retries.
  * - Retries a 5xx, a timeout/abort or any other network error (including
  *   an OAuth token failure) up to twice, with 300ms/900ms backoff.
@@ -261,8 +262,14 @@ export async function paypalFetch(req: PaypalHttpRequest): Promise<PaypalHttpRes
           headers: {
             "Content-Type": "application/json",
             Authorization: `Bearer ${accessToken}`,
-            "PayPal-Request-Id": req.requestId,
-            ...(req.method === "GET" ? {} : { Prefer: "return=representation" }),
+            // APIMatic audit: `PayPal-Request-Id` is an idempotency key for
+            // writes (createOrder/captureOrder declare it); `getOrder`
+            // declares none, so a read doesn't send it. `Prefer` is
+            // `return=representation` (the SDK's default is
+            // `return=minimal`) so a capture carries its fee breakdown.
+            ...(req.method === "GET"
+              ? {}
+              : { "PayPal-Request-Id": req.requestId, Prefer: "return=representation" }),
           },
           signal: AbortSignal.timeout(Math.max(1, Math.min(paypalTimeoutMs(), remaining()))),
           ...(req.body !== undefined ? { body: JSON.stringify(req.body) } : {}),

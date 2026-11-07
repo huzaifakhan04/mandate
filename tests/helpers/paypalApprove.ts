@@ -147,7 +147,7 @@ export async function approveOnPage(page: Page, options: ApproveOptions, started
     // Either the review page's pay button shows up, or PayPal stops us
     // (bad credentials / rate limit banner, or a security challenge).
     const payButton = page
-      .locator("#payment-submit-btn, #confirmButtonTop, [data-testid='submit-button-initial'], button:has-text('Continue')")
+      .locator("#payment-submit-btn, #confirmButtonTop, [data-testid='submit-button-initial'], button:has-text('Continue'), button:has-text('Pay Now'), button:has-text('Complete Purchase')")
       .first();
     const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
