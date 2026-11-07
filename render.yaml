@@ -9,13 +9,13 @@ envVarGroups:
       # Shared secret the cron jobs send as `Authorization: Bearer ...`.
       - key: CRON_SECRET
         sync: false
-      # Public base URL of the web service, e.g. https://mandate.onrender.com
+      # Public base URL of the web service, e.g. https://mandate-bank.onrender.com
       - key: PUBLIC_BASE_URL
         sync: false
 
 services:
   - type: web
-    name: mandate
+    name: mandate-bank
     runtime: node
     plan: starter
     region: virginia
