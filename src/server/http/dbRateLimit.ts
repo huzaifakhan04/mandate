@@ -48,7 +48,8 @@ export const HOUR_MS = 3_600_000;
 export const DAY_MS = 86_400_000;
 
 export function dbRateLimitsDisabled(): boolean {
-  return process.env.RATE_LIMITS_DISABLED === "1";
+  // Test/e2e escape hatch only — never honoured in production.
+  return process.env.NODE_ENV !== "production" && process.env.RATE_LIMITS_DISABLED === "1";
 }
 
 /** The start of the fixed window `at` falls in. */
