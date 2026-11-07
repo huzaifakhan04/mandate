@@ -9,8 +9,9 @@ import { logTime, money, statusLabel } from "./format";
 
 /**
  * Money movements: the console's hero. One fused timeline built from the
- * PayPal API log (every call is a row, carrying its kind, HTTP status,
- * result and latency) and the flow's loan events (no PayPal call). Amounts
+ * PayPal API log (one row per order or payout, carrying the call chain,
+ * HTTP status, result and latency of the call that moved the money) and the
+ * flow's loan events (no PayPal call). Amounts
  * are from the bank's side; green only for money that came in.
  *
  * Signature move: a row that arrives with a poll gets `mv-new`, and its
@@ -26,7 +27,7 @@ type Row = {
   event: string;
   detail: string | null;
   counterparty: string;
-  call: { kind: string; http: number | null; status: string; ms: number | null } | null;
+  call: { kind: string; http: number | null; status: string; ms: number | null; chain: string[] } | null;
   amountCents: number | null;
   /** The money actually moved (a capture or a payout that succeeded). */
   moved: boolean;
@@ -63,37 +64,59 @@ function sentence(text: string): string {
 }
 
 function buildRows(snapshot: ConsoleSnapshot): Row[] {
-  // A capture's request carries no amount; it inherits the order's.
-  const byPaypalId = new Map<string, number>();
+  // One row per money movement: the calls behind one PayPal order or payout
+  // (create, status checks, capture) fold into the row of the call that
+  // moved the money, and the chain shows in the PayPal call column. The
+  // full call-by-call record stays in the PayPal API log tab.
+  const isMoving = (kind: string) => kind.endsWith(".capture") || kind === "payout.send";
+  const groups = new Map<string, ConsoleSnapshot["paypalLog"]>();
   for (const op of snapshot.paypalLog) {
-    if (op.paypalId && op.amountCents !== null && !byPaypalId.has(op.paypalId)) {
-      byPaypalId.set(op.paypalId, op.amountCents);
-    }
+    const key = op.paypalId ? `pp:${op.paypalId}` : `op:${op.id}`;
+    const list = groups.get(key);
+    if (list) list.push(op);
+    else groups.set(key, [op]);
   }
-  const rows: Row[] = snapshot.paypalLog.map((op) => {
-    const known = op.purpose ? PURPOSE[op.purpose] : undefined;
-    const amountCents = op.amountCents ?? (op.paypalId ? (byPaypalId.get(op.paypalId) ?? null) : null);
-    const moving = op.kind.endsWith(".capture") || op.kind === "payout.send";
+  const rows: Row[] = [];
+  for (const ops of groups.values()) {
+    // Newest first within the group, like the log.
+    const lead = ops.find((o) => isMoving(o.kind)) ?? ops[0];
+    if (!lead) continue;
+    // Oldest first, repeated status checks shown once: "order.create · order.get · order.capture".
+    const chain = [...ops].reverse().map((o) => o.kind).filter((k, i, all) => k !== all[i - 1]);
+    const purposeOp = ops.find((o) => o.purpose && PURPOSE[o.purpose] && isMoving(o.kind)) ?? ops.find((o) => o.purpose && PURPOSE[o.purpose]);
+    const known = purposeOp?.purpose ? PURPOSE[purposeOp.purpose] : undefined;
+    const moving = isMoving(lead.kind);
+    const amountCents = ops.find((o) => o.amountCents !== null)?.amountCents ?? null;
     const event = known
-      ? known.event
-      : op.kind === "order.get"
+      ? moving && purposeOp?.purpose === "note_purchase"
+        ? "Lender bought notes"
+        : known.event
+      : lead.kind === "order.get"
         ? "Order status checked"
-        : op.kind === "payout.get"
+        : lead.kind === "payout.get"
           ? "Payout status checked"
-          : sentence(op.purpose ? statusLabel(op.purpose) : op.kind);
-    return {
-      key: `op:${op.id}`,
-      at: op.at,
+          : sentence(lead.purpose ? statusLabel(lead.purpose) : lead.kind);
+    const moved = Boolean(known && moving && lead.status === "succeeded");
+    rows.push({
+      key: `op:${lead.id}`,
+      at: lead.at,
       dir: known && moving ? known.dir : "none",
       event,
-      detail: op.rail === "paypal" ? "PayPal sandbox" : "sim rail",
+      detail: lead.rail === "paypal" ? "PayPal sandbox" : "sim rail",
       counterparty: known?.who ?? "PayPal",
-      call: { kind: op.kind, http: op.httpStatus, status: op.status, ms: op.latencyMs },
-      amountCents,
-      moved: Boolean(known && moving && op.status === "succeeded"),
+      call: {
+        kind: lead.kind,
+        chain,
+        http: lead.httpStatus,
+        status: lead.status,
+        ms: lead.latencyMs,
+      },
+      // Only money that actually moved carries an amount.
+      amountCents: moved ? amountCents : null,
+      moved,
       paypal: true,
-    };
-  });
+    });
+  }
   for (const a of snapshot.flow.activity) {
     if (!a.key.startsWith("ev:")) {
       continue; // `op:` activity is the same call as a PayPal log row
@@ -135,9 +158,6 @@ function Glyph({ dir }: { dir: Dir }) {
 function Amount({ row }: { row: Row }) {
   if (row.amountCents === null) {
     return <span className="amt none">—</span>;
-  }
-  if (!row.moved) {
-    return <span className="amt none num">{money(row.amountCents)}</span>;
   }
   return (
     <span className={`amt num${row.dir === "in" ? " in" : ""}`}>
@@ -230,11 +250,12 @@ export function Movements({
             </span>
             <span className="cp">{row.counterparty}</span>
             {row.call ? (
-              <span className="op">
+              <span className="op" title={row.call.chain.length > 1 ? row.call.chain.join(" → ") : undefined}>
                 <b>{row.call.kind}</b>
                 {row.call.http ? ` ${row.call.http}` : ""}{" "}
                 <span className={row.call.status.startsWith("failed") ? "bad" : undefined}>{statusLabel(row.call.status)}</span>
                 {row.call.ms !== null ? ` ${row.call.ms} ms` : ""}
+                {row.call.chain.length > 1 ? <span className="calls"> · {row.call.chain.length} calls</span> : null}
               </span>
             ) : (
               <span className="op quiet">no PayPal call</span>

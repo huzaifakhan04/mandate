@@ -61,7 +61,6 @@ export default function Home() {
                 <p className="m-0 flex items-center gap-2 text-[12.5px] text-t3">
                   <Icon size={14} />
                   <b className="font-medium text-t1">{name}</b>
-                  <span className="text-t4">· {i + 1} of 3</span>
                 </p>
                 <p className="m-0 mt-2 text-[12.5px] leading-normal text-t2">{what}</p>
                 <p className="m-0 mt-1.5 font-mono text-[11.5px] text-t4">{api}</p>

@@ -24,11 +24,13 @@
   --t1: #f5f5f4;
   --t2: #c8c9cc;
   --t3: #8b8d93;
-  --t4: #5f6268;
+  --t4: #7a7d84;
 
   /* quiet indigo: primary action, focus, selection */
   --acc: #7f86e0;
-  --acc-hover: #8d93e6;
+  /* filled primary: deeper indigo so white text clears 4.5:1 */
+  --acc-fill: #5b62c9;
+  --acc-fill-hover: #666dd1;
   --acc-ink: #ffffff;
   --acc-soft: rgba(127, 134, 224, 0.14);
   --focus: rgba(127, 134, 224, 0.6);
@@ -190,8 +192,8 @@ h3 {
   transition: background 0.15s var(--ease), border-color 0.15s var(--ease);
 }
 .ui-btn:hover { background: var(--hover); border-color: var(--line-3); text-decoration: none; }
-.ui-btn.primary { background: var(--acc); color: var(--acc-ink); border-color: transparent; }
-.ui-btn.primary:hover { background: var(--acc-hover); }
+.ui-btn.primary { background: var(--acc-fill); color: var(--acc-ink); border-color: transparent; }
+.ui-btn.primary:hover { background: var(--acc-fill-hover); }
 .ui-btn.ghost { background: transparent; border-color: transparent; color: var(--t2); }
 .ui-btn.ghost:hover { background: var(--hover); color: var(--t1); }
 .ui-btn.danger { color: var(--risk-c); }

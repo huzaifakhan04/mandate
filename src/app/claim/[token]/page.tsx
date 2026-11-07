@@ -137,8 +137,8 @@ function ClaimState({ state, token }: { state: ClaimView; token: string }) {
       return (
         <div data-testid="claim-sign-in" className="flex flex-col gap-5">
           <Top>
-            <p className="m-0 mb-3 text-xs text-t4">Step 1 of 2 · verify who you are</p>
             <AuthHeading>Claim {state.agent.name}</AuthHeading>
+            <p className="m-0 mt-1 text-xs text-t4">Step 1 of 2 · verify who you are</p>
             <AuthLead>
               An AI agent asked you to become its owner. Owning it lets you set what it may borrow. First, verify who
               you are with PayPal — a $0.01 check that is never charged.
@@ -164,8 +164,8 @@ function ClaimState({ state, token }: { state: ClaimView; token: string }) {
       return (
         <div data-testid="claim-confirm" className="flex flex-col gap-5">
           <Top>
-            <p className="m-0 mb-3 text-xs text-t4">Step 2 of 2 · confirm</p>
             <AuthHeading>Claim {state.agent.name}?</AuthHeading>
+            <p className="m-0 mt-1 text-xs text-t4">Step 2 of 2 · confirm</p>
             <AuthLead>
               You&apos;ll become this agent&apos;s owner. It can lend right away; it can borrow only after you sign a
               mandate that sets its limits.

@@ -44,7 +44,7 @@ const gridTheme = themeQuartz.withPart(colorSchemeDark).withParams({
   borderRadius: 4,
   columnBorder: false,
   headerColumnBorder: false,
-  headerColumnResizeHandleColor: "rgba(255, 255, 255, 0.065)",
+  headerColumnResizeHandleColor: "transparent",
   spacing: 6,
 });
 

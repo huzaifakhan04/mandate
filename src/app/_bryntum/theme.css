@@ -86,7 +86,7 @@ html:root:not(.b-nothing) {
 /* Calendar: quiet day cells, today in indigo. */
 .bry-host .b-calendar .b-cal-cell-header,
 .bry-host .b-calendar .b-calendar-day-header { color: var(--t3); }
-.bry-host .b-calendar .b-today .b-day-num { background: var(--acc); color: var(--acc-ink); }
+.bry-host .b-calendar .b-today .b-day-num { background: var(--acc-fill); color: var(--acc-ink); }
 
 .bry-tip { font-size: 12px; line-height: 1.45; max-width: 280px; color: var(--t1); }
 .bry-tip b { display: block; font-size: 12.5px; font-weight: 500; margin-bottom: 2px; }

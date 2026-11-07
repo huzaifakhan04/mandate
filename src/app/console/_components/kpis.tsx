@@ -15,7 +15,7 @@ const SPARK_H = 56;
 function CashLine({ values, label }: { values: number[]; label: string }) {
   if (values.length < 2) {
     return (
-      <div className="spark" role="img" aria-label={label}>
+      <div className="spark empty" role="img" aria-label={label}>
         <svg viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" aria-hidden="true">
           <line x1="0" y1={SPARK_H / 2} x2={SPARK_W} y2={SPARK_H / 2} />
         </svg>

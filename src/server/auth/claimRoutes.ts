@@ -46,7 +46,7 @@ main{width:100%;max-width:400px;display:flex;flex-direction:column;gap:20px}
 h1{font-size:20px;font-weight:560;letter-spacing:-.015em;line-height:1.25;margin:0}
 p{margin:8px 0 0;color:#8b8d93;font-size:13.5px;line-height:1.55}
 .act{border-top:1px solid rgba(255,255,255,.11);padding-top:20px}
-.btn{display:inline-flex;align-items:center;height:34px;padding:0 14px;border-radius:6px;background:#7f86e0;color:#f5f5f4;font-weight:500;text-decoration:none}
+.btn{display:inline-flex;align-items:center;height:34px;padding:0 14px;border-radius:6px;background:#5b62c9;color:#ffffff;font-weight:500;text-decoration:none}
 .btn:hover{background:#8d93e6}
 a:focus-visible{outline:2px solid rgba(127,134,224,.6);outline-offset:2px}
 small{display:block;margin-top:24px;color:#5f6268;font-size:11.5px}

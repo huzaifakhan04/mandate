@@ -47,7 +47,7 @@ h1{font-size:18px;font-weight:560;letter-spacing:-.01em;margin:8px 0 0}
 p{color:#8b8d93}
 strong{color:#f5f5f4;font-weight:500}
 code{font:12.5px ui-monospace,SFMono-Regular,Menlo,monospace;color:#c8c9cc}
-button{margin-top:8px;height:34px;padding:0 14px;border:0;border-radius:6px;background:#7f86e0;color:#ffffff;font:500 13px/1 inherit;cursor:pointer}
+button{margin-top:8px;height:34px;padding:0 14px;border:0;border-radius:6px;background:#5b62c9;color:#ffffff;font:500 13px/1 inherit;cursor:pointer}
 button:hover{background:#8d93e6}
 button:focus-visible,a:focus-visible{outline:2px solid rgba(127,134,224,.6);outline-offset:2px}
 a{display:inline-block;margin-top:16px;color:#c8c9cc;font-size:13px;text-underline-offset:3px;text-decoration-color:rgba(255,255,255,.18)}

@@ -337,6 +337,8 @@
   .owner .dh { position: static; }
 }
 @media (max-width: 900px) {
+  .owner .shell-head .grow { display: none; }
+  .owner .shell-head .bell { margin-left: auto; }
   .owner { grid-template-rows: auto minmax(0, 1fr); }
   .owner.has-drawer .shell-body { padding-right: 12px; }
   .owner .drawer { margin: 0 12px 24px; }
