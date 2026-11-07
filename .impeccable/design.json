@@ -1,0 +1,656 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-11-07T22:58:36+00:00",
+  "title": "Design System: Mandate",
+  "extensions": {
+    "colorMeta": {
+      "acc": {
+        "role": "primary",
+        "displayName": "Quiet Indigo",
+        "canonical": "#7f86e0",
+        "tonalRamp": [
+          "#171935",
+          "#23275c",
+          "#2d3386",
+          "#343fc0",
+          "#5e66d4",
+          "#9398dc",
+          "#c4c6e9",
+          "#edeef7"
+        ]
+      },
+      "acc-fill": {
+        "role": "primary",
+        "displayName": "Deep Indigo Fill",
+        "canonical": "#5b62c9",
+        "tonalRamp": [
+          "#1a1b33",
+          "#282b57",
+          "#34397e",
+          "#4148b4",
+          "#686eca",
+          "#999dd6",
+          "#c7c9e5",
+          "#eeeff6"
+        ]
+      },
+      "acc-fill-hover": {
+        "role": "primary",
+        "displayName": "Deep Indigo Fill Hover",
+        "canonical": "#4f56bd",
+        "tonalRamp": [
+          "#191b33",
+          "#272a59",
+          "#323781",
+          "#3d45b8",
+          "#656bcd",
+          "#979bd8",
+          "#c6c8e6",
+          "#eeeef7"
+        ]
+      },
+      "acc-ink": {
+        "role": "primary",
+        "displayName": "Indigo Ink",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "#5f6268",
+          "#7a7d84",
+          "#8b8d93",
+          "#a9abb0",
+          "#c8c9cc",
+          "#dedfe0",
+          "#ebebea",
+          "#f5f5f4"
+        ]
+      },
+      "acc-soft": {
+        "role": "primary",
+        "displayName": "Indigo Wash",
+        "canonical": "rgba(127, 134, 224, 0.14)",
+        "tonalRamp": [
+          "#171935",
+          "#23275c",
+          "#2d3386",
+          "#343fc0",
+          "#5e66d4",
+          "#9398dc",
+          "#c4c6e9",
+          "#edeef7"
+        ]
+      },
+      "focus": {
+        "role": "primary",
+        "displayName": "Focus Ring",
+        "canonical": "rgba(127, 134, 224, 0.6)",
+        "tonalRamp": [
+          "#171935",
+          "#23275c",
+          "#2d3386",
+          "#343fc0",
+          "#5e66d4",
+          "#9398dc",
+          "#c4c6e9",
+          "#edeef7"
+        ]
+      },
+      "in": {
+        "role": "status",
+        "displayName": "Money-In Green",
+        "canonical": "#5cb88a",
+        "tonalRamp": [
+          "#1d3026",
+          "#2d5240",
+          "#3c7659",
+          "#4da77a",
+          "#73bf99",
+          "#a0cfb8",
+          "#cae2d6",
+          "#eff5f2"
+        ]
+      },
+      "risk-c": {
+        "role": "status",
+        "displayName": "Risk Red",
+        "canonical": "#e5675e",
+        "tonalRamp": [
+          "#381715",
+          "#61231e",
+          "#8e2b24",
+          "#cd3328",
+          "#df5c53",
+          "#e3928c",
+          "#ecc3c0",
+          "#f8edec"
+        ]
+      },
+      "warn": {
+        "role": "status",
+        "displayName": "Late Amber",
+        "canonical": "#d6a24a",
+        "tonalRamp": [
+          "#362a17",
+          "#5d4722",
+          "#87652b",
+          "#c38d32",
+          "#d6a95c",
+          "#dec191",
+          "#e9dbc3",
+          "#f7f4ed"
+        ]
+      },
+      "sim": {
+        "role": "status",
+        "displayName": "Simulated Lilac",
+        "canonical": "#a59bd9",
+        "tonalRamp": [
+          "#1f1b31",
+          "#322b55",
+          "#43387a",
+          "#5747ae",
+          "#7b6dc5",
+          "#a59cd3",
+          "#cdc9e4",
+          "#f0eff6"
+        ]
+      },
+      "in-soft": {
+        "role": "status",
+        "displayName": "Money-In Wash",
+        "canonical": "rgba(92, 184, 138, 0.12)",
+        "tonalRamp": [
+          "#1d3026",
+          "#2d5240",
+          "#3c7659",
+          "#4da77a",
+          "#73bf99",
+          "#a0cfb8",
+          "#cae2d6",
+          "#eff5f2"
+        ]
+      },
+      "risk-c-soft": {
+        "role": "status",
+        "displayName": "Risk Wash",
+        "canonical": "rgba(229, 103, 94, 0.12)",
+        "tonalRamp": [
+          "#381715",
+          "#61231e",
+          "#8e2b24",
+          "#cd3328",
+          "#df5c53",
+          "#e3928c",
+          "#ecc3c0",
+          "#f8edec"
+        ]
+      },
+      "warn-soft": {
+        "role": "status",
+        "displayName": "Late Wash",
+        "canonical": "rgba(214, 162, 74, 0.12)",
+        "tonalRamp": [
+          "#362a17",
+          "#5d4722",
+          "#87652b",
+          "#c38d32",
+          "#d6a95c",
+          "#dec191",
+          "#e9dbc3",
+          "#f7f4ed"
+        ]
+      },
+      "sim-soft": {
+        "role": "status",
+        "displayName": "Simulated Wash",
+        "canonical": "rgba(165, 155, 217, 0.1)",
+        "tonalRamp": [
+          "#1f1b31",
+          "#322b55",
+          "#43387a",
+          "#5747ae",
+          "#7b6dc5",
+          "#a59cd3",
+          "#cdc9e4",
+          "#f0eff6"
+        ]
+      },
+      "bg": {
+        "role": "neutral",
+        "displayName": "Ground",
+        "canonical": "#08090a",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "panel": {
+        "role": "neutral",
+        "displayName": "Panel",
+        "canonical": "#0e0f10",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "raised": {
+        "role": "neutral",
+        "displayName": "Raised",
+        "canonical": "#151617",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "hover": {
+        "role": "neutral",
+        "displayName": "Hover",
+        "canonical": "#1b1c1e",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "press": {
+        "role": "neutral",
+        "displayName": "Press",
+        "canonical": "#222326",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "line": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "rgba(255, 255, 255, 0.065)",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "line-2": {
+        "role": "neutral",
+        "displayName": "Control Hairline",
+        "canonical": "rgba(255, 255, 255, 0.11)",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "line-3": {
+        "role": "neutral",
+        "displayName": "Hover Hairline",
+        "canonical": "rgba(255, 255, 255, 0.18)",
+        "tonalRamp": [
+          "#08090a",
+          "#0e0f10",
+          "#151617",
+          "#1b1c1e",
+          "#222326",
+          "#2c2d30",
+          "#333438",
+          "#f5f5f4"
+        ]
+      },
+      "t1": {
+        "role": "neutral",
+        "displayName": "Primary Text",
+        "canonical": "#f5f5f4",
+        "tonalRamp": [
+          "#5f6268",
+          "#7a7d84",
+          "#8b8d93",
+          "#a9abb0",
+          "#c8c9cc",
+          "#dedfe0",
+          "#ebebea",
+          "#f5f5f4"
+        ]
+      },
+      "t2": {
+        "role": "neutral",
+        "displayName": "Secondary Text",
+        "canonical": "#c8c9cc",
+        "tonalRamp": [
+          "#5f6268",
+          "#7a7d84",
+          "#8b8d93",
+          "#a9abb0",
+          "#c8c9cc",
+          "#dedfe0",
+          "#ebebea",
+          "#f5f5f4"
+        ]
+      },
+      "t3": {
+        "role": "neutral",
+        "displayName": "Label Text",
+        "canonical": "#8b8d93",
+        "tonalRamp": [
+          "#5f6268",
+          "#7a7d84",
+          "#8b8d93",
+          "#a9abb0",
+          "#c8c9cc",
+          "#dedfe0",
+          "#ebebea",
+          "#f5f5f4"
+        ]
+      },
+      "t4": {
+        "role": "neutral",
+        "displayName": "Faint Text",
+        "canonical": "#7a7d84",
+        "tonalRamp": [
+          "#5f6268",
+          "#7a7d84",
+          "#8b8d93",
+          "#a9abb0",
+          "#c8c9cc",
+          "#dedfe0",
+          "#ebebea",
+          "#f5f5f4"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "Landing headline only (28px mobile, 36px desktop)."
+      },
+      "figure": {
+        "displayName": "Figure",
+        "purpose": "The single headline Cash figure on the console; tabular."
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "Page h1, drawer heading, auth heading (17 to 20px)."
+      },
+      "section": {
+        "displayName": "Section",
+        "purpose": "Section heads (13 to 15px)."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Rows, nav, inputs; dense copy at 12.5px."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Column headers, field labels, hints, legal; sentence case in t3/t4."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Times, journal IDs, PayPal operations, account codes."
+      }
+    },
+    "shadows": [
+      {
+        "name": "none",
+        "value": "none",
+        "purpose": "No elevation shadows anywhere. The only box-shadow is the inset 1.5px ring that draws the hollow .ui-st.ring dot."
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease",
+        "value": "cubic-bezier(0.2, 0, 0, 1)",
+        "purpose": "The single easing curve for every transition."
+      },
+      {
+        "name": "state",
+        "value": "150ms",
+        "purpose": "Hover background and border changes, disclosure chevrons."
+      },
+      {
+        "name": "settle",
+        "value": "300ms",
+        "purpose": "Signature: a new movement's amount fades up from 70% below inside its clipped cell."
+      },
+      {
+        "name": "settle-fade",
+        "value": "1200ms",
+        "purpose": "The arriving row's hover tint holds 1.2s, then fades back over 1.2s."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "0.01ms",
+        "purpose": "prefers-reduced-motion collapses all animation and transition durations."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "kpi-stack",
+        "value": "1280px"
+      },
+      {
+        "name": "drawer-inline",
+        "value": "1100px"
+      },
+      {
+        "name": "shell-collapse",
+        "value": "900px"
+      },
+      {
+        "name": "row-reflow",
+        "value": "720px"
+      },
+      {
+        "name": "compact",
+        "value": "640px"
+      }
+    ],
+    "contrast": [
+      {
+        "pair": "t4 on bg",
+        "ratio": "4.83:1"
+      },
+      {
+        "pair": "t4 on panel",
+        "ratio": "4.65:1"
+      },
+      {
+        "pair": "t4 on raised",
+        "ratio": "4.40:1 (below floor; avoid)"
+      },
+      {
+        "pair": "white on acc-fill",
+        "ratio": "5.20:1"
+      },
+      {
+        "pair": "white on acc-fill-hover",
+        "ratio": "6.18:1"
+      },
+      {
+        "pair": "white on acc",
+        "ratio": "3.29:1 (never)"
+      },
+      {
+        "pair": "t3 on bg",
+        "ratio": "6.01:1"
+      },
+      {
+        "pair": "acc on bg",
+        "ratio": "6.06:1"
+      }
+    ],
+    "thirdParty": {
+      "agGrid": "themeQuartz + colorSchemeDark with literal token values (accent #7f86e0, ground #08090a, text #c8c9cc, header #0e0f10/#8b8d93, borders 6.5% white, hover #151617, indigo selection wash), 34px rows, 32px headers, radius 6/4, no column borders.",
+      "bryntum": "src/app/_bryntum/theme.css remaps the Svalbard dark neutral ramp onto panel..press, primary to acc, Geist, radius r2/r3, elevations none; loan bands are flat state tints with state words."
+    }
+  },
+  "components": [
+    {
+      "name": "Button",
+      "kind": "button",
+      "refersTo": "button",
+      "description": "The default neutral action: raised fill, control hairline.",
+      "html": "<button class=\"ds-btn\">Export</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:28px;padding:0 10px;border-radius:var(--r2,6px);font:500 12.5px/1 var(--font-geist-sans),Geist,system-ui,sans-serif;color:var(--t1,#f5f5f4);background:var(--raised,#151617);border:1px solid var(--line-2,rgba(255,255,255,.11));cursor:pointer;transition:background .15s cubic-bezier(.2,0,0,1),border-color .15s cubic-bezier(.2,0,0,1)}.ds-btn:hover{background:var(--hover,#1b1c1e);border-color:var(--line-3,rgba(255,255,255,.18))}.ds-btn:focus-visible{outline:2px solid var(--focus,rgba(127,134,224,.6));outline-offset:2px}.ds-btn:disabled{opacity:.45;cursor:not-allowed}"
+    },
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one filled action per view: deep indigo with white text (about 5.2:1).",
+      "html": "<button class=\"ds-btn-primary\">Watch the bank live <svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M3 8h10M9 4l4 4-4 4\"/></svg></button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:34px;padding:0 14px;border-radius:var(--r2,6px);font:500 13px/1 var(--font-geist-sans),Geist,system-ui,sans-serif;color:var(--acc-ink,#fff);background:var(--acc-fill,#5b62c9);border:1px solid transparent;cursor:pointer;transition:background .15s cubic-bezier(.2,0,0,1)}.ds-btn-primary:hover{background:var(--acc-fill-hover,#4f56bd)}.ds-btn-primary:focus-visible{outline:2px solid var(--focus,rgba(127,134,224,.6));outline-offset:2px}"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "Tertiary action with no chrome until hover.",
+      "html": "<button class=\"ds-btn-ghost\">Cancel</button>",
+      "css": ".ds-btn-ghost{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:var(--r2,6px);font:500 12.5px/1 var(--font-geist-sans),Geist,system-ui,sans-serif;color:var(--t2,#c8c9cc);background:transparent;border:1px solid transparent;cursor:pointer;transition:background .15s cubic-bezier(.2,0,0,1)}.ds-btn-ghost:hover{background:var(--hover,#1b1c1e);color:var(--t1,#f5f5f4)}.ds-btn-ghost:focus-visible{outline:2px solid var(--focus,rgba(127,134,224,.6));outline-offset:2px}"
+    },
+    {
+      "name": "Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "30px field on panel; focus shifts the border to indigo, no glow.",
+      "html": "<input class=\"ds-input\" placeholder=\"Filter rows\">",
+      "css": ".ds-input{box-sizing:border-box;height:30px;padding:0 10px;border-radius:var(--r2,6px);background:var(--panel,#0e0f10);border:1px solid var(--line-2,rgba(255,255,255,.11));color:var(--t1,#f5f5f4);font:400 13px/1 var(--font-geist-sans),Geist,system-ui,sans-serif;caret-color:var(--acc,#7f86e0)}.ds-input::placeholder{color:var(--t4,#7a7d84)}.ds-input:focus{outline:none;border-color:var(--acc,#7f86e0)}.ds-input[aria-invalid=true]{border-color:var(--risk-c,#e5675e)}"
+    },
+    {
+      "name": "Status",
+      "kind": "chip",
+      "refersTo": "status",
+      "description": "A 7px dot plus a plain label; never a filled pill.",
+      "html": "<span class=\"ds-st ds-st-in\">Succeeded</span> <span class=\"ds-st ds-st-warn\">Late</span> <span class=\"ds-st ds-st-risk\">Failed</span> <span class=\"ds-st ds-st-sim\">Simulated</span>",
+      "css": ".ds-st{display:inline-flex;align-items:center;gap:6px;margin-right:12px;color:var(--t2,#c8c9cc);font:400 12px/1.4 var(--font-geist-sans),Geist,system-ui,sans-serif;white-space:nowrap}.ds-st::before{content:\"\";width:7px;height:7px;border-radius:50%;background:var(--t4,#7a7d84)}.ds-st-in::before{background:var(--in,#5cb88a)}.ds-st-warn::before{background:var(--warn,#d6a24a)}.ds-st-risk::before{background:var(--risk-c,#e5675e)}.ds-st-sim::before{background:var(--sim,#a59bd9)}"
+    },
+    {
+      "name": "Tag",
+      "kind": "chip",
+      "refersTo": "tag",
+      "description": "18px label chip; the simulated variant marks demo money.",
+      "html": "<span class=\"ds-tag\">sandbox</span> <span class=\"ds-tag ds-tag-sim\">Demo world · simulated money</span>",
+      "css": ".ds-tag{display:inline-flex;align-items:center;height:18px;padding:0 6px;border-radius:var(--r1,4px);background:rgba(255,255,255,.06);color:var(--t2,#c8c9cc);font:500 11px/1 var(--font-geist-sans),Geist,system-ui,sans-serif;white-space:nowrap}.ds-tag-sim{background:var(--sim-soft,rgba(165,155,217,.1));color:var(--sim,#a59bd9)}"
+    },
+    {
+      "name": "Sidebar Nav",
+      "kind": "nav",
+      "refersTo": "nav-item",
+      "description": "30px sidebar rows with drawn icons and tabular counts; current page on press.",
+      "html": "<nav class=\"ds-nav\"><a href=\"#\" aria-current=\"page\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 6h11M6 6v7.5\"/></svg>Console</a><a href=\"#\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><rect x=\"2.5\" y=\"2.5\" width=\"11\" height=\"11\" rx=\"1.5\"/><path d=\"M2.5 6.5h11M6.5 6.5v7\"/></svg>Ledger<span class=\"ds-count\">9</span></a></nav>",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:1px;width:204px;padding:12px 10px;background:var(--panel,#0e0f10);font-family:var(--font-geist-sans),Geist,system-ui,sans-serif}.ds-nav a{display:flex;align-items:center;gap:10px;height:30px;padding:0 8px;border-radius:var(--r2,6px);color:var(--t2,#c8c9cc);font-size:13px;text-decoration:none}.ds-nav a svg{color:var(--t3,#8b8d93);flex:none}.ds-nav a:hover{background:var(--hover,#1b1c1e);color:var(--t1,#f5f5f4)}.ds-nav a[aria-current=page]{background:var(--press,#222326);color:var(--t1,#f5f5f4)}.ds-nav a:focus-visible{outline:2px solid var(--focus,rgba(127,134,224,.6));outline-offset:-2px}.ds-count{margin-left:auto;color:var(--t4,#7a7d84);font-size:11.5px;font-variant-numeric:tabular-nums}"
+    },
+    {
+      "name": "Money Movement Row",
+      "kind": "custom",
+      "refersTo": "movement-row",
+      "description": "Signature: a hairline ledger row whose amount settles in place once when it arrives (300ms).",
+      "html": "<div class=\"ds-mv\"><span class=\"ds-tm\">22:28:13</span><span class=\"ds-gl\"><svg width=\"12\" height=\"12\" viewBox=\"0 0 16 16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M11.5 4.5l-7 7M4.5 6.5v5h5\"/></svg></span><span class=\"ds-ev\">Lender bought notes <span>· sim rail</span></span><span class=\"ds-op\">order.capture <b>201</b> succeeded</span><span class=\"ds-amt\"><span class=\"ds-amt-v\">+$100.00</span></span></div>",
+      "css": ".ds-mv{display:grid;grid-template-columns:72px 20px minmax(0,1fr) minmax(0,220px) 96px;align-items:center;gap:0 12px;min-height:38px;padding:0 8px;border-bottom:1px solid var(--line,rgba(255,255,255,.065));font:400 13px/1.45 var(--font-geist-sans),Geist,system-ui,sans-serif;color:var(--t2,#c8c9cc);background:var(--hover,#1b1c1e);animation:ds-bg 1.2s 1.2s cubic-bezier(.2,0,0,1) forwards}.ds-mv:hover{background:var(--panel,#0e0f10)}.ds-tm{font-family:var(--font-geist-mono),'Geist Mono',ui-monospace,monospace;font-size:12px;color:var(--t3,#8b8d93);font-variant-numeric:tabular-nums}.ds-gl{display:grid;place-items:center;width:20px;height:20px;border-radius:50%;border:1px solid var(--line-2,rgba(255,255,255,.11));color:var(--in,#5cb88a)}.ds-ev{color:var(--t1,#f5f5f4);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-ev span{color:var(--t3,#8b8d93)}.ds-op{font-family:var(--font-geist-mono),'Geist Mono',ui-monospace,monospace;font-size:11.5px;color:var(--t3,#8b8d93);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.ds-op b{font-weight:400;color:var(--t2,#c8c9cc)}.ds-amt{display:block;overflow:hidden;text-align:right;font-weight:500;color:var(--in,#5cb88a);font-variant-numeric:tabular-nums}.ds-amt-v{display:inline-block;animation:ds-settle .3s cubic-bezier(.2,0,0,1) both}@keyframes ds-settle{from{transform:translateY(70%);opacity:0}to{transform:none;opacity:1}}@keyframes ds-bg{to{background:transparent}}@media (prefers-reduced-motion:reduce){.ds-amt-v,.ds-mv{animation:none}.ds-mv{background:transparent}}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Live Ledger",
+    "overview": "**Creative North Star: \"The Live Ledger\"**\n\nMandate reads like a ledger that is running while you watch. One headline figure, then a fused timeline of money movements, each row carrying the PayPal call behind it. Everything else steps back: a warm near-black ground, hairlines instead of boxes, small dense type, and colour held in reserve for meaning. The app is dark only (`color-scheme: dark`); there is no light theme.\n\nDensity is deliberate and operator-grade: 13px body, 28 to 38px rows, 12px labels. Structure comes from spacing and 1px white-alpha hairlines; there are no cards, no shadows, no gradients, no blur. The one motion that matters is the signature move: a new money movement settles into place once, then the ledger is still again.\n\nThe build diverges from its direction contract in one place: the contract named `#5f6268` for the faintest text, which measured about 3.3:1 on the ground. The shipped `--t4` is `#7a7d84` (about 4.8:1). The build wins.",
+    "keyCharacteristics": [
+      "Dark only, warm near-black surface ramp in five steps.",
+      "Hairline structure at 6.5, 11 and 18% white; no cards, no elevation.",
+      "One quiet indigo for action, focus and selection; status colours only for meaning, always beside a word.",
+      "Geist and Geist Mono, weights 400, 500 and 560, never above 600; tabular numbers on every figure.",
+      "Radius 4, 6, 8 and nothing larger inside the app.",
+      "Signature move: new movement rows settle in place (300ms, reduced-motion safe)."
+    ],
+    "rules": [
+      {
+        "name": "The Meaning-Only Rule",
+        "body": "Green, red, amber and lilac appear only when they mean money in, risk, late or simulated, and always next to a word that says the same thing. Decoration never gets a status hue.",
+        "section": "colors"
+      },
+      {
+        "name": "The Two Indigos Rule",
+        "body": "`acc` draws lines and marks; `acc-fill` carries white text. Never put white text on `acc`.",
+        "section": "colors"
+      },
+      {
+        "name": "The Faint Floor Rule",
+        "body": "`t4` clears about 4.8:1 on `bg` and about 4.65:1 on `panel`, but only about 4.4:1 on `raised`. Put `t4` text on `bg` or `panel` only; on `raised` and above, step up to `t3`.",
+        "section": "colors"
+      },
+      {
+        "name": "The 560 Ceiling Rule",
+        "body": "The weights are 400, 500 and 560. Nothing ships above 600; emphasis comes from colour step (`t3`→`t1`) before weight.",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule",
+        "body": "Every number that can change or be compared uses `font-variant-numeric: tabular-nums` (`.num`, grid money columns, counts, `dd` values, the affix input) and is right-aligned in columns.",
+        "section": "typography"
+      },
+      {
+        "name": "The Shell Collapse Rule",
+        "body": "Below 900px the sidebar becomes a top bar: one column, the nav wraps into a horizontal row (28px items), section labels and the sidebar footer hide, the header loses its sticky position and wraps, and body padding drops to 16px 12px 32px.",
+        "section": "layout"
+      },
+      {
+        "name": "The Hairline-Not-Shadow Rule",
+        "body": "If something needs separating, use a 1px `line` and spacing. If it needs to feel on top, step the surface one tone up.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** use the short tokens (`--bg`, `--t1`…`--t4`, `--acc`, `--in`…); treat the legacy aliases as compatibility only.",
+      "**Do** separate with 1px `line` hairlines and spacing; step a surface tone up when something must sit on top.",
+      "**Do** pair every status colour with a word, using the `.ui-st` dot-and-label grammar.",
+      "**Do** set every comparable number in tabular figures, right-aligned, and every machine identifier in Geist Mono.",
+      "**Do** use `acc-fill` (white text, about 5.2:1) for filled primary actions and `acc` for focus borders, carets and marks.",
+      "**Do** draw icons from the 16px, 1.5px-stroke set and keep the logo flat in `currentColor` inside the app.",
+      "**Do** keep the signature settle to one 300ms move per arriving row, and honour reduced motion."
+    ],
+    "donts": [
+      "**Don't** add box-shadows for elevation, gradients, or backdrop blur, including inside AG Grid and Bryntum.",
+      "**Don't** colour money out red or use a status hue for decoration.",
+      "**Don't** put white text on `acc`, or `t4` text on `raised` or lighter.",
+      "**Don't** set type above weight 600, or use uppercase letterspaced labels.",
+      "**Don't** use filled status pills, cards around list content, or radii above 8px inside the app.",
+      "**Don't** use unicode glyphs (✓ ✕ →) or emoji as icons.",
+      "**Don't** use the logo tile variant inside the app."
+    ]
+  }
+}

@@ -13,7 +13,7 @@ Approved mockup: https://claude.ai/artifact/SB7RrAn3JR4U9mHj6dEjxx (scratchpad d
 
 ## Direction contract
 THESIS: The console is a live ledger: one headline figure and one fused timeline of money movements, each row carrying its PayPal call. Refuses the equal-weight KPI wall and card-soup dashboard.
-OWN-WORLD: Warm near-black ramp (#08090a/#0e0f10/#151617), hairlines at 6.5–18% white, text #f5f5f4/#c8c9cc/#8b8d93/#5f6268, quiet indigo #7f86e0 for primary/focus/selection, muted green only for money in, red risk, amber late, lilac simulated. Geist, weights ≤600, tabular numbers, mono IDs; radius 4/6/8; status as glyph + label; no shadows, gradients, blur.
+OWN-WORLD: Warm near-black ramp (#08090a/#0e0f10/#151617), hairlines at 6.5–18% white, text #f5f5f4/#c8c9cc/#8b8d93/#7a7d84, quiet indigo #7f86e0 for primary/focus/selection, muted green only for money in, red risk, amber late, lilac simulated. Geist, weights ≤600, tabular numbers, mono IDs; radius 4/6/8; status as glyph + label; no shadows, gradients, blur.
 STORY: A judge sees cash, sees money moving over PayPal row by row, sees the ledger balance, and understands agents run the bank inside human-signed limits.
 FIRST VIEWPORT: 224px sidebar (mark, world switcher, nav with counts, developer links) + 44px header (clock, live, +1/+7 for private worlds). Main: Cash figure with 23-day line beside four secondary figures; definition line of the rest; treasury memo line; flow strip; Money movements timeline as the dominant area.
 FORM: Direction A "Live ledger", user-pinned over the roll (structure #1 of the user-approved three). seed:f462de50144eb966

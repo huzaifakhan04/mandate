@@ -30,7 +30,7 @@
   --acc: #7f86e0;
   /* filled primary: deeper indigo so white text clears 4.5:1 */
   --acc-fill: #5b62c9;
-  --acc-fill-hover: #666dd1;
+  --acc-fill-hover: #4f56bd;
   --acc-ink: #ffffff;
   --acc-soft: rgba(127, 134, 224, 0.14);
   --focus: rgba(127, 134, 224, 0.6);
