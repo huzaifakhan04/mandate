@@ -63,7 +63,7 @@ export interface FinalizeCtx {
 export interface RateLimitCtx<Input = unknown> {
   input: Input;
   agentId: string | null;
-  /** The caller's IP (first `x-forwarded-for` hop), or `null` off-HTTP (tests, internal callers). */
+  /** The caller's IP (trusted proxy header, see `clientIpFromHeaders`), or `null` off-HTTP (tests, internal callers). */
   clientIp: string | null;
   simNow: Date;
   worldId: string;

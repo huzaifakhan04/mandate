@@ -19,6 +19,7 @@ import type { Db } from "@/server/db/client";
 import { agents, principals, worlds } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { clientKey, createTokenBucket } from "@/server/http/rateLimit";
+import { clientIp } from "@/server/services/mandates";
 import { dailyMovements } from "@/server/ledger/consoleLedger";
 import { getSimDay } from "@/server/clock/clock";
 import {
@@ -315,6 +316,32 @@ describe("console helpers (P6)", () => {
     expect(clientKey(new Request("https://x.test", { headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8" } }))).toBe("1.2.3.4");
     expect(clientKey(new Request("https://x.test", { headers: { "x-real-ip": "9.9.9.9" } }))).toBe("9.9.9.9");
     expect(clientKey(new Request("https://x.test"))).toBe("unknown");
+  });
+
+  describe("client key on Render (behind Cloudflare)", () => {
+    beforeEach(() => vi.stubEnv("RENDER", "true"));
+    afterEach(() => vi.unstubAllEnvs());
+
+    // Shapes observed live on Render: Cloudflare overwrites cf-connecting-ip /
+    // true-client-ip, but a client-supplied x-forwarded-for value is kept as
+    // the first hop ("<spoof>,<client>, <cloudflare edge>").
+    it("keys on cf-connecting-ip, ignoring a spoofed first x-forwarded-for hop", () => {
+      const headers = { "x-forwarded-for": "1.2.3.4,119.73.124.55, 104.22.232.151", "cf-connecting-ip": "119.73.124.55" };
+      expect(clientKey(new Request("https://x.test", { headers }))).toBe("119.73.124.55");
+      expect(clientIp(new Request("https://x.test", { headers }))).toBe("119.73.124.55");
+    });
+
+    it("falls back to true-client-ip, then unknown — never x-forwarded-for", () => {
+      expect(clientKey(new Request("https://x.test", { headers: { "true-client-ip": "8.8.8.8" } }))).toBe("8.8.8.8");
+      expect(clientKey(new Request("https://x.test", { headers: { "x-forwarded-for": "1.2.3.4" } }))).toBe("unknown");
+      expect(clientIp(new Request("https://x.test", { headers: { "x-forwarded-for": "1.2.3.4" } }))).toBeNull();
+    });
+  });
+
+  it("client key off Render ignores cf-connecting-ip (a client could send it)", () => {
+    const headers = { "x-forwarded-for": "1.2.3.4", "cf-connecting-ip": "6.6.6.6" };
+    expect(clientKey(new Request("https://x.test", { headers }))).toBe("1.2.3.4");
+    expect(clientIp(new Request("https://x.test", { headers }))).toBe("1.2.3.4");
   });
 
   it("scrubs emails, truncates PayPal ids, reads amounts without leaking bodies", () => {

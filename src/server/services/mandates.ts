@@ -10,6 +10,7 @@ import { agents, events, loans, mandates, noteSeries } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { TIER_MAX_PER_LOAN_CENTS, isCurrentMandate, type KyaTier } from "../domain/kya";
 import { DELINQUENT_LOAN_DB_STATUSES, isOwingStatus, OPEN_LOAN_DB_STATUSES } from "../domain/loanMachine";
+import { clientIpFromHeaders } from "../http/rateLimit";
 import {
   agreementTextHash,
   checkMandate,
@@ -230,11 +231,9 @@ export function hashIp(ip: string | null): string {
     .digest("hex");
 }
 
-/** The client IP from the proxy headers (Vercel sets `x-forwarded-for`), or `null`. */
+/** The client IP from the hosting proxy's trusted headers (see `clientIpFromHeaders`), or `null`. */
 export function clientIp(request: Request): string | null {
-  const forwarded = request.headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  return first || request.headers.get("x-real-ip")?.trim() || null;
+  return clientIpFromHeaders(request.headers);
 }
 
 async function appendMandateEvent(

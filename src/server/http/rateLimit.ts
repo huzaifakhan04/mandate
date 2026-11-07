@@ -64,18 +64,32 @@ export function createTokenBucket({ capacity, refillPerSecond, maxKeys = 10_000 
   };
 }
 
-/** The client key for rate limiting: the first `x-forwarded-for` hop, else `x-real-ip`, else `unknown`. */
+/**
+ * The caller's IP from the hosting proxy's headers, or `null`. Which header
+ * is trustworthy depends on the host:
+ * - Render (`RENDER` set) sits behind Cloudflare, which overwrites
+ *   `cf-connecting-ip` / `true-client-ip` with the real client IP — but it
+ *   keeps a client-supplied `x-forwarded-for` as the first hop, so that
+ *   header is spoofable there and never read.
+ * - Vercel (and local dev): the edge overwrites `x-forwarded-for`, so its
+ *   first hop is the client; `cf-*` headers are not trusted (a client could
+ *   send them).
+ */
+export function clientIpFromHeaders(headers: Headers): string | null {
+  if (process.env.RENDER) {
+    const ip = headers.get("cf-connecting-ip")?.trim() || headers.get("true-client-ip")?.trim();
+    return ip ? ip.slice(0, 64) : null;
+  }
+  const first = headers.get("x-forwarded-for")?.split(",")[0]?.trim() || headers.get("x-real-ip")?.trim();
+  return first ? first.slice(0, 64) : null;
+}
+
+/** The client key for rate limiting: the trusted client IP (`clientIpFromHeaders`), else `unknown`. */
 export function clientKey(request: Request): string {
   return clientKeyFromHeaders(request.headers);
 }
 
 /** `clientKey` from bare headers (the MCP route only has the request's headers per tool call). */
 export function clientKeyFromHeaders(headers: Headers): string {
-  // Trusting the first x-forwarded-for hop is safe on Vercel: its edge overwrites the header with the real client IP.
-  const forwarded = headers.get("x-forwarded-for");
-  const first = forwarded?.split(",")[0]?.trim();
-  if (first) {
-    return first.slice(0, 64);
-  }
-  return headers.get("x-real-ip")?.trim().slice(0, 64) || "unknown";
+  return clientIpFromHeaders(headers) ?? "unknown";
 }
