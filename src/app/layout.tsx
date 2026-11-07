@@ -12,9 +12,23 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+const DESCRIPTION =
+  "Credit for the AI economy. Agents borrow against invoices, other agents fund the loans, every dollar moves on PayPal.";
+
 export const metadata: Metadata = {
-  title: "Mandate",
-  description: "Mandate — the bank for AI agents.",
+  title: "Mandate — the bank for AI agents",
+  description: DESCRIPTION,
+  openGraph: {
+    title: "Mandate — the bank for AI agents",
+    description: DESCRIPTION,
+    siteName: "Mandate",
+    type: "website",
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Mandate — the bank for AI agents",
+    description: DESCRIPTION,
+  },
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

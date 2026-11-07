@@ -1,11 +1,13 @@
 import Link from "next/link";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
 import { SPONSOR_LINKS } from "@/server/sponsors/links";
 
 export default function Home() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center bg-background">
       <main className="flex flex-col items-center gap-4 text-center">
+        <MandateMark size={56} variant="tile" className="rounded-2xl" />
         <h1 className="text-4xl font-semibold tracking-tight text-ink">
           Mandate
         </h1>

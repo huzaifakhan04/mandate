@@ -1,5 +1,6 @@
 import { after, connection } from "next/server";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
 import { getDb } from "@/server/db/client";
 import { type CheckoutPageCopy, settleOnReturn } from "@/server/services/checkoutReturn";
 
@@ -34,7 +35,10 @@ export function CheckoutResultView({ copy, children }: { copy: CheckoutPageCopy;
         data-kind={copy.kind}
         data-result={copy.result}
       >
-        <p className="text-sm font-semibold tracking-tight text-ink/60">Mandate</p>
+        <p className="flex items-center justify-center gap-1.5 text-sm font-semibold tracking-tight text-ink/60">
+          <MandateMark size={16} variant="flat" />
+          Mandate
+        </p>
         <div
           aria-hidden="true"
           className={`mx-auto mt-6 flex h-12 w-12 items-center justify-center rounded-full ${

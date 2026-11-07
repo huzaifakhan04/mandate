@@ -1,5 +1,6 @@
 import Link from "next/link";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
 import { getDb } from "@/server/db/client";
 import { maskPayoutEmail } from "@/server/services/agents";
 import { listOwnedPrivateWorlds } from "@/server/services/privateWorldAccess";
@@ -45,7 +46,7 @@ export async function TopBar({
   return (
     <header className="top">
       <Link className="brand" href="/dashboard" aria-label="Mandate — your agents">
-        <i aria-hidden="true">M</i>Mandate
+        <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate
       </Link>
       <nav className="nav" aria-label="Dashboard">
         <Link href={selected ? `/dashboard?world=${selected}` : "/dashboard"} aria-current={current === "agents" ? "page" : undefined}>
@@ -120,7 +121,7 @@ export function LoadingFrame() {
     <DashFrame>
       <header className="top">
         <span className="brand">
-          <i aria-hidden="true">M</i>Mandate
+          <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate
         </span>
       </header>
       <main className="page" aria-busy="true">

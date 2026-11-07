@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
 import type { ConsoleSnapshot, ConsoleWorldChoice } from "@/server/services/console";
 
 import { MoneyFlow } from "./flow";
@@ -211,7 +212,7 @@ export function ConsoleApp({
       </a>
       <header className="top">
         <Link className="brand" href="/" aria-label="Mandate home">
-          <i aria-hidden="true">M</i>Mandate <em>· Mission control</em>
+          <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate <em>· Mission control</em>
         </Link>
         <div className="worldsw" data-testid="console-world-switcher">
           {choices.length > 1 ? (

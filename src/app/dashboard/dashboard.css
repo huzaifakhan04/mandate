@@ -26,7 +26,7 @@
 .dash .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 28px; height: 60px; padding: 0 24px; background: rgba(255, 255, 255, .92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); }
 .dash .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 17px; letter-spacing: -.01em; color: var(--ink); }
 .dash .brand:hover { text-decoration: none; }
-.dash .brand i { width: 26px; height: 26px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; font-style: normal; font-size: 14px; }
+.dash .brand i { display: grid; place-items: center; font-style: normal; line-height: 0; }
 .dash .nav { display: flex; gap: 4px; }
 .dash .nav a { color: var(--muted); padding: 6px 12px; border-radius: 8px; font-weight: 500; }
 .dash .nav a[aria-current="page"] { color: var(--ink); background: var(--surface); }
