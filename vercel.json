@@ -1,6 +1,0 @@
-{
-  "crons": [
-    { "path": "/api/cron/reconcile", "schedule": "* * * * *" },
-    { "path": "/api/cron/tick", "schedule": "* * * * *" }
-  ]
-}
