@@ -35,7 +35,14 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
     notFound();
   }
   const [snapshot, choices] = await Promise.all([cachedConsoleSnapshot(db, world), consoleWorldChoices(db, principalId)]);
-  return <ConsoleApp initial={snapshot} worldParam={world.kind === "main" ? "main" : world.id} choices={choices} />;
+  return (
+    <ConsoleApp
+      initial={snapshot}
+      worldParam={world.kind === "main" ? "main" : world.id}
+      choices={choices}
+      licenseKey={process.env.BRYNTUM_LICENSE_KEY ?? null}
+    />
+  );
 }
 
 function Loading() {

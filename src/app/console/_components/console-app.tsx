@@ -88,11 +88,14 @@ export function ConsoleApp({
   initial,
   worldParam,
   choices,
+  licenseKey = null,
 }: {
   initial: ConsoleSnapshot;
   /** `main` or the private world's id — what the snapshot endpoint is polled with. */
   worldParam: string;
   choices: Choice[];
+  /** P7: the Bryntum license key for the Calendar tab (null → trial). */
+  licenseKey?: string | null;
 }) {
   const [snapshot, setSnapshot] = useState(initial);
   const [feed, setFeed] = useState<FeedState>("live");
@@ -404,7 +407,7 @@ export function ConsoleApp({
           </section>
         </div>
 
-        <ConsoleGrids snapshot={snapshot} />
+        <ConsoleGrids snapshot={snapshot} worldParam={worldParam} licenseKey={licenseKey} />
 
         <footer className="legal">
           {LEGAL} · <Link href="/agents.md">agents.md</Link> · updated {logTime(snapshot.generatedAt)} UTC
