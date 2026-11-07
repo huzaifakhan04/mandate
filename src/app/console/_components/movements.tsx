@@ -67,7 +67,7 @@ function buildRows(snapshot: ConsoleSnapshot): Row[] {
   // One row per money movement: the calls behind one PayPal order or payout
   // (create, status checks, capture) fold into the row of the call that
   // moved the money, and the chain shows in the PayPal call column. The
-  // full call-by-call record stays in the PayPal API log tab.
+  // full call-by-call record stays in the Logs tab.
   const isMoving = (kind: string) => kind.endsWith(".capture") || kind === "payout.send";
   const groups = new Map<string, ConsoleSnapshot["paypalLog"]>();
   for (const op of snapshot.paypalLog) {
@@ -270,7 +270,7 @@ export function Movements({
         <span>Amounts are from the bank&apos;s side; PayPal request bodies are redacted.</span>
         {snapshot.paypalLog.length > 0 ? (
           <button type="button" className="linkish" onClick={onOpenLog}>
-            Showing {visible.length} of {rows.length} · Open the PayPal API log
+            Showing {visible.length} of {rows.length} · Open the logs
           </button>
         ) : null}
       </div>

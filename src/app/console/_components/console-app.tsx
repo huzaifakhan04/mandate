@@ -15,6 +15,7 @@ import {
   IconLoan,
   IconNote,
   IconShield,
+  IconTimeline,
 } from "@/components/ui/icons";
 import { LEGAL } from "@/components/ui/legal";
 import type { ConsoleSnapshot, ConsoleWorldChoice } from "@/server/services/console";
@@ -37,6 +38,7 @@ const NAV: Array<{ id: TabId; label: string; icon: React.ReactNode }> = [
   { id: "agents", label: "Agents", icon: <IconAgent size={16} /> },
   { id: "risk", label: "Risk desk", icon: <IconShield size={16} /> },
   { id: "calendar", label: "Calendar", icon: <IconCalendar size={16} /> },
+  { id: "paypal", label: "Logs", icon: <IconTimeline size={16} /> },
 ];
 
 export function ConsoleApp({
@@ -169,6 +171,7 @@ export function ConsoleApp({
     notes: snapshot.notes.length,
     agents: snapshot.agents.length,
     risk: snapshot.risk.open,
+    paypal: snapshot.paypalLog.length,
   };
   const feedTone = feed === "live" ? "in" : feed === "paused" ? "ring" : "risk";
 

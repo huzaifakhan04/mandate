@@ -152,7 +152,7 @@ const AGENT_COLS: ColDef[] = [
 
 const GRID_TABS: Array<{ id: GridTabId; label: string; cols: ColDef[]; foot: string }> = [
   { id: "ledger", label: "Ledger", cols: LEDGER_COLS, foot: "Double-entry: every journal entry's debits equal its credits." },
-  { id: "paypal", label: "PayPal API log", cols: PAYPAL_COLS, foot: "Every PayPal call the bank made, newest first. Request bodies are redacted." },
+  { id: "paypal", label: "Logs", cols: PAYPAL_COLS, foot: "Every PayPal call the bank made, newest first. Request bodies are redacted." },
   {
     id: "loans",
     label: "Loans",
@@ -168,10 +168,11 @@ const GRID_TABS: Array<{ id: GridTabId; label: string; cols: ColDef[]; foot: str
   { id: "agents", label: "Agents", cols: AGENT_COLS, foot: "Agent names and ids only — no owner, email or payout details are public." },
 ];
 
-const TAB_ORDER: TabId[] = ["ledger", "paypal", "risk", "loans", "notes", "agents", "calendar"];
+// Same order as the sidebar nav in console-app.tsx.
+const TAB_ORDER: TabId[] = ["ledger", "loans", "notes", "agents", "risk", "calendar", "paypal"];
 const TAB_LABEL: Record<TabId, string> = {
   ledger: "Ledger",
-  paypal: "PayPal API log",
+  paypal: "Logs",
   risk: "Risk desk",
   loans: "Loans",
   notes: "Notes",
