@@ -819,6 +819,21 @@ async function runOnce(ctx: RunContext, index: number): Promise<RunResult> {
             : "borrower agent never gave its human the claim_url within 6 follow-ups",
         );
       }
+      if (loanId) {
+        // P7: the disbursement payout can sit PENDING in PayPal sandbox for
+        // more than a minute (one P7 run failed with the agent correctly
+        // reporting DISBURSING six times in ~50 s). Let real time pass —
+        // driving the reconcile cron locally — before telling the agent so.
+        const waitUntil = Date.now() + 3 * 60_000;
+        while (Date.now() < waitUntil) {
+          const loan = await tool(base, "get_loan", { loan_id: loanId }, borrower.apiKey);
+          if (loan.data.status !== "DISBURSING") {
+            break;
+          }
+          await new Promise((r) => setTimeout(r, 10_000));
+          await settle();
+        }
+      }
       borrowerTurn = await borrower.say(
         loanId
           ? "Some time has passed. Continue toward your goal: I need the payment link to forward to the client."
