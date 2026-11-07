@@ -9,6 +9,7 @@ import {
   verifyWebhookSignature,
 } from "../paypal/webhooks";
 import { settleCheckoutByOrderId, type ObservedCapture } from "../services/checkouts";
+import { recordRepaymentRefund } from "../services/installments";
 import { dispatchPayoutOutcome } from "../services/payoutPolling";
 import type { ObservedPayoutStatus } from "../services/payoutStatus";
 import { errorMessage } from "./jobRuns";
@@ -33,6 +34,9 @@ import { errorMessage } from "./jobRuns";
  *    - `CHECKOUT.ORDER.APPROVED` → `settleCheckoutByOrderId(resource.id)`;
  *    - `PAYMENT.CAPTURE.COMPLETED|DENIED|DECLINED` →
  *      `settleCheckoutByOrderId(resource.supplementary_data.related_ids.order_id)`;
+ *    - P7: `PAYMENT.CAPTURE.REFUNDED|REVERSED` of a repayment capture →
+ *      `recordRepaymentRefund` (a `loan.payment_refunded` event the
+ *      repayment plan re-planner reads; the ledger is not touched);
  *    - anything else → stored only.
  *    Every effect is idempotent, so a webhook racing the reconcile cron
  *    (or a redelivery) applies it once (Review Focus 2). A dispatch that
@@ -44,11 +48,15 @@ const MAX_BODY_BYTES = 64 * 1024;
 
 const CAPTURE_EVENTS = new Set(["PAYMENT.CAPTURE.COMPLETED", "PAYMENT.CAPTURE.DENIED", "PAYMENT.CAPTURE.DECLINED"]);
 
+/** P7: a refund/reversal of a capture — the repayment plan treats that payment as not made. */
+const REFUND_EVENTS = new Set(["PAYMENT.CAPTURE.REFUNDED", "PAYMENT.CAPTURE.REVERSED"]);
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Target =
   | { kind: "payout"; worldId: string; sendOperationId: string; observed?: ObservedPayoutStatus }
-  | { kind: "checkout"; worldId: string; orderId: string; observedCapture?: ObservedCapture };
+  | { kind: "checkout"; worldId: string; orderId: string; observedCapture?: ObservedCapture }
+  | { kind: "refund"; worldId: string; captureId: string; reason: string };
 
 interface PayPalEvent {
   id: string;
@@ -117,6 +125,10 @@ async function resolveTarget(db: Db, event: PayPalEvent): Promise<Target | null>
     };
   }
 
+  if (REFUND_EVENTS.has(event.event_type)) {
+    return refundTarget(db, event.event_type, resource);
+  }
+
   let orderId: string | null = null;
   let observedCapture: ObservedCapture | undefined;
   if (event.event_type === "CHECKOUT.ORDER.APPROVED") {
@@ -130,6 +142,34 @@ async function resolveTarget(db: Db, event: PayPalEvent): Promise<Target | null>
   }
   const create = await findOperationByPaypalId(db, "order.create", orderId);
   return create ? { kind: "checkout", worldId: create.worldId, orderId, observedCapture } : null;
+}
+
+/**
+ * P7: a `PAYMENT.CAPTURE.REVERSED` resource is the capture itself; a
+ * `PAYMENT.CAPTURE.REFUNDED` resource is the refund, whose capture is its
+ * `up` link (or `supplementary_data.related_ids.capture_id`). The world
+ * comes from the order's `order.create`.
+ */
+async function refundTarget(db: Db, eventType: string, resource: Record<string, unknown>): Promise<Target | null> {
+  const related = record(record(resource.supplementary_data).related_ids);
+  const orderId = str(related.order_id);
+  let captureId = eventType === "PAYMENT.CAPTURE.REVERSED" ? str(resource.id) : str(related.capture_id);
+  if (!captureId && Array.isArray(resource.links)) {
+    for (const link of resource.links) {
+      const href = str(record(link).href);
+      const match = record(link).rel === "up" && href ? /\/captures\/([^/?#]+)/.exec(href) : null;
+      if (match) {
+        captureId = match[1]!;
+      }
+    }
+  }
+  if (!orderId || !captureId) {
+    return null;
+  }
+  const create = await findOperationByPaypalId(db, "order.create", orderId);
+  return create
+    ? { kind: "refund", worldId: create.worldId, captureId, reason: eventType === "PAYMENT.CAPTURE.REVERSED" ? "reversed" : "refunded" }
+    : null;
 }
 
 /**
@@ -170,6 +210,10 @@ function captureFromResource(resource: Record<string, unknown>): ObservedCapture
 async function dispatch(db: Db, target: Target): Promise<boolean> {
   if (target.kind === "payout") {
     await dispatchPayoutOutcome(db, target.sendOperationId, target.observed);
+    return true;
+  }
+  if (target.kind === "refund") {
+    await recordRepaymentRefund(db, target.worldId, { captureId: target.captureId, reason: target.reason });
     return true;
   }
   const result = await settleCheckoutByOrderId(db, target.worldId, target.orderId, {

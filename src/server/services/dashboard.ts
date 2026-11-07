@@ -283,7 +283,7 @@ async function cardFor(db: Db, agent: OwnedAgent, now: Date): Promise<{ card: Ag
  * in non-private worlds only (the main view never shows a private
  * world's agents).
  */
-async function agentsInView(db: Db, principalId: string, worldId: string | undefined): Promise<OwnedAgent[]> {
+export async function agentsInView(db: Db, principalId: string, worldId: string | undefined): Promise<OwnedAgent[]> {
   const owned = await ownedAgents(db, principalId);
   if (worldId) {
     return owned.filter((agent) => agent.worldId === worldId);

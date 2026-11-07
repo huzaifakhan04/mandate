@@ -125,6 +125,9 @@ const STATUS_HTTP: Record<string, number> = {
   SIGNATURE_REPLAYED: 401,
   // P2 Task 6 (private worlds): the agent's sandbox world was reset.
   WORLD_ARCHIVED: 410,
+  // P7 (repayment plans): plan_repayments / reschedule_installment broke a plan rule, or the loan already has a plan.
+  INVALID_PLAN: 400,
+  PLAN_EXISTS: 409,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

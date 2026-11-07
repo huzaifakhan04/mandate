@@ -3,6 +3,7 @@ import type { Db } from "../db/client";
 import { runBotsCatchUp } from "../bots/runner";
 import { processDue } from "../services/collections";
 import { stepEconomyToNow } from "../services/economy";
+import { replanWorldInstallments } from "../services/installments";
 import { expireStaleOffers } from "../services/loans";
 import { processRedemptionQueue } from "../services/notes";
 import { writeDailyTreasuryMemo } from "../services/treasuryMemo";
@@ -41,6 +42,12 @@ import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
  * (`writeDailyTreasuryMemo`: once per world per sim day; templates only in
  * private worlds).
  *
+ * P7: after the ladder, every open repayment plan is re-planned from the
+ * loan's payment events (`replanWorldInstallments`: paid early / partial,
+ * missed → notice (+ one auto-move if opted in), failed / refunded
+ * captures) — same clock gate as the ladder (a frozen private world
+ * re-plans on its owner's advance). Guidance only; no journal.
+ *
  * P2 Task 6: then, for every active private world, the bots act for each
  * simulated day the world's clock has passed since they last acted (at
  * most 7 per tick; a frozen clock → nothing, however often this runs).
@@ -55,6 +62,8 @@ export interface TickReport {
   queuedRedemptionsPaid: number;
   /** P5 Task 3: treasury memos written. */
   treasuryMemos: number;
+  /** P7: installments re-planned (paid / missed / moved / failed) across all worlds. */
+  installmentsReplanned: number;
   botDays: number;
   errors: { worldId: string; message: string }[];
 }
@@ -66,6 +75,7 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     ladderSteps: 0,
     queuedRedemptionsPaid: 0,
     treasuryMemos: 0,
+    installmentsReplanned: 0,
     botDays: 0,
     errors: [],
   };
@@ -75,6 +85,7 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     let steps = { late: 0, penalty: 0, substandard: 0, charged_off: 0 };
     let accrued = 0;
     let queuePaid = 0;
+    let replanned = 0;
     const errors: string[] = [];
     try {
       // P5 Task 1: the world's economy for each sim day passed (idempotent; a no-op within a day).
@@ -88,6 +99,14 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
         accrued = due.accrued;
         for (const failure of due.errors) {
           const message = `loan ${failure.loanId}: ${failure.message}`;
+          errors.push(message);
+          report.errors.push({ worldId, message });
+        }
+        // P7: re-plan agent repayment schedules from the day's payment events.
+        const plans = await replanWorldInstallments(db, worldId, simNow);
+        replanned = plans.changed;
+        for (const failure of plans.errors) {
+          const message = `installments for loan ${failure.loanId}: ${failure.message}`;
           errors.push(message);
           report.errors.push({ worldId, message });
         }
@@ -116,10 +135,11 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     report.expired += expired;
     report.queuedRedemptionsPaid += queuePaid;
     report.treasuryMemos += memo ? 1 : 0;
+    report.installmentsReplanned += replanned;
     const stepCount = steps.late + steps.penalty + steps.substandard + steps.charged_off;
     report.ladderSteps += stepCount;
     // The memo lives on economy_state (and ai_runs); on its own it leaves no job_runs row.
-    const didWork = expired > 0 || stepCount > 0 || accrued > 0 || queuePaid > 0;
+    const didWork = expired > 0 || stepCount > 0 || accrued > 0 || queuePaid > 0 || replanned > 0;
     // Final fix (minor c): the same errors again within the hour, and nothing else → no row.
     const record = didWork || (errors.length > 0 && !(await errorsRecentlyRecorded(db, worldId, "tick", errors, now)));
     if (record) {
@@ -129,6 +149,7 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
         ...(stepCount > 0 || accrued > 0 ? { ladder_steps: steps, penalty_accruals: accrued } : {}),
         ...(queuePaid > 0 ? { queued_redemptions_settled: queuePaid } : {}),
         ...(memo ? { treasury_memo: true } : {}),
+        ...(replanned > 0 ? { installments_replanned: replanned } : {}),
         errors,
       });
     }

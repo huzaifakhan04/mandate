@@ -21,6 +21,11 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@bryntum/calendar-enterprise": "8.0.0",
+    "@bryntum/calendar-react-enterprise": "8.0.0",
+    "@bryntum/core-enterprise": "8.0.0",
+    "@bryntum/scheduler-enterprise": "8.0.0",
+    "@bryntum/scheduler-react-enterprise": "8.0.0",
     "@modelcontextprotocol/server": "^2.4.0",
     "@neondatabase/serverless": "^1.2.0",
     "@vercel/functions": "^3.11.0",
