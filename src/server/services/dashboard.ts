@@ -27,6 +27,8 @@ import { effectivePerLoanCap } from "../domain/mandate";
 import { daysLate, type LadderStep } from "../domain/delinquency";
 import { OPEN_LOAN_DB_STATUSES, isOwingStatus } from "../domain/loanMachine";
 import { GRADE_LIMIT_CENTS, type Grade } from "../domain/scorecard";
+import { ownedPrivateWorld } from "./privateWorldAccess";
+import { agentRiskFlags, RISK_FLAG_TTL_DAYS, RISK_KIND_LABEL, RISK_KIND_TEXT, type RiskFlagRow, type RiskKind } from "./riskFlags";
 import { maskPayoutReceiver } from "./agents";
 import type { ScoreResult } from "../domain/scorecard";
 import { recoverableCents, totalDueCents } from "./collections";
@@ -386,7 +388,50 @@ export interface AgentDetailView extends AgentCardView {
   loans: LoanSummary[];
   notes: NotePositionView[];
   events: AgentEventView[];
+  /** P7: the agent's Risk Desk flags (newest first) with the investigator's advisory case file. */
+  riskFlags: RiskFlagView[];
+  /** P7: the owner may clear flags themselves only in their own private world (main world: request review). */
+  canClearRiskFlags: boolean;
   simNow: Date;
+}
+
+export interface RiskFlagView {
+  id: string;
+  kind: string;
+  label: string;
+  reason: string;
+  status: string;
+  firstSimAt: Date;
+  expiresSimAt: Date;
+  caseFile: { summary: string; evidence: string[]; recommendation: string; source: string } | null;
+  ownerNote: string | null;
+  reviewRequestedAt: Date | null;
+  clearedBy: string | null;
+}
+
+function riskFlagView(row: RiskFlagRow): RiskFlagView {
+  const file = (row.caseFile ?? null) as { summary?: unknown; evidence?: unknown; recommendation?: unknown; source?: unknown } | null;
+  return {
+    id: row.id,
+    kind: row.kind,
+    label: RISK_KIND_LABEL[row.kind as RiskKind] ?? row.kind,
+    reason: RISK_KIND_TEXT[row.kind as RiskKind] ?? "",
+    status: row.status,
+    firstSimAt: row.firstSimAt,
+    expiresSimAt: new Date(row.lastEvidenceSimAt.getTime() + RISK_FLAG_TTL_DAYS * 86_400_000),
+    caseFile:
+      file && typeof file.summary === "string"
+        ? {
+            summary: file.summary,
+            evidence: Array.isArray(file.evidence) ? file.evidence.filter((e): e is string => typeof e === "string") : [],
+            recommendation: typeof file.recommendation === "string" ? file.recommendation : "keep",
+            source: typeof file.source === "string" ? file.source : "template",
+          }
+        : null,
+    ownerNote: row.ownerNote,
+    reviewRequestedAt: row.reviewRequestedAt,
+    clearedBy: row.clearedBy,
+  };
 }
 
 export const DRAWER_EVENT_LIMIT = 40;
@@ -571,6 +616,8 @@ export async function agentDetail(
       status: p.status,
     })),
     events: timeline.slice(0, DRAWER_EVENT_LIMIT),
+    riskFlags: (await agentRiskFlags(db, agent.worldId, agent.id)).map(riskFlagView),
+    canClearRiskFlags: (await ownedPrivateWorld(db, principalId, agent.worldId)) !== null,
     simNow,
   };
 }

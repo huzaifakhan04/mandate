@@ -174,6 +174,12 @@ export const acceptOfferTool = defineTool({
         envelope.next_actions = [{ tool: "get_status", args: {} }];
         return envelope;
       }
+      case "risk_review": {
+        // P7: an open Risk Desk flag caps borrowing at tier T0.
+        const envelope = fail("RISK_REVIEW", REASON_TEXT.risk_review, ["risk_review"]);
+        envelope.next_actions = [{ tool: "get_status", args: {} }];
+        return envelope;
+      }
       case "treasury_limit": {
         // P5 Task 3: re-checked under the series lock; nothing was written.
         const limits = loanTreasuryLimits(result.facts);

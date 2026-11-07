@@ -18,6 +18,8 @@ export const REASON_PRIORITY = [
   // 1. tier / claim
   "claim_required",
   "tier_per_loan",
+  // P7: an open Risk Desk flag caps borrowing at tier T0
+  "risk_review",
   // 2. mandate
   "mandate_missing",
   "mandate_per_loan",
@@ -57,6 +59,8 @@ export const REASON_TEXT: Record<ReasonCode, string> = {
   term_out_of_range: `Term requested is outside the range we lend (${PRICING_LIMITS.minTermDays} to ${PRICING_LIMITS.maxTermDays} days).`,
   claim_required: "Unable to verify identity: the agent is not claimed by a verified human.",
   tier_per_loan: "Amount requested exceeds the per-loan limit for your verification tier.",
+  risk_review:
+    "This agent is under risk review: borrowing is limited to tier T0 (no new loans) until the review clears. Lending is unaffected.",
   mandate_missing: "No current signed mandate from your human authorizes borrowing.",
   mandate_per_loan: "Amount requested exceeds the per-loan limit in your human's mandate.",
   mandate_total_owed: "Total owed would exceed the limit in your human's mandate.",

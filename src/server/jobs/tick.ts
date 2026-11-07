@@ -5,6 +5,7 @@ import { processDue } from "../services/collections";
 import { stepEconomyToNow } from "../services/economy";
 import { expireStaleOffers } from "../services/loans";
 import { processRedemptionQueue } from "../services/notes";
+import { runRiskDesk } from "../services/riskDesk";
 import { writeDailyTreasuryMemo } from "../services/treasuryMemo";
 import { listActivePrivateWorldIds, listActiveWorldsForTick } from "../services/worlds";
 import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
@@ -41,6 +42,11 @@ import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
  * (`writeDailyTreasuryMemo`: once per world per sim day; templates only in
  * private worlds).
  *
+ * P7: last for each world, the Risk Desk (`runRiskDesk`, after commit):
+ * stale risk flags expire; with Elastic configured, new rows ship to
+ * Elastic, the ES|QL detectors run hourly and new flags get a case file.
+ * Bounded by `RISK_DESK_BUDGET_MS` of the tick's 60 s.
+ *
  * P2 Task 6: then, for every active private world, the bots act for each
  * simulated day the world's clock has passed since they last acted (at
  * most 7 per tick; a frozen clock → nothing, however often this runs).
@@ -56,10 +62,18 @@ export interface TickReport {
   /** P5 Task 3: treasury memos written. */
   treasuryMemos: number;
   botDays: number;
+  /** P7: documents shipped to Elastic, risk flags opened, case files written. */
+  riskShipped: number;
+  riskFlags: number;
+  riskInvestigated: number;
   errors: { worldId: string; message: string }[];
 }
 
+/** P7: the Risk Desk stops starting new work this long after the tick began. */
+export const RISK_DESK_BUDGET_MS = 40_000;
+
 export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {}): Promise<TickReport> {
+  const riskDeadline = AbortSignal.timeout(RISK_DESK_BUDGET_MS);
   const report: TickReport = {
     worlds: 0,
     expired: 0,
@@ -67,6 +81,9 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     queuedRedemptionsPaid: 0,
     treasuryMemos: 0,
     botDays: 0,
+    riskShipped: 0,
+    riskFlags: 0,
+    riskInvestigated: 0,
     errors: [],
   };
   for (const { id: worldId, ladderOnTick } of await listActiveWorldsForTick(db)) {
@@ -113,13 +130,32 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
       errors.push(message);
       report.errors.push({ worldId, message });
     }
+    // P7: the Risk Desk, after the world's work above committed.
+    let risk = { shipped: 0, newFlags: 0, investigated: 0, expired: 0 };
+    try {
+      const desk = await runRiskDesk(db, worldId, { now, signal: riskDeadline });
+      risk = desk;
+      for (const message of desk.errors) {
+        const text = `risk desk: ${message}`;
+        errors.push(text);
+        report.errors.push({ worldId, message: text });
+      }
+    } catch (err) {
+      const message = `risk desk: ${errorMessage(err)}`;
+      console.error(`[tick] world ${worldId} ${message}`);
+      errors.push(message);
+      report.errors.push({ worldId, message });
+    }
+    report.riskShipped += risk.shipped;
+    report.riskFlags += risk.newFlags;
+    report.riskInvestigated += risk.investigated;
     report.expired += expired;
     report.queuedRedemptionsPaid += queuePaid;
     report.treasuryMemos += memo ? 1 : 0;
     const stepCount = steps.late + steps.penalty + steps.substandard + steps.charged_off;
     report.ladderSteps += stepCount;
     // The memo lives on economy_state (and ai_runs); on its own it leaves no job_runs row.
-    const didWork = expired > 0 || stepCount > 0 || accrued > 0 || queuePaid > 0;
+    const didWork = expired > 0 || stepCount > 0 || accrued > 0 || queuePaid > 0 || risk.newFlags > 0 || risk.expired > 0;
     // Final fix (minor c): the same errors again within the hour, and nothing else → no row.
     const record = didWork || (errors.length > 0 && !(await errorsRecentlyRecorded(db, worldId, "tick", errors, now)));
     if (record) {
@@ -129,6 +165,9 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
         ...(stepCount > 0 || accrued > 0 ? { ladder_steps: steps, penalty_accruals: accrued } : {}),
         ...(queuePaid > 0 ? { queued_redemptions_settled: queuePaid } : {}),
         ...(memo ? { treasury_memo: true } : {}),
+        ...(risk.newFlags > 0 || risk.expired > 0 || risk.investigated > 0
+          ? { risk_flags_opened: risk.newFlags, risk_flags_expired: risk.expired, risk_case_files: risk.investigated }
+          : {}),
         errors,
       });
     }

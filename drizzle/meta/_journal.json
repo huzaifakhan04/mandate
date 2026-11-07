@@ -204,6 +204,13 @@
       "when": 1794002685487,
       "tag": "0028_p5_stress",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1794010573570,
+      "tag": "0029_p7_risk_desk",
+      "breakpoints": true
     }
   ]
 }

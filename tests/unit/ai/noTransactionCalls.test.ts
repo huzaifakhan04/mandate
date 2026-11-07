@@ -11,6 +11,9 @@ import { describe, expect, it } from "vitest";
  * `ai/run.ts` (`runRole`) and `ai/client.ts` make a network call of up to
  * 20 s. The rule:
  *
+ * (P7: `ai/investigator.ts`, the risk investigator's tool-calling loop, is
+ * a network module too.)
+ *
  * 1. Only the modules in `AI_CALLERS` may import them (value imports;
  *    `import type` is fine, and the pure `ai/schemas|templates|redact|
  *    policy` modules may be imported anywhere). An AI caller is an
@@ -34,9 +37,11 @@ const AI_CALLERS: string[] = [
   "src/server/services/kyaDesk.ts",
   // P5 Task 3: the tick's daily treasury memo (after each world's work committed).
   "src/server/services/treasuryMemo.ts",
+  // P7: the tick's Risk Desk — the risk investigator's case files (after the detectors committed).
+  "src/server/services/riskInvestigation.ts",
 ];
 
-const AI_NETWORK_IMPORT_RE = /import\s+(?!type\b)[^;]*?from\s+["'][^"']*\/ai\/(run|client)["']/g;
+const AI_NETWORK_IMPORT_RE = /import\s+(?!type\b)[^;]*?from\s+["'][^"']*\/ai\/(run|client|investigator)["']/g;
 const TRANSACTION_RE = /\.transaction\(|\bctx\.tx\b/;
 const RUN_ROLE_WITH_TX_RE = /\brunRole\(\s*(ctx\.)?tx\b/;
 
@@ -79,6 +84,7 @@ describe("OpenAI is never called inside a DB transaction", () => {
     const imports = [
       'import { runRole } from "@/server/ai/run";',
       'import { aiDisabled, openaiClient } from "../ai/client";',
+      'import { runInvestigator } from "../ai/investigator";',
       "import {\n  runRole,\n} from '@/server/ai/run';",
     ];
     for (const sample of imports) {

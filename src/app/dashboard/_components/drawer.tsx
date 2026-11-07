@@ -64,6 +64,14 @@ const NOTICES: Record<string, Record<string, { tone: "ok" | "err"; text: string 
     frozen: { tone: "ok", text: "Agent frozen. Its calls that move money are refused until you unfreeze it." },
     unfrozen: { tone: "ok", text: "Agent unfrozen. It can act again." },
   },
+  risk: {
+    review_requested: { tone: "ok", text: "Review requested. Your note is on the flag for the bank's risk team." },
+    cleared: { tone: "ok", text: "Risk flag cleared. The agent can borrow again (subject to the usual checks)." },
+  },
+  risk_error: {
+    forbidden: { tone: "err", text: "In the main world only the bank can clear a risk flag — request a review instead." },
+    flag_not_open: { tone: "err", text: "That risk flag is no longer open." },
+  },
   key: {
     revoked: { tone: "ok", text: "Signing key revoked. The agent is back to tier T1 until it registers a new key." },
   },
@@ -605,6 +613,79 @@ function Tabs({ agent, tab }: { agent: AgentDetailView; tab: DrawerTab }) {
   );
 }
 
+const RECOMMENDATION_TEXT: Record<string, string> = {
+  clear: "looks benign — recommends clearing",
+  keep: "pattern looks real — recommends keeping the flag",
+  escalate: "looks deliberate — recommends escalation",
+};
+
+/** P7: the Risk Desk's flags on this agent: why, the effect, the advisory case file, and the owner's actions. */
+function RiskSection({ agent }: { agent: AgentDetailView }) {
+  if (agent.riskFlags.length === 0) {
+    return null;
+  }
+  const open = agent.riskFlags.filter((f) => f.status === "open");
+  return (
+    <section className="ds" id="risk" aria-labelledby="risk-h" data-testid="risk-flags">
+      <h3 id="risk-h">Risk review</h3>
+      {open.length > 0 ? (
+        <p className="notice err" role="status">
+          Borrowing is limited to tier T0 while a risk flag is open (lending is unaffected). A flag clears itself 7 simulated
+          days after its latest evidence.
+        </p>
+      ) : null}
+      <ul className="tl">
+        {agent.riskFlags.map((flag) => (
+          <li key={flag.id} className={flag.status === "open" ? "risk" : undefined} data-testid="risk-flag">
+            <b>{flag.label}</b> · {flag.status === "open" ? `open until ${formatDateTime(flag.expiresSimAt)} (bank time) unless new evidence` : `cleared${flag.clearedBy ? ` (${flag.clearedBy})` : ""}`}
+            <small>{flag.reason}</small>
+            {flag.caseFile ? (
+              <div data-testid="risk-case-file">
+                <small>
+                  Case file ({flag.caseFile.source === "ai" ? "AI investigator" : "automated template"}, advisory):{" "}
+                  {RECOMMENDATION_TEXT[flag.caseFile.recommendation] ?? flag.caseFile.recommendation}
+                </small>
+                <p>{flag.caseFile.summary}</p>
+                {flag.caseFile.evidence.length ? (
+                  <ul>
+                    {flag.caseFile.evidence.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : (
+              <small>Investigation pending.</small>
+            )}
+            {flag.ownerNote ? <small>Your review note: {flag.ownerNote}</small> : null}
+            {flag.status === "open" ? (
+              <>
+                <form method="post" action={`/dashboard/agents/${agent.id}/risk/${flag.id}/review`} aria-label="Request review">
+                  <label htmlFor={`note-${flag.id}`} className="sr-only">
+                    Review note
+                  </label>
+                  <input id={`note-${flag.id}`} name="note" maxLength={500} placeholder="Why this is legitimate (optional)" />
+                  <button type="submit" className="btn">
+                    {flag.reviewRequestedAt ? "Update review request" : "Request review"}
+                  </button>
+                </form>
+                {agent.canClearRiskFlags ? (
+                  <form method="post" action={`/dashboard/agents/${agent.id}/risk/${flag.id}/clear`}>
+                    <button type="submit" className="btn">
+                      Clear flag (your sandbox world)
+                    </button>
+                  </form>
+                ) : null}
+              </>
+            ) : null}
+            <small>Raised {formatDateTime(flag.firstSimAt)} · bank time</small>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /** P3 Task 4: the adverse-action notices of the latest declined applications (plain text). */
 function DeclinesSection({ agent }: { agent: AgentDetailView }) {
   if (agent.declines.length === 0) {
@@ -805,6 +886,7 @@ export function AgentDrawer({
       <KyaSection agent={agent} />
       <MandateSection agent={agent} params={params} />
       <Tabs agent={agent} tab={tab} />
+      <RiskSection agent={agent} />
       <DeclinesSection agent={agent} />
       <DocumentsSection agent={agent} />
       <KeysSection agent={agent} />

@@ -147,3 +147,17 @@
   .mc .search { margin-left: 0; width: 100%; }
   .mc .gridbox { height: 380px; }
 }
+
+/* P7 — Risk Desk */
+.mc .risk-desk { grid-template-columns: minmax(0, 1fr) minmax(0, 1.4fr); }
+.mc .risk-kinds { list-style: none; margin: 0 0 10px; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.mc .risk-kinds li { background: #fff; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.mc .risk-kinds span { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mc .risk-kinds b { font-size: 18px; }
+.mc .risk-search { display: flex; gap: 8px; margin-bottom: 10px; }
+.mc .risk-search input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 9px; padding: 6px 10px; font-size: 13px; }
+.mc .risk-results h3 { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 10px 0 4px; }
+@media (max-width: 900px) {
+  .mc .risk-desk { grid-template-columns: minmax(0, 1fr); }
+  .mc .risk-kinds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}

@@ -166,6 +166,10 @@ const TREASURY_GATE_REASONS = [
  * - anything else → check eligibility for the same amount and term.
  */
 function declinedNextActions(input: ApplyInput, reasons: readonly string[]): NextAction[] {
+  // P7: under risk review nothing about the application helps — see the flag in get_status.
+  if (reasons.includes("risk_review")) {
+    return [{ tool: "get_status", args: {} }];
+  }
   if (reasons.includes("insufficient_credit_history") || reasons.includes("score_too_low")) {
     return [{ tool: "check_eligibility", args: invoiceBackedCheckArgs(input.amount_cents, input.term_days) }];
   }
