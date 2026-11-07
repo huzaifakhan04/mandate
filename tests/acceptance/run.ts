@@ -42,12 +42,14 @@ import { claimAndSignMandateAsHuman, signMandateInDrawer, type MandateFormValues
 import { type ApproveResult } from "../helpers/paypalApprove";
 import {
   approveAs,
+  type ApprovalBrowser,
   ledgerReport,
   type LocalServer,
   payerIdFor,
   reconcile,
   requireEnv,
   type SandboxAccount,
+  setApprovalBrowser,
   startLocalServer,
 } from "../helpers/sandboxServer";
 
@@ -112,10 +114,12 @@ interface Options {
   maxTurns: number;
   timeoutMs: number;
   port: number;
+  /** P7: where PayPal checkout approvals run (claim/mandate steps on our own site stay local). */
+  browser: ApprovalBrowser;
 }
 
 function parseArgs(argv: string[]): Options {
-  const opts: Options = { scenario: "happy", base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140 };
+  const opts: Options = { scenario: "happy", base: null, runs: 1, model: null, maxTurns: 40, timeoutMs: 10 * 60_000, port: 3140, browser: "local" };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const value = () => {
@@ -153,6 +157,14 @@ function parseArgs(argv: string[]): Options {
       case "--port":
         opts.port = Number(value());
         break;
+      case "--browser": {
+        const browser = value();
+        if (browser !== "local" && browser !== "kernel") {
+          throw new Error(`--browser must be local or kernel, not ${browser}`);
+        }
+        opts.browser = browser;
+        break;
+      }
       case "--":
         break;
       default:
@@ -1311,6 +1323,10 @@ function renderResults(options: Options, runs: RunResult[], startedAt: Date, loc
 
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
+  setApprovalBrowser(options.browser);
+  if (options.browser === "kernel") {
+    log("PayPal checkout approvals run in Kernel cloud browsers (tests/helpers/kernelApprove.ts)");
+  }
   if (options.scenario === "collections") {
     await mainCollections(options);
     return;

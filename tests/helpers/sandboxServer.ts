@@ -177,6 +177,17 @@ export function assertApproved(result: ApproveResult, who: string): void {
   }
 }
 
+/**
+ * P7: where PayPal checkout approvals run — a local Playwright Chromium
+ * (default) or a Kernel cloud browser (tests/helpers/kernelApprove.ts). The
+ * acceptance harness sets it from `--browser`.
+ */
+export type ApprovalBrowser = "local" | "kernel";
+let approvalBrowser: ApprovalBrowser = process.env.APPROVAL_BROWSER === "kernel" ? "kernel" : "local";
+export function setApprovalBrowser(browser: ApprovalBrowser): void {
+  approvalBrowser = browser;
+}
+
 /** Pause before retrying after PayPal sandbox's transient error page. */
 export const PAYPAL_RETRY_PAUSE_MS = 20_000;
 
@@ -189,10 +200,14 @@ export const PAYPAL_RETRY_PAUSE_MS = 20_000;
 export async function approveAs(
   url: string,
   account: SandboxAccount,
-  options: { returnUrlPrefix: string; screenshotDir: string; label: string },
+  options: { returnUrlPrefix: string; screenshotDir: string; label: string; browser?: ApprovalBrowser },
 ): Promise<ApproveResult> {
+  const approveFn =
+    (options.browser ?? approvalBrowser) === "kernel"
+      ? (await import("./kernelApprove")).approvePayPalCheckoutViaKernel
+      : approvePayPalCheckout;
   const attempt = (label: string) =>
-    approvePayPalCheckout(url, {
+    approveFn(url, {
       email: requireEnv(`PAYPAL_${account}_EMAIL`),
       password: requireEnv(`PAYPAL_${account}_PASSWORD`),
       returnUrlPrefix: options.returnUrlPrefix,
