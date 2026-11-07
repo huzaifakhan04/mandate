@@ -635,11 +635,11 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
   };
 }
 
-/** Worlds the switcher offers: (P8) the demo world and main for everyone, plus the principal's active private worlds. */
+/** Worlds the switcher offers: main (the default) and the demo world for everyone, plus the principal's active private worlds. */
 export async function consoleWorldChoices(db: Db, principalId: string | null): Promise<ConsoleWorldChoice[]> {
   const choices: ConsoleWorldChoice[] = [
-    { id: "demo", name: "Demo world · simulated money", kind: "demo" },
     { id: "main", name: "Main world (real PayPal sandbox)", kind: "main" },
+    { id: "demo", name: "Demo world · simulated money", kind: "demo" },
   ];
   if (!principalId) {
     return choices;
@@ -648,9 +648,9 @@ export async function consoleWorldChoices(db: Db, principalId: string | null): P
   return [...choices, ...rows.map((r) => ({ id: r.id, name: scrubText(r.name), kind: "private" as const }))];
 }
 
-/** P8: the console's default world — the demo world for anonymous visitors, main for a signed-in owner. */
-export function defaultConsoleWorld(principalId: string | null): "demo" | "main" {
-  return principalId ? "main" : "demo";
+/** The console's default world: always main (the real PayPal sandbox), signed in or not. The demo world is one switch away. */
+export function defaultConsoleWorld(): "demo" | "main" {
+  return "main";
 }
 
 /** P8: the `world=` parameter a client polls with for `world`. */

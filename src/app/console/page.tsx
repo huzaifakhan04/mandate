@@ -26,10 +26,9 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 /**
  * `/console` — the public, read-only bank console ("mission control", P6;
- * design v2). P8: an anonymous visitor lands on
- * the public demo world (simulated money, auto-advanced); anyone may
- * switch to the main world (`?world=main`, the real PayPal sandbox); a
- * signed-in owner lands on main and may switch to one of their own private
+ * design v2). Everyone lands on the main world (the real PayPal sandbox);
+ * anyone may switch to the public demo world (`?world=demo`, simulated
+ * money, auto-advanced); a signed-in owner may also switch to one of their own private
  * sandbox worlds (`?world=<id>`) and move its clock. Someone else's world → 404. The
  * first snapshot is rendered on the server; the client then polls
  * `/api/console/snapshot` every 2 s while the tab is visible.
@@ -40,7 +39,7 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
   const session = await getPagePrincipal();
   const principalId = session?.principalId ?? null;
   const db = await getDb();
-  const world = await resolveConsoleWorld(db, principalId, requested || defaultConsoleWorld(principalId));
+  const world = await resolveConsoleWorld(db, principalId, requested || defaultConsoleWorld());
   if (!world) {
     notFound();
   }

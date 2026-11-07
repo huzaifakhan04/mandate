@@ -231,9 +231,8 @@ describe("P8 demo world", () => {
   });
 
   describe("console", () => {
-    it("anonymous visitors default to the demo world; signed-in owners to main; `demo` is public, its raw id is not", async () => {
-      expect(defaultConsoleWorld(null)).toBe("demo");
-      expect(defaultConsoleWorld("someone")).toBe("main");
+    it("everyone defaults to the main world; `demo` is public, its raw id is not", async () => {
+      expect(defaultConsoleWorld()).toBe("main");
       const world = await resolveConsoleWorld(db, null, "demo");
       expect(world).toMatchObject({ kind: "demo", rail: "sim", name: "Demo world" });
       expect(consoleWorldParam(world!)).toBe("demo");

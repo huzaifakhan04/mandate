@@ -232,11 +232,11 @@ describe("console read model (P6)", () => {
     it("the switcher lists main plus only the principal's own active private worlds", async () => {
       const worldId = await busyWorld(1);
       expect(await consoleWorldChoices(db, null)).toEqual([
-        { id: "demo", name: "Demo world · simulated money", kind: "demo" },
         { id: "main", name: "Main world (real PayPal sandbox)", kind: "main" },
+        { id: "demo", name: "Demo world · simulated money", kind: "demo" },
       ]);
-      expect((await consoleWorldChoices(db, other)).map((c) => c.id)).toEqual(["demo", "main"]);
-      expect((await consoleWorldChoices(db, owner)).map((c) => c.id)).toEqual(["demo", "main", worldId]);
+      expect((await consoleWorldChoices(db, other)).map((c) => c.id)).toEqual(["main", "demo"]);
+      expect((await consoleWorldChoices(db, owner)).map((c) => c.id)).toEqual(["main", "demo", worldId]);
     });
   });
 
