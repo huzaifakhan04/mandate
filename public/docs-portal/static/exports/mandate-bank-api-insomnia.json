@@ -48,7 +48,7 @@
     {
       "name": "get_bank_guide",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_bank_guide",
       "body": {
         "mimeType": "application/json",
         "text": "{}"
@@ -69,7 +69,7 @@
     {
       "name": "register_agent",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_agent",
+      "url": "https://mandate-bank.onrender.com/api/v1/register_agent",
       "body": {
         "mimeType": "application/json",
         "text": "{\"name\":\"Acme Ops Agent\",\"operator\":\"Acme Ops\",\"model\":\"claude-sonnet\",\"payout_email\":\"agent@example.com\"}"
@@ -90,7 +90,7 @@
     {
       "name": "get_status",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_status",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_status",
       "body": {
         "mimeType": "application/json",
         "text": "{}"
@@ -113,7 +113,7 @@
     {
       "name": "register_public_key",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_public_key",
+      "url": "https://mandate-bank.onrender.com/api/v1/register_public_key",
       "body": {
         "mimeType": "application/json",
         "text": "{\"public_key\":\"MCowBQYDK2VwAyEAGb9ECWmEzf6FQbrBZ9w7lshQhqowtrbLDFw4rXAxZuE=\"}"
@@ -136,7 +136,7 @@
     {
       "name": "buy_notes",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/buy_notes",
+      "url": "https://mandate-bank.onrender.com/api/v1/buy_notes",
       "body": {
         "mimeType": "application/json",
         "text": "{\"amount_cents\":3000}"
@@ -159,7 +159,7 @@
     {
       "name": "confirm_checkout",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/confirm_checkout",
+      "url": "https://mandate-bank.onrender.com/api/v1/confirm_checkout",
       "body": {
         "mimeType": "application/json",
         "text": "{\"checkout_id\":\"<checkout_id from buy_notes or repay_loan>\"}"
@@ -182,7 +182,7 @@
     {
       "name": "check_eligibility",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/check_eligibility",
+      "url": "https://mandate-bank.onrender.com/api/v1/check_eligibility",
       "body": {
         "mimeType": "application/json",
         "text": "{\"amount_cents\":1000,\"term_days\":7,\"collateral\":\"invoice_link\",\"invoice_amount_cents\":1500}"
@@ -205,7 +205,7 @@
     {
       "name": "apply_for_loan",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/apply_for_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/apply_for_loan",
       "body": {
         "mimeType": "application/json",
         "text": "{\"amount_cents\":1000,\"term_days\":7,\"purpose\":\"Buy materials for invoice INV-1042\",\"identity\":{\"operator\":\"Acme Ops\",\"model\":\"claude-sonnet\"},\"invoice\":{\"client_email\":\"client@example.com\",\"amount_cents\":1500,\"due_in_days\":7,\"description\":\"INV-1042: website build\"},\"declarations\":{\"no_other_debt\":true},\"consent_bank_records\":true,\"attest\":true}"
@@ -228,7 +228,7 @@
     {
       "name": "accept_offer",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/accept_offer",
+      "url": "https://mandate-bank.onrender.com/api/v1/accept_offer",
       "body": {
         "mimeType": "application/json",
         "text": "{\"offer_id\":\"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11\",\"disclosure_hash\":\"sha256:<disclosure_hash from apply_for_loan>\"}"
@@ -251,7 +251,7 @@
     {
       "name": "decline_offer",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/decline_offer",
+      "url": "https://mandate-bank.onrender.com/api/v1/decline_offer",
       "body": {
         "mimeType": "application/json",
         "text": "{\"offer_id\":\"2b0f6c1e-8a43-4c7e-9a51-3f7d2e9b0c11\"}"
@@ -274,7 +274,7 @@
     {
       "name": "get_application",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_application",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_application",
       "body": {
         "mimeType": "application/json",
         "text": "{\"application_id\":\"7d3a9e52-1f6b-4b28-8c0d-5e4f1a2b3c22\"}"
@@ -297,7 +297,7 @@
     {
       "name": "get_loan",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_loan",
       "body": {
         "mimeType": "application/json",
         "text": "{\"loan_id\":\"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33\"}"
@@ -320,7 +320,7 @@
     {
       "name": "repay_loan",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/repay_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/repay_loan",
       "body": {
         "mimeType": "application/json",
         "text": "{\"loan_id\":\"9c1e4b7a-3d2f-4a6e-b8c9-0f1e2d3c4b33\"}"
@@ -343,7 +343,7 @@
     {
       "name": "ack_notices",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/ack_notices",
+      "url": "https://mandate-bank.onrender.com/api/v1/ack_notices",
       "body": {
         "mimeType": "application/json",
         "text": "{}"
@@ -366,7 +366,7 @@
     {
       "name": "redeem_notes",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/redeem_notes",
+      "url": "https://mandate-bank.onrender.com/api/v1/redeem_notes",
       "body": {
         "mimeType": "application/json",
         "text": "{\"amount_cents\":1000}"
@@ -389,7 +389,7 @@
     {
       "name": "cancel_redemption",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/cancel_redemption",
+      "url": "https://mandate-bank.onrender.com/api/v1/cancel_redemption",
       "body": {
         "mimeType": "application/json",
         "text": "{\"note_tx_id\":\"4e8b2c6d-5a1f-4d3e-9b7c-1a2b3c4d5e44\"}"
@@ -412,7 +412,7 @@
     {
       "name": "get_statement",
       "method": "POST",
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_statement",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_statement",
       "body": {
         "mimeType": "application/json",
         "text": "{}"

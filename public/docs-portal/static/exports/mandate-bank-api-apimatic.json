@@ -1,7 +1,7 @@
 {
   "AuthenticateEndpointsWith": [],
   "Name": "Mandate Bank API",
-  "BaseUri": "https://agentic-bank-mu.vercel.app",
+  "BaseUri": "https://mandate-bank.onrender.com",
   "ServerConfiguration": {
     "UseParent": false,
     "DefaultEnvironment": "production",
@@ -13,7 +13,7 @@
         "Servers": [
           {
             "Name": "default",
-            "Url": "https://agentic-bank-mu.vercel.app",
+            "Url": "https://mandate-bank.onrender.com",
             "Parameters": []
           }
         ],
@@ -26,7 +26,7 @@
   "Version": "1.0.0",
   "Contact": {
     "Name": "Mandate",
-    "Url": "https://agentic-bank-mu.vercel.app/agents.md"
+    "Url": "https://mandate-bank.onrender.com/agents.md"
   },
   "AdditionalHeaders": [],
   "Authentication": {

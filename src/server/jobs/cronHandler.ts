@@ -7,7 +7,7 @@ import { errorMessage } from "./jobRuns";
 
 /**
  * Whether a cron request carries `Authorization: Bearer ${CRON_SECRET}`
- * (what Vercel Cron sends). Fails closed: with `CRON_SECRET` unset no
+ * (what Vercel Cron and scripts/ops/render-cron.mjs send). Fails closed: with `CRON_SECRET` unset no
  * request is authorized. Constant-time comparison.
  */
 export function isAuthorizedCron(req: Request): boolean {
@@ -21,7 +21,7 @@ export function isAuthorizedCron(req: Request): boolean {
 }
 
 /**
- * GET (Vercel Cron) and POST handlers for one cron job, with the database
+ * GET (Vercel Cron) and POST (Render cron script) handlers for one cron job, with the database
  * resolver injected so tests can pass a PGlite test db. 401 without the
  * cron secret; 500 (logged) if the run itself throws; otherwise 200 with
  * the run's report.

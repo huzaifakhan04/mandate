@@ -8,14 +8,14 @@ Mandate is a sandbox bank whose customers are AI agents. Agents **lend**: they b
 
 | | |
 | --- | --- |
-| Bank console (live mission control) | https://agentic-bank-mu.vercel.app/console |
-| Agent guide | https://agentic-bank-mu.vercel.app/agents.md |
-| llms.txt | https://agentic-bank-mu.vercel.app/llms.txt |
-| OpenAPI 3.1 | https://agentic-bank-mu.vercel.app/openapi.json |
-| MCP (Streamable HTTP) | `https://agentic-bank-mu.vercel.app/api/mcp/mcp` |
-| Postman | [![Run in Postman](https://run.pstmn.io/button.svg)](https://god.gw.postman.com/run-collection/60016827-6e5e436c-eaa8-4c76-9df9-4f7f1a71cd58?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D60016827-6e5e436c-eaa8-4c76-9df9-4f7f1a71cd58%26entityType%3Dcollection%26workspaceId%3D81e993e5-c62f-4322-9df4-3fea36d9a08e) · [public workspace](https://www.postman.com/huzaifa-khan-inbox-6271629/mandate-paypal-ai-hackathon) · [raw collection](https://agentic-bank-mu.vercel.app/postman/collection.json) |
-| SDKs (APIMatic) | https://agentic-bank-mu.vercel.app/sdks (TypeScript + Python zips) · [`sdks/`](sdks/) · [docs portal](https://agentic-bank-mu.vercel.app/docs-portal/index.html) |
-| Human dashboard | https://agentic-bank-mu.vercel.app/dashboard (Log in with PayPal sandbox) |
+| Bank console (live mission control) | https://mandate-bank.onrender.com/console |
+| Agent guide | https://mandate-bank.onrender.com/agents.md |
+| llms.txt | https://mandate-bank.onrender.com/llms.txt |
+| OpenAPI 3.1 | https://mandate-bank.onrender.com/openapi.json |
+| MCP (Streamable HTTP) | `https://mandate-bank.onrender.com/api/mcp/mcp` |
+| Postman | [![Run in Postman](https://run.pstmn.io/button.svg)](https://god.gw.postman.com/run-collection/60016827-6e5e436c-eaa8-4c76-9df9-4f7f1a71cd58?action=collection%2Ffork&source=rip_markdown&collection-url=entityId%3D60016827-6e5e436c-eaa8-4c76-9df9-4f7f1a71cd58%26entityType%3Dcollection%26workspaceId%3D81e993e5-c62f-4322-9df4-3fea36d9a08e) · [public workspace](https://www.postman.com/huzaifa-khan-inbox-6271629/mandate-paypal-ai-hackathon) · [raw collection](https://mandate-bank.onrender.com/postman/collection.json) |
+| SDKs (APIMatic) | https://mandate-bank.onrender.com/sdks (TypeScript + Python zips) · [`sdks/`](sdks/) · [docs portal](https://mandate-bank.onrender.com/docs-portal/index.html) |
+| Human dashboard | https://mandate-bank.onrender.com/dashboard (Log in with PayPal sandbox) |
 
 ## Five-minute quickstart: point your own agent at the bank
 
@@ -23,27 +23,27 @@ Mandate is a sandbox bank whose customers are AI agents. Agents **lend**: they b
 
 ```sh
 # Claude Code
-claude mcp add --transport http mandate https://agentic-bank-mu.vercel.app/api/mcp/mcp
+claude mcp add --transport http mandate https://mandate-bank.onrender.com/api/mcp/mcp
 ```
 
 ```json
 // Cursor: ~/.cursor/mcp.json
-{ "mcpServers": { "mandate": { "url": "https://agentic-bank-mu.vercel.app/api/mcp/mcp" } } }
+{ "mcpServers": { "mandate": { "url": "https://mandate-bank.onrender.com/api/mcp/mcp" } } }
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.mandate]
-url = "https://agentic-bank-mu.vercel.app/api/mcp/mcp"
+url = "https://mandate-bank.onrender.com/api/mcp/mcp"
 ```
 
-**2. Give it a goal.** For example: *"Read https://agentic-bank-mu.vercel.app/agents.md, register with Mandate (my PayPal sandbox account is you@example.com), and fund the bank with $30 of notes."* The agent calls `get_bank_guide` and `register_agent`, then prints its `api_key` once. Add that key to the MCP config as `Authorization: Bearer <api_key>`. The exact config for each client is in [/agents.md](https://agentic-bank-mu.vercel.app/agents.md#connect).
+**2. Give it a goal.** For example: *"Read https://mandate-bank.onrender.com/agents.md, register with Mandate (my PayPal sandbox account is you@example.com), and fund the bank with $30 of notes."* The agent calls `get_bank_guide` and `register_agent`, then prints its `api_key` once. Add that key to the MCP config as `Authorization: Bearer <api_key>`. The exact config for each client is in [/agents.md](https://mandate-bank.onrender.com/agents.md#connect).
 
 **3. Approve as the human.** When a response carries a `human_approval` next action, open the PayPal sandbox URL and approve it, then tell the agent to continue. It calls `confirm_checkout`. To borrow, open the agent's `claim_url`, verify with PayPal, claim the agent and sign a mandate. The agent can then `check_eligibility`, `apply_for_loan` (with `declarations.no_other_debt` and `attest: true`), `accept_offer` and repay.
 
-**4. Watch it happen** on the [console](https://agentic-bank-mu.vercel.app/console): the ledger, the money flow, and the PayPal API log with bodies redacted.
+**4. Watch it happen** on the [console](https://mandate-bank.onrender.com/console): the ledger, the money flow, and the PayPal API log with bodies redacted.
 
-Prefer plain HTTP? Use `curl -X POST https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide -H 'Content-Type: application/json' -d '{}'`, Postman, or the generated SDKs.
+Prefer plain HTTP? Use `curl -X POST https://mandate-bank.onrender.com/api/v1/get_bank_guide -H 'Content-Type: application/json' -d '{}'`, Postman, or the generated SDKs.
 
 ## Architecture
 
@@ -55,7 +55,7 @@ flowchart LR
     H["Humans<br/>dashboard · claim · mandates"] -->|Log in with PayPal| UI
     J["Judges / public"] --> CON["Console<br/>AG Grid mission control"]
   end
-  subgraph Vercel["Next.js on Vercel"]
+  subgraph Render["Next.js on Render"]
     MCP["/api/mcp/mcp"] --> RT
     REST["/api/v1/{tool}"] --> RT
     DOCS["/agents.md · /llms.txt · /openapi.json"] --- REG
@@ -64,7 +64,7 @@ flowchart LR
     SVC --> LED[("Double-entry ledger<br/>Neon Postgres + Drizzle, world-scoped")]
     SVC --> AI["OpenAI<br/>explanations and memos only"]
     SVC -->|after commit| RAIL["Rails<br/>PayPal rail · Sim rail"]
-    CRON["Vercel cron every minute<br/>reconcile · clock tick"] --> SVC
+    CRON["Render cron jobs every minute<br/>reconcile · clock tick"] --> SVC
     WH["/api/webhooks/paypal"] --> SVC
     UI["Dashboard pages"] --> SVC
     CON --> LED
@@ -181,6 +181,6 @@ Mandate is a sandbox bank for AI agents on PayPal. With Bryntum, **the borrowing
 
 ### Bryntum packages and license
 
-We use **Bryntum 8.0** (`@bryntum/scheduler-react-enterprise`, `@bryntum/calendar-react-enterprise` and their cores, pinned to `8.0.0`). 8.x ships its tiered packages on **public npm**, so the project `.npmrc` maps `@bryntum` to `https://registry.npmjs.org/` (overriding a 7.x `npm.bryntum.com` mapping in `~/.npmrc`, which would make the tier packages 404). No npm auth token is needed — locally or on Vercel.
+We use **Bryntum 8.0** (`@bryntum/scheduler-react-enterprise`, `@bryntum/calendar-react-enterprise` and their cores, pinned to `8.0.0`). 8.x ships its tiered packages on **public npm**, so the project `.npmrc` maps `@bryntum` to `https://registry.npmjs.org/` (overriding a 7.x `npm.bryntum.com` mapping in `~/.npmrc`, which would make the tier packages 404). No npm auth token is needed — locally or on Render.
 
-The license key is applied with Bryntum's documented API (`bryntum.licenseKey = …`, `src/app/_bryntum/license.ts`) from the `BRYNTUM_LICENSE_KEY` env var (set it in `.env.local` and in Vercel's project env). Without a key the components run as a Bryntum trial (a "Trial" badge).
+The license key is applied with Bryntum's documented API (`bryntum.licenseKey = …`, `src/app/_bryntum/license.ts`) from the `BRYNTUM_LICENSE_KEY` env var (set it in `.env.local` and in the Render service env). Without a key the components run as a Bryntum trial (a "Trial" badge).

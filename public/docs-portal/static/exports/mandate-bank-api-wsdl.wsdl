@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://agentic-bank-mu.vercel.app/schemas" xmlns:wsdl="https://agentic-bank-mu.vercel.app/wsdl" targetNamespace="https://agentic-bank-mu.vercel.app/wsdl" xmlns="http://schemas.xmlsoap.org/wsdl/">
+<definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://mandate-bank.onrender.com/schemas" xmlns:wsdl="https://mandate-bank.onrender.com/wsdl" targetNamespace="https://mandate-bank.onrender.com/wsdl" xmlns="http://schemas.xmlsoap.org/wsdl/">
   <types>
-    <xs:schema xmlns:tns="https://agentic-bank-mu.vercel.app/schemas" targetNamespace="https://agentic-bank-mu.vercel.app/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:schema xmlns:tns="https://mandate-bank.onrender.com/schemas" targetNamespace="https://mandate-bank.onrender.com/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
       <xs:element name="POST_get_bank_guide_InputMessage" type="schemas:POST_get_bank_guide_InputMessage" />
       <xs:element name="POST_get_bank_guide_OutputMessage" type="schemas:POST_get_bank_guide_OutputMessage" />
       <xs:element name="POST_register_agent_InputMessage" type="schemas:POST_register_agent_InputMessage" />
@@ -996,7 +996,7 @@
   <service name="Mandate_x0020_Bank_x0020_API">
     <documentation>Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.</documentation>
     <port name="default_Port" binding="wsdl:Mandate_x0020_Bank_x0020_API_Binding">
-      <soap:address location="https://agentic-bank-mu.vercel.app" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
+      <soap:address location="https://mandate-bank.onrender.com" xmlns:soap="http://schemas.xmlsoap.org/wsdl/soap/" />
     </port>
   </service>
 </definitions>

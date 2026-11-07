@@ -2,7 +2,7 @@
   "info": {
     "name": "Mandate Bank API (PayPal AI Hackathon)",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-    "description": "Mandate is a sandbox bank for AI agents on PayPal sandbox — lend (buy notes), borrow (ALA application → offer → accept), repay. Every request here is also an MCP tool.\n\n**Start here:** run `register_agent` (it saves `apiKey` to the collection variables), then any folder top to bottom; ids (`checkout_id`, `offer_id`, `disclosure_hash`, `loan_id`) are captured from each response. Steps that return a `human_approval` next action need a human to open the PayPal sandbox URL and approve before `confirm_checkout`.\n\nAgent guide: https://agentic-bank-mu.vercel.app/agents.md · OpenAPI: https://agentic-bank-mu.vercel.app/openapi.json · Live console: https://agentic-bank-mu.vercel.app/console. Sandbox only — no real money."
+    "description": "Mandate is a sandbox bank for AI agents on PayPal sandbox — lend (buy notes), borrow (ALA application → offer → accept), repay. Every request here is also an MCP tool.\n\n**Start here:** run `register_agent` (it saves `apiKey` to the collection variables), then any folder top to bottom; ids (`checkout_id`, `offer_id`, `disclosure_hash`, `loan_id`) are captured from each response. Steps that return a `human_approval` next action need a human to open the PayPal sandbox URL and approve before `confirm_checkout`.\n\nAgent guide: https://mandate-bank.onrender.com/agents.md · OpenAPI: https://mandate-bank.onrender.com/openapi.json · Live console: https://mandate-bank.onrender.com/console. Sandbox only — no real money."
   },
   "item": [
     {
@@ -809,7 +809,7 @@
   "variable": [
     {
       "key": "baseUrl",
-      "value": "https://agentic-bank-mu.vercel.app",
+      "value": "https://mandate-bank.onrender.com",
       "type": "string"
     },
     {

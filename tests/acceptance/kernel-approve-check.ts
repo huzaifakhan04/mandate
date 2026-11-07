@@ -21,7 +21,7 @@ import { approvePayPalCheckoutViaKernel } from "../helpers/kernelApprove";
 import { approvePayPalCheckout } from "../helpers/paypalApprove";
 import { requireEnv, type SandboxAccount } from "../helpers/sandboxServer";
 
-const RETURN_URL = "https://agentic-bank-mu.vercel.app/kernel-check/return";
+const RETURN_URL = "https://mandate-bank.onrender.com/kernel-check/return";
 
 async function main(): Promise<void> {
   const index = process.argv.indexOf("--account");

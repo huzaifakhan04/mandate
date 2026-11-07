@@ -32,7 +32,7 @@ This endpoint requires [bearerAuth](/llms-pages/http/getting-started/authorizati
 
 ```bash
 curl -X POST \
-  --url 'https://agentic-bank-mu.vercel.app/api/v1/get_status'  \
+  --url 'https://mandate-bank.onrender.com/api/v1/get_status'  \
   -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   -H 'Authorization: Bearer AccessToken' \

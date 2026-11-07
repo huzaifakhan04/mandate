@@ -29,7 +29,7 @@ POST /api/v1/get_bank_guide
 
 ```bash
 curl -X POST \
-  --url 'https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide'  \
+  --url 'https://mandate-bank.onrender.com/api/v1/get_bank_guide'  \
   -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   --data-raw '{}'

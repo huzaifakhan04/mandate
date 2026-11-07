@@ -31,7 +31,7 @@ import { buildOpenApiDocument } from "../../src/server/contracts/registry";
 import "../../src/server/contracts/tools";
 
 const API = "https://api.apimatic.io";
-const DEFAULT_BASE = "https://agentic-bank-mu.vercel.app";
+const DEFAULT_BASE = "https://mandate-bank.onrender.com";
 const STATE_DIR = resolve("docs/sponsors/apimatic");
 const STATE_FILE = join(STATE_DIR, "api-entity.json");
 const SDK_DIR = resolve("sdks");

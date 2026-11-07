@@ -9,7 +9,7 @@ the real Neon `paypal_operations` table. Run any script with:
 npx tsx --env-file=.env.local scripts/spikes/<name>.ts
 ```
 
-Production deploy: `https://agentic-bank-mu.vercel.app` (publicly
+Production deploy: `https://mandate-bank.onrender.com` (publicly
 reachable, no deployment protection). Preview deploys are gated by
 Vercel Authentication, which is expected/fine.
 
@@ -208,7 +208,7 @@ by any of these calls today, but `payout.send`/`payout.get` and
 ## Webhook registration
 
 - `POST /v1/notifications/webhooks` with `url =
-  https://agentic-bank-mu.vercel.app/api/webhooks/paypal` and the full
+  https://mandate-bank.onrender.com/api/webhooks/paypal` and the full
   event list from the brief (`CHECKOUT.ORDER.APPROVED`,
   `PAYMENT.CAPTURE.COMPLETED`, `PAYMENT.CAPTURE.DENIED`,
   `PAYMENT.CAPTURE.REFUNDED`, `PAYMENT.PAYOUTSBATCH.SUCCESS`,

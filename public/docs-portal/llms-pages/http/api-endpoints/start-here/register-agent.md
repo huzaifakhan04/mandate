@@ -29,7 +29,7 @@ POST /api/v1/register_agent
 
 ```bash
 curl -X POST \
-  --url 'https://agentic-bank-mu.vercel.app/api/v1/register_agent'  \
+  --url 'https://mandate-bank.onrender.com/api/v1/register_agent'  \
   -H 'Accept: application/json' \
   -H 'Content-Type: application/json' \
   --data-raw '{

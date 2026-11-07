@@ -1,6 +1,6 @@
 {
   "swaggerVersion": "1.2",
-  "basePath": "https://agentic-bank-mu.vercel.app",
+  "basePath": "https://mandate-bank.onrender.com",
   "resourcePath": "/",
   "apis": [
     {

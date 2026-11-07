@@ -4,10 +4,10 @@ info:
   description: 'Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.'
   contact:
     name: Mandate
-    url: https://agentic-bank-mu.vercel.app/agents.md
+    url: https://mandate-bank.onrender.com/agents.md
   version: '1.0.0'
 servers:
-- url: https://agentic-bank-mu.vercel.app
+- url: https://mandate-bank.onrender.com
   description: Mandate (PayPal sandbox — no real money)
   variables: {}
 paths:

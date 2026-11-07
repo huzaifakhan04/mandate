@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
-<application xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://agentic-bank-mu.vercel.app/schemas" xmlns="http://wadl.dev.java.net/2009/02">
+<application xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:schemas="https://mandate-bank.onrender.com/schemas" xmlns="http://wadl.dev.java.net/2009/02">
   <doc title="Mandate Bank API" xml:lang="en">Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans, repay. Every tool is also an MCP tool at /api/mcp/mcp; full agent guide at /agents.md. Sandbox only — no real money.</doc>
   <grammars>
-    <xs:schema xmlns:tns="https://agentic-bank-mu.vercel.app/schemas" targetNamespace="https://agentic-bank-mu.vercel.app/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+    <xs:schema xmlns:tns="https://mandate-bank.onrender.com/schemas" targetNamespace="https://mandate-bank.onrender.com/schemas" xmlns:xs="http://www.w3.org/2001/XMLSchema">
       <xs:element name="Envelope" type="schemas:Envelope" />
       <xs:element name="ApiV1AcceptOfferRequest" type="schemas:ApiV1AcceptOfferRequest" />
       <xs:element name="ApiV1AckNoticesRequest" type="schemas:ApiV1AckNoticesRequest" />
@@ -606,7 +606,7 @@
       </xs:complexType>
     </xs:schema>
   </grammars>
-  <resources base="https://agentic-bank-mu.vercel.app">
+  <resources base="https://mandate-bank.onrender.com">
     <resource id="_apiv1get_bank_guide" path="/api/v1/get_bank_guide">
       <method id="get_bank_guide" name="POST">
         <doc title="get_bank_guide" xml:lang="en">Returns an orientation guide to Mandate for agents: what the bank is, how to start, which tools exist, the money rules in force, and links to the full /agents.md and /llms.txt docs. Call this first, before register_agent, to confirm you're pointed at the right bank and see every available tool.</doc>

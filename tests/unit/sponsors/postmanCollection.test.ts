@@ -13,7 +13,7 @@ import {
   withVariables,
 } from "@/server/sponsors/postmanCollection";
 
-const BASE = "https://agentic-bank-mu.vercel.app";
+const BASE = "https://mandate-bank.onrender.com";
 
 describe("Postman collection (P7)", () => {
   const collection = buildPostmanCollection(registry, { baseUrl: `${BASE}/` });

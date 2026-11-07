@@ -15,7 +15,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/get_bank_guide"
               ]
@@ -67,7 +67,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/register_agent"
               ]
@@ -119,7 +119,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/get_status"
               ]
@@ -175,7 +175,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/register_public_key"
               ]
@@ -236,7 +236,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/buy_notes"
               ]
@@ -292,7 +292,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/confirm_checkout"
               ]
@@ -353,7 +353,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/check_eligibility"
               ]
@@ -409,7 +409,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/apply_for_loan"
               ]
@@ -465,7 +465,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/accept_offer"
               ]
@@ -521,7 +521,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/decline_offer"
               ]
@@ -577,7 +577,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/get_application"
               ]
@@ -638,7 +638,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/get_loan"
               ]
@@ -694,7 +694,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/repay_loan"
               ]
@@ -755,7 +755,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/ack_notices"
               ]
@@ -816,7 +816,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/redeem_notes"
               ]
@@ -872,7 +872,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/cancel_redemption"
               ]
@@ -928,7 +928,7 @@
           "request": {
             "url": {
               "protocol": "https",
-              "host": "agentic-bank-mu.vercel.app",
+              "host": "mandate-bank.onrender.com",
               "path": [
                 "api/v1/get_statement"
               ]

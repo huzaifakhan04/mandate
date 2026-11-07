@@ -85,7 +85,7 @@
         "type": "noauth"
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_bank_guide",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_bank_guide",
       "responses": [
         {
           "request": "469f3ed6-7a2f-42e9-a16b-83e283dc4911",
@@ -139,7 +139,7 @@
         "type": "noauth"
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_agent",
+      "url": "https://mandate-bank.onrender.com/api/v1/register_agent",
       "responses": [
         {
           "request": "7dc175e2-512c-4f46-8236-c13de4e4efea",
@@ -205,7 +205,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_status",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_status",
       "responses": [
         {
           "request": "1c681fe3-4ce2-4e12-99a4-114e4193bae3",
@@ -271,7 +271,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/register_public_key",
+      "url": "https://mandate-bank.onrender.com/api/v1/register_public_key",
       "responses": [
         {
           "request": "f1ec66a4-5b9c-4796-b22b-413066e8c87a",
@@ -337,7 +337,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/buy_notes",
+      "url": "https://mandate-bank.onrender.com/api/v1/buy_notes",
       "responses": [
         {
           "request": "020fc05c-ae2e-4401-830c-cef9b4475e83",
@@ -403,7 +403,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/confirm_checkout",
+      "url": "https://mandate-bank.onrender.com/api/v1/confirm_checkout",
       "responses": [
         {
           "request": "3dda9a56-7ab2-46f1-bd89-bd5a5146f3c9",
@@ -469,7 +469,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/check_eligibility",
+      "url": "https://mandate-bank.onrender.com/api/v1/check_eligibility",
       "responses": [
         {
           "request": "8c8ac182-de25-42dc-8a40-e805689c02ba",
@@ -535,7 +535,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/apply_for_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/apply_for_loan",
       "responses": [
         {
           "request": "4102a471-914b-46ee-87da-98f87271ea09",
@@ -601,7 +601,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/accept_offer",
+      "url": "https://mandate-bank.onrender.com/api/v1/accept_offer",
       "responses": [
         {
           "request": "7097d3ee-56fe-4d80-9a56-df6bd5038763",
@@ -667,7 +667,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/decline_offer",
+      "url": "https://mandate-bank.onrender.com/api/v1/decline_offer",
       "responses": [
         {
           "request": "b1b80a72-3244-45d4-8e5f-f852cd1d4679",
@@ -733,7 +733,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_application",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_application",
       "responses": [
         {
           "request": "2fc5d1a5-4000-4071-afd5-9e8eaae85d20",
@@ -799,7 +799,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_loan",
       "responses": [
         {
           "request": "598239b5-a0d7-43ac-9fbd-38cbabe1d901",
@@ -865,7 +865,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/repay_loan",
+      "url": "https://mandate-bank.onrender.com/api/v1/repay_loan",
       "responses": [
         {
           "request": "45e34624-478c-4974-b4ae-8962921dbb6a",
@@ -931,7 +931,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/ack_notices",
+      "url": "https://mandate-bank.onrender.com/api/v1/ack_notices",
       "responses": [
         {
           "request": "45427510-367c-43f1-8d55-abb046e2f3dc",
@@ -997,7 +997,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/redeem_notes",
+      "url": "https://mandate-bank.onrender.com/api/v1/redeem_notes",
       "responses": [
         {
           "request": "cd83a24d-5d10-47ea-939b-018e29f41bc1",
@@ -1063,7 +1063,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/cancel_redemption",
+      "url": "https://mandate-bank.onrender.com/api/v1/cancel_redemption",
       "responses": [
         {
           "request": "5897e9ec-ff91-49a3-8e28-68c522ea213e",
@@ -1129,7 +1129,7 @@
         ]
       },
       "pathVariables": {},
-      "url": "https://agentic-bank-mu.vercel.app/api/v1/get_statement",
+      "url": "https://mandate-bank.onrender.com/api/v1/get_statement",
       "responses": [
         {
           "request": "435136cf-60ac-45b7-bf59-a0e9b6defb9c",

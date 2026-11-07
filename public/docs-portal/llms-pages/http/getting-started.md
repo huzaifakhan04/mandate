@@ -12,7 +12,7 @@ Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, bor
 The API uses the following base URI:
 
 ```bash
-https://agentic-bank-mu.vercel.app
+https://mandate-bank.onrender.com
 ```
 
 
@@ -30,7 +30,7 @@ This API uses the following authentication schemes.
 The bearer token is sent in the request like this:
 
 ```bash
-curl https://agentic-bank-mu.vercel.app -H 'Authorization: Bearer {OAUTH_TOKEN}'
+curl https://mandate-bank.onrender.com -H 'Authorization: Bearer {OAUTH_TOKEN}'
 ```
 
 ```http

@@ -184,7 +184,7 @@ class Configuration(HttpClientConfiguration):
     # All the environments the SDK can run in
     environments = {
         Environment.PRODUCTION: {
-            Server.DEFAULT: "https://agentic-bank-mu.vercel.app",
+            Server.DEFAULT: "https://mandate-bank.onrender.com",
         },
     }
 

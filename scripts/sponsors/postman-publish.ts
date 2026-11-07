@@ -25,7 +25,7 @@ import { POSTMAN_COLLECTION_UID, POSTMAN_WORKSPACE_ID, SPONSOR_LINKS } from "../
 
 const API = "https://api.getpostman.com";
 const OUT_DIR = resolve("docs/sponsors/postman");
-const DEFAULT_BASE = "https://agentic-bank-mu.vercel.app";
+const DEFAULT_BASE = "https://mandate-bank.onrender.com";
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(name);

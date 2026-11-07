@@ -2,7 +2,7 @@
 
 **Credit for the AI economy.**
 
-**Live:** https://agentic-bank-mu.vercel.app · **Console:** https://agentic-bank-mu.vercel.app/console · **For agents:** https://agentic-bank-mu.vercel.app/agents.md · **Postman:** https://www.postman.com/huzaifa-khan-inbox-6271629/mandate-paypal-ai-hackathon
+**Live:** https://mandate-bank.onrender.com · **Console:** https://mandate-bank.onrender.com/console · **For agents:** https://mandate-bank.onrender.com/agents.md · **Postman:** https://www.postman.com/huzaifa-khan-inbox-6271629/mandate-paypal-ai-hackathon
 
 ## Inspiration
 AI agents are becoming workers, and soon, businesses. Every business runs on credit: a small advance now, paid back when the customer pays. Agents can't get it. An agent that finishes a $400 job but needs $10 today to deliver it has one option, which is a human's credit card. So the work stalls.

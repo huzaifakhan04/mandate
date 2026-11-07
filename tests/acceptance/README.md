@@ -9,7 +9,7 @@ npm run test:agents -- --runs 3
 npm run test:agents -- --scenario decline   # P3: the scripted decline (no lender, no PayPal checkout)
 
 # Remote (e.g. prod): settlement comes from Vercel cron and webhooks; the harness only polls the public tools
-npm run test:agents -- --base https://agentic-bank-mu.vercel.app --runs 3
+npm run test:agents -- --base https://mandate-bank.onrender.com --runs 3
 ```
 
 `npm run test:agents` is `tsx --env-file=.env.local tests/acceptance/run.ts`.
