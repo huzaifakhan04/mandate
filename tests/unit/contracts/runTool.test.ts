@@ -142,7 +142,7 @@ describe("runTool", () => {
     await runTool(tool, "echo_tool", {}, { getDb: async () => db, authorization: `Bearer ${key}` });
 
     expect(seenAgentId).toBe(agentId);
-    expect(seenAgent).toEqual({ agentId, worldId, status: "active" });
+    expect(seenAgent).toEqual({ agentId, worldId, status: "active", scope: "full" });
   });
 
   it("returns 401 UNAUTHORIZED with missing_api_key when auth: 'agent' has no Authorization header", async () => {

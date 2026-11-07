@@ -10,6 +10,7 @@ import { fail, ok, type Envelope, type NextAction } from "../envelope";
 import { halvedCheckArgs, invoiceBackedCheckArgs } from "../sampleArgs";
 import { PURPOSE_PLACEHOLDER } from "./checkEligibility";
 import { defineTool } from "../registry";
+import { applyForLoanLimits } from "../rateLimits";
 import { loanTreasuryLimits, type LoanTreasuryFacts } from "../../domain/treasury";
 import type { ReasonCode } from "../../domain/reasons";
 
@@ -274,6 +275,7 @@ export const applyForLoanTool = defineTool({
   // mandate → 403 MANDATE_REQUIRED.
   requiresBorrowTier: true,
   readOnly: false,
+  rateLimits: applyForLoanLimits,
   input: inputSchema,
   output: outputSchema,
   handler: async (input, ctx) => {

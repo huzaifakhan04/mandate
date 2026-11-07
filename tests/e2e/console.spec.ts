@@ -5,8 +5,10 @@ import { expect, test, type Page } from "@playwright/test";
 /**
  * P6: the public bank console (mission control) at 1280 and 390 px.
  *
- * - Anonymous: the main world, read-only (no clock buttons, no switcher
- *   choices), legal footer, snapshot API no-store and PII-free.
+ * - Anonymous (P8): the public demo world by default (badge, note, bots'
+ *   activity, no clock buttons), and a switcher to the main world (real
+ *   PayPal sandbox), both read-only; legal footer; snapshot API no-store
+ *   and PII-free.
  * - Owner: a private world seeded with bot activity (+7 days from the
  *   console's own clock controls) — KPIs, money flow, PayPal log and the
  *   AG Grid tabs fill in; another page's clock move reaches this page by
@@ -28,20 +30,39 @@ async function noHorizontalScroll(page: Page) {
 }
 
 for (const width of [1280, 390]) {
-  test(`P6: console — public main world, owner's private world, live feed (${width} px)`, async ({ page, browser, baseURL }) => {
+  test(`P6+P8: console — demo world default, main world, owner's private world, live feed (${width} px)`, async ({ page, browser, baseURL }) => {
     test.setTimeout(180_000);
     const height = width === 390 ? 844 : 900;
     await page.setViewportSize({ width, height });
 
-    // --- anonymous: main world ---
+    // --- anonymous: P8 — the public demo world by default ---
     await page.goto("/console");
     await expect(page.getByRole("link", { name: "Mandate home" })).toBeVisible();
     await expect(page.getByTestId("kpi-strip")).toBeVisible();
-    await expect(page.getByTestId("console-world-switcher")).toContainText("Main world");
-    await expect(page.getByTestId("console-world-switcher").getByRole("combobox")).toHaveCount(0);
+    await expect(page.getByTestId("demo-badge")).toHaveText("Demo world · simulated money");
+    await expect(page.getByTestId("demo-note")).toContainText("Nothing here touches PayPal");
+    await expect(page.getByTestId("clock-speed")).toHaveText("1 day / 10 min");
+    // The demo world's lender bots funded the pool at creation.
+    await expect(page.getByTestId("kpi-notes")).not.toContainText("$0.00");
     await expect(page.getByTestId("advance-1")).toHaveCount(0);
     await expect(page.getByText(LEGAL)).toBeVisible();
     await expect(page.getByTestId("feed-status")).toContainText("live");
+    const demoApi = await page.request.get("/api/console/snapshot?world=demo");
+    expect(demoApi.status()).toBe(200);
+    expect(demoApi.headers()["cache-control"]).toBe("no-store");
+    const demoJson = await demoApi.text();
+    expect(demoJson).not.toContain("@");
+    expect((JSON.parse(demoJson) as { snapshot: { world: { kind: string } } }).snapshot.world.kind).toBe("demo");
+    await noHorizontalScroll(page);
+
+    // --- anonymous: the switcher offers the main world (real PayPal sandbox), read-only ---
+    const anonSwitcher = page.getByTestId("console-world-switcher").getByLabel("World");
+    await expect(anonSwitcher.locator("option")).toHaveText(["Demo world · simulated money", "Main world (real PayPal sandbox)"]);
+    await anonSwitcher.selectOption("main");
+    await expect(page).toHaveURL(/\/console\?world=main/);
+    await expect(page.getByTestId("console-world-switcher")).toContainText("PayPal sandbox");
+    await expect(page.getByTestId("demo-badge")).toHaveCount(0);
+    await expect(page.getByTestId("advance-1")).toHaveCount(0);
     const api = await page.request.get("/api/console/snapshot");
     expect(api.status()).toBe(200);
     expect(api.headers()["cache-control"]).toBe("no-store");
@@ -128,6 +149,7 @@ test("P6: the landing page links to the console", async ({ page }) => {
   await page.getByRole("link", { name: "Watch the bank live →" }).click();
   await expect(page).toHaveURL(/\/console$/);
   await expect(page.getByTestId("kpi-strip")).toBeVisible();
+  await expect(page.getByTestId("demo-badge")).toBeVisible();
   const agentsMd = await page.request.get("/agents.md");
   expect(await agentsMd.text()).toContain("/console");
 });

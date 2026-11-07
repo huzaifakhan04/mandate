@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { ok } from "../envelope";
 import { defineTool } from "../registry";
+import { checkoutLimits } from "../rateLimits";
 import { createNotePurchase, NOTES_DISCLOSURE } from "../../services/notes";
 import { executeOperation, successBody } from "../../paypal/operations";
 
@@ -38,6 +39,7 @@ export const buyNotesTool = defineTool({
   auth: "agent",
   mutating: true,
   readOnly: false,
+  rateLimits: checkoutLimits("buy_notes"),
   input: inputSchema,
   output: outputSchema,
   handler: async (input, ctx) => {

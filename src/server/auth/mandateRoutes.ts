@@ -1,9 +1,11 @@
 import type { Db } from "../db/client";
 import { dollarsToCentsField, percentToBpsField, type MandateSignInput } from "../domain/mandate";
 import { clientIp, revokeMandate, signMandate, type MandateRow } from "../services/mandates";
+import { bufferRequestCapped } from "../http/body";
 import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
 import { isUuid } from "./ownership";
+import { dashboardRateLimit } from "./ownerRoutes";
 import { isSameOriginPost } from "./routes";
 
 /**
@@ -122,8 +124,13 @@ async function readSignInput(request: Request): Promise<MandateSignInput | null>
 }
 
 export function createMandateHandlers({ getDb }: { getDb: () => Promise<Db> }) {
-  /** The common gate: id, same origin, session, body size. Returns the principal id or a response. */
-  function gate(request: Request, agentId: string): { principalId: string } | Response {
+  /**
+   * The common gate: id, same origin, session, body size (P8: enforced
+   * while streaming, so a chunked body without Content-Length is capped
+   * too), then the per-principal dashboard rate limit. Returns the
+   * principal id and a buffered copy of the request, or a response.
+   */
+  async function gate(request: Request, agentId: string): Promise<{ principalId: string; request: Request } | Response> {
     if (!isUuid(agentId)) {
       return failure(request, agentId, 404, "not_found", "Agent not found.");
     }
@@ -134,18 +141,23 @@ export function createMandateHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     if (!session) {
       return failure(request, agentId, 401, "unauthorized", "Sign in with PayPal to continue.");
     }
-    if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY_BYTES) {
+    const buffered = await bufferRequestCapped(request, MAX_BODY_BYTES);
+    if (!buffered) {
       return failure(request, agentId, 413, "too_large", "The request body is too large.");
     }
-    return { principalId: session.principalId };
+    const limited = await dashboardRateLimit(request, getDb, session.principalId, null);
+    if (limited) {
+      return limited;
+    }
+    return { principalId: session.principalId, request: buffered };
   }
 
   async function sign(request: Request, agentId: string): Promise<Response> {
-    const gated = gate(request, agentId);
+    const gated = await gate(request, agentId);
     if (gated instanceof Response) {
       return gated;
     }
-    const input = await readSignInput(request);
+    const input = await readSignInput(gated.request);
     if (!input) {
       return failure(request, agentId, 400, "invalid_body", "Send the mandate fields as JSON or a form.");
     }
@@ -178,7 +190,7 @@ export function createMandateHandlers({ getDb }: { getDb: () => Promise<Db> }) {
   }
 
   async function revoke(request: Request, agentId: string): Promise<Response> {
-    const gated = gate(request, agentId);
+    const gated = await gate(request, agentId);
     if (gated instanceof Response) {
       return gated;
     }

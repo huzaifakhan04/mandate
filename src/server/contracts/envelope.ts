@@ -129,6 +129,10 @@ const STATUS_HTTP: Record<string, number> = {
   // P7 (repayment plans): plan_repayments / reschedule_installment broke a plan rule, or the loan already has a plan.
   INVALID_PLAN: 400,
   PLAN_EXISTS: 409,
+  // P8 (hardening): too many calls in a window (data.retry_after_seconds); a read-only key on a mutating tool; the public demo world.
+  RATE_LIMITED: 429,
+  FORBIDDEN_SCOPE: 403,
+  DEMO_WORLD_READ_ONLY: 403,
 };
 
 /** Maps an envelope's `status` to the HTTP status it should be served with. */

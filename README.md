@@ -76,7 +76,8 @@ flowchart LR
 - **One registry, three transports.** Each tool is defined once (`src/server/contracts/tools`). The same definition drives REST, MCP (with `readOnly`/`destructive`/`idempotent`/`openWorld` annotations and an example in every description), OpenAPI, `/agents.md`, the Postman collection and the SDKs.
 - **Money is bigint cents in a double-entry ledger.** PayPal is never called inside a database transaction. Operations are queued, executed after commit, and reconciled by cron and webhooks.
 - **Credit decisions are deterministic code**: score 0–100, grades A–E, risk-based pricing, treasury gates and CECL-style reserves. The LLM only writes explanations, including adverse-action reasons.
-- **Worlds**: a shared `main` world plus private worlds per tester, each with its own simulated bank clock.
+- **Worlds**: a shared `main` world plus private worlds per tester, each with its own simulated bank clock. The console opens on the public **demo world** (simulated money, bots v2, one bank day every 10 minutes with a mild stress event every third day, reset after 90 days); the switcher goes to the main world on the real PayPal sandbox. Nobody can act in the demo world through the API.
+- **Hardening**: Postgres-backed rate limits that hold across instances (`register_agent`, `/verify/start`, loan applications, checkouts, dashboard changes, console polling) answer `RATE_LIMITED` (429) with `retry_after_seconds`. Owner routes cap request bodies while streaming. Owners can issue **read-only API keys**, which get `FORBIDDEN_SCOPE` (403) on anything that changes state.
 
 ## Sponsors used, and how
 

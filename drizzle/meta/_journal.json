@@ -218,6 +218,13 @@
       "when": 1794013513431,
       "tag": "0030_p7_installments",
       "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1794073399539,
+      "tag": "0031_p8_hardening",
+      "breakpoints": true
     }
   ]
 }

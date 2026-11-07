@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-import type { ConsoleSnapshot } from "@/server/services/console";
+import type { ConsoleSnapshot, ConsoleWorldChoice } from "@/server/services/console";
 
 import { MoneyFlow } from "./flow";
 import { ConsoleGrids } from "./grids";
@@ -13,7 +13,7 @@ import { logTime, money, moneyShort, pct, simDate, simTime, statusLabel, toneFor
 export const POLL_MS = 2000;
 const LEGAL = "Sandbox model · simulated money · notes are not deposits and not FDIC-insured";
 
-type Choice = { id: string; name: string; kind: "main" | "private" };
+type Choice = ConsoleWorldChoice;
 type FeedState = "live" | "paused" | "error";
 
 /** A 56×22 sparkline of `values` (flat line when there is nothing to show). */
@@ -92,7 +92,7 @@ export function ConsoleApp({
   licenseKey = null,
 }: {
   initial: ConsoleSnapshot;
-  /** `main` or the private world's id — what the snapshot endpoint is polled with. */
+  /** `demo`, `main` or the private world's id — what the snapshot endpoint is polled with. */
   worldParam: string;
   choices: Choice[];
   /** P7: the Bryntum license key for the Calendar tab (null → trial). */
@@ -227,7 +227,7 @@ export function ConsoleApp({
               >
                 {choices.map((c) => (
                   <option key={c.id} value={c.id}>
-                    {c.kind === "main" ? c.name : `${c.name} · sandbox`}
+                    {c.kind === "private" ? `${c.name} · sandbox` : c.name}
                   </option>
                 ))}
               </select>
@@ -240,7 +240,13 @@ export function ConsoleApp({
           ) : (
             <span className="static">{world.kind === "main" ? "Main world" : world.name}</span>
           )}
-          <span className={`tag ${world.rail === "paypal" ? "sb" : "sim"}`}>{world.rail === "paypal" ? "PayPal sandbox" : "sim rail"}</span>
+          {world.kind === "demo" ? (
+            <span className="tag demo" data-testid="demo-badge" title="Simulated bots on a simulated rail — the clock moves a day every 10 minutes">
+              Demo world · simulated money
+            </span>
+          ) : (
+            <span className={`tag ${world.rail === "paypal" ? "sb" : "sim"}`}>{world.rail === "paypal" ? "PayPal sandbox" : "sim rail"}</span>
+          )}
         </div>
         <div className="clock" data-testid="bank-clock">
           <span className="day" aria-label={`Bank clock: day ${clock.simDay}, ${simDate(sim)} ${simTime(sim)} UTC`}>
@@ -253,7 +259,7 @@ export function ConsoleApp({
             </small>
           </span>
           <span className="feed num" data-testid="clock-speed">
-            {clock.speed > 0 ? `${clock.speed}× real time` : "manual clock"}
+            {world.kind === "demo" ? "1 day / 10 min" : clock.speed > 0 ? `${clock.speed}× real time` : "manual clock"}
           </span>
           {world.kind === "private" ? (
             <>
@@ -273,6 +279,13 @@ export function ConsoleApp({
 
       <main className="shell" id="console-main">
         <h1 className="sr-only">Mandate bank console — {world.kind === "main" ? "main world" : world.name}</h1>
+        {world.kind === "demo" ? (
+          <p className="demo-note" data-testid="demo-note">
+            You are watching the <b>demo world</b>: simulated lender and borrower bots on a simulated rail, one bank day every
+            10 minutes, with a mild stress event every third day. Nothing here touches PayPal.{" "}
+            <Link href="/console?world=main">Switch to the main world (real PayPal sandbox)</Link>.
+          </p>
+        ) : null}
         <section className="kstrip" aria-label="Key figures" data-testid="kpi-strip">
           <Kpi
             testId="kpi-cash"

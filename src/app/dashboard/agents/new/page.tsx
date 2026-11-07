@@ -161,6 +161,17 @@ async function RegisterForm({ searchParams }: { searchParams: SearchParams }) {
                 </span>
               </div>
             ) : null}
+            <div className="field">
+              <label className="check" htmlFor="r-read-only">
+                <input type="checkbox" id="r-read-only" name="read_only" value="on" aria-describedby="hint-read-only" />
+                <span>
+                  Read-only key
+                  <span className="hint" id="hint-read-only">
+                    {" "}— the key can only call read-only tools (status, statements, loans); anything else is refused.
+                  </span>
+                </span>
+              </label>
+            </div>
             <button type="submit" className="btn primary block">
               Register agent
             </button>

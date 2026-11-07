@@ -123,7 +123,8 @@ export class PrivateWorldRailError extends Error {
  */
 async function assertWorldMayUsePaypal(db: Db, worldId: string): Promise<void> {
   const [world] = await db.select({ kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
-  if (world?.kind === "private") {
+  // P8: the public demo world is sim-only too.
+  if (world?.kind === "private" || world?.kind === "demo") {
     throw new PrivateWorldRailError(worldId);
   }
 }

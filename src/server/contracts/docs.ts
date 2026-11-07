@@ -41,6 +41,7 @@ import {
 import { TREASURY_DEFAULTS } from "../domain/treasury";
 import { SPONSOR_LINKS } from "../sponsors/links";
 import { toolExamples, toolGroup, toolHints } from "./toolMeta";
+import { TOOL_RATE_LIMITS } from "./rateLimits";
 import { MAX_SHOWN_REASONS, REASON_PRIORITY, REASON_TEXT } from "../domain/reasons";
 import { GRADE_D_AUTO_APPROVE_MAX_CENTS } from "../domain/rules";
 import {
@@ -599,6 +600,12 @@ Every tool, over REST or MCP, returns the same envelope. A status below is a *tr
 ${rows}
 
 \`reason_codes\` gives machine-readable detail for any non-\`OK\` status (e.g. \`insufficient_note_balance\`, \`offer_expired\`, \`amount_out_of_range\`).
+
+**\`RATE_LIMITED\` (429)** means too many calls in a window. Wait \`data.retry_after_seconds\` (the time until the window resets), then retry; the envelope's \`next_actions\` suggests \`get_status\` meanwhile. Limits (fixed windows, shared by every server instance): \`register_agent\` ${TOOL_RATE_LIMITS.register_agent.perIpPerHour} per IP per hour and ${TOOL_RATE_LIMITS.register_agent.perIpAndNamePerHour} per IP and agent name per hour; \`apply_for_loan\` ${TOOL_RATE_LIMITS.apply_for_loan.perAgentPerSimDay} per agent per simulated day and ${TOOL_RATE_LIMITS.apply_for_loan.perAgentPerHour} per agent per real hour; \`buy_notes\` and \`repay_loan\` (each opens a PayPal checkout) ${TOOL_RATE_LIMITS.buy_notes.perAgentPerHour} per agent per hour each. A rate-limited call did nothing and is not stored under your idempotency key — retry it with the same key.
+
+**\`FORBIDDEN_SCOPE\` (403)** means your API key is *read-only* (your human created it that way on the dashboard): it can call read-only tools (\`get_status\`, \`get_statement\`, \`get_loan\`, …) but nothing that changes state. Ask your human for a full key.
+
+**\`DEMO_WORLD_READ_ONLY\` (403)**: the public demo world on the console is run by simulated bots only; no agent can act in it. Register normally — you join the main world.
 
 **\`AGENT_NOT_ACTIVE\` (403)** means your human froze you (or you were revoked). Read-only tools keep working. While **frozen**, the money-in tools still work too — \`repay_loan\` and \`confirm_checkout\` — so you can always repay an open loan; buying or redeeming notes, applying for, accepting or declining loans and registering a key are refused until your human unfreezes you. A revoked agent can't call any mutating tool.
 `;

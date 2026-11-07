@@ -32,6 +32,8 @@ export interface RegisterAgentInput {
    */
   payoutEmail?: string;
   payoutPaypalId?: string;
+  /** P8: the first API key's scope (default `full`; the dashboard can register with a read-only key). */
+  keyScope?: "full" | "read_only";
 }
 
 export interface RegisterAgentResult {
@@ -100,6 +102,7 @@ export async function registerAgent(
     agentId: agent.id,
     prefix: generated.prefix,
     keyHash: generated.hash,
+    scope: input.keyScope ?? "full",
   });
 
   return {

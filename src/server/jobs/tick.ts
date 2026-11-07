@@ -6,7 +6,9 @@ import { stepEconomyToNow } from "../services/economy";
 import { replanWorldInstallments } from "../services/installments";
 import { expireStaleOffers } from "../services/loans";
 import { processRedemptionQueue } from "../services/notes";
+import { advanceDemoWorld, type DemoAdvanceReport } from "../services/demoWorld";
 import { runRiskDesk } from "../services/riskDesk";
+import { pruneRateLimits } from "../http/dbRateLimit";
 import { writeDailyTreasuryMemo } from "../services/treasuryMemo";
 import { listActivePrivateWorldIds, listActiveWorldsForTick } from "../services/worlds";
 import { errorMessage, errorsRecentlyRecorded, recordJobRun } from "./jobRuns";
@@ -75,13 +77,29 @@ export interface TickReport {
   riskShipped: number;
   riskFlags: number;
   riskInvestigated: number;
+  /** P8: the public demo world's step (`null` when skipped). */
+  demo: Pick<DemoAdvanceReport, "worldId" | "created" | "days" | "simDay" | "stress" | "reset"> | null;
   errors: { worldId: string; message: string }[];
 }
+
+/** P8: rate-limit windows older than this are pruned by the tick. */
+export const RATE_LIMIT_RETENTION_MS = 2 * 86_400_000;
 
 /** P7: the Risk Desk stops starting new work this long after the tick began. */
 export const RISK_DESK_BUDGET_MS = 40_000;
 
-export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {}): Promise<TickReport> {
+/**
+ * P8: `demo` — first of all, the public demo world's step
+ * (`advanceDemoWorld`: one sim day per 10 real minutes, bounded catch-up,
+ * mild stress every 3rd day, reset after 90 days). The cron route passes
+ * `ensureDemo: true` so the demo world is created on the first tick; tests
+ * that don't opt in only advance a demo world that already exists. Then
+ * stale rate-limit windows are pruned.
+ */
+export async function runTick(
+  db: Db,
+  { now = new Date(), ensureDemo = false, demo = true }: { now?: Date; ensureDemo?: boolean; demo?: boolean } = {},
+): Promise<TickReport> {
   const riskDeadline = AbortSignal.timeout(RISK_DESK_BUDGET_MS);
   const report: TickReport = {
     worlds: 0,
@@ -94,8 +112,37 @@ export async function runTick(db: Db, { now = new Date() }: { now?: Date } = {})
     riskShipped: 0,
     riskFlags: 0,
     riskInvestigated: 0,
+    demo: null,
     errors: [],
   };
+  if (demo) {
+    try {
+      const advanced = await advanceDemoWorld(db, { now, ensure: ensureDemo });
+      const { errors: demoErrors, ...rest } = advanced;
+      report.demo = rest;
+      for (const message of demoErrors) {
+        report.errors.push({ worldId: advanced.worldId ?? "demo", message: `demo: ${message}` });
+      }
+      if (advanced.worldId && (advanced.days > 0 || advanced.reset || advanced.created)) {
+        await recordJobRun(db, advanced.worldId, "tick", {
+          demo_days: advanced.days,
+          sim_day: advanced.simDay,
+          ...(advanced.stress.length > 0 ? { stress: advanced.stress } : {}),
+          ...(advanced.reset ? { reset_from: advanced.reset.archivedWorldId } : {}),
+          errors: demoErrors,
+        });
+      }
+    } catch (err) {
+      const message = `demo: ${errorMessage(err)}`;
+      console.error(`[tick] ${message}`);
+      report.errors.push({ worldId: "demo", message });
+    }
+  }
+  try {
+    await pruneRateLimits(db, new Date(now.getTime() - RATE_LIMIT_RETENTION_MS));
+  } catch (err) {
+    console.error(`[tick] rate-limit prune failed: ${errorMessage(err)}`);
+  }
   for (const { id: worldId, ladderOnTick } of await listActiveWorldsForTick(db)) {
     report.worlds += 1;
     let expired = 0;

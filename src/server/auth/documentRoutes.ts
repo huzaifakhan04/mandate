@@ -8,8 +8,10 @@ import {
   type KyaDocumentSummary,
 } from "../services/kyaDocs";
 import { reviewKyaDocument } from "../services/kyaDesk";
+import { bufferRequestCapped } from "../http/body";
 import { agentDashboardPath } from "./dashboardPaths";
 import { principalFromRequest, signInPath } from "./guard";
+import { dashboardRateLimit } from "./ownerRoutes";
 import { isSameOriginPost } from "./routes";
 
 /**
@@ -130,15 +132,21 @@ export function createDocumentHandlers({ getDb, afterResponse }: DocumentHandler
     if (!session) {
       return failure(request, agentId, 401, "unauthorized", "Sign in with PayPal to continue.");
     }
-    const declaredLength = Number(request.headers.get("content-length") ?? "0");
-    if (declaredLength > MAX_KYA_DOCUMENT_BYTES + MULTIPART_OVERHEAD_BYTES) {
+    // P8: the cap is enforced while streaming (a chunked upload with no
+    // Content-Length is cut off at the cap too), before formData() buffers it.
+    const buffered = await bufferRequestCapped(request, MAX_KYA_DOCUMENT_BYTES + MULTIPART_OVERHEAD_BYTES);
+    if (!buffered) {
       return failure(request, agentId, 413, "too_large", UPLOAD_FAILURES.too_large[1]);
+    }
+    const limited = await dashboardRateLimit(request, getDb, session.principalId, null);
+    if (limited) {
+      return limited;
     }
 
     let kind: FormDataEntryValue | null;
     let file: FormDataEntryValue | null;
     try {
-      const form = await request.formData();
+      const form = await buffered.formData();
       kind = form.get("kind");
       file = form.get("file");
     } catch {
@@ -183,6 +191,10 @@ export function createDocumentHandlers({ getDb, afterResponse }: DocumentHandler
     const session = principalFromRequest(request);
     if (!session) {
       return failure(request, agentId, 401, "unauthorized", "Sign in with PayPal to continue.");
+    }
+    const limited = await dashboardRateLimit(request, getDb, session.principalId, null);
+    if (limited) {
+      return limited;
     }
     const outcome = await deleteKyaDocument(await getDb(), session.principalId, agentId, documentId);
     if (outcome === "not_found") {

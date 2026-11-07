@@ -384,7 +384,7 @@ export interface AgentDetailView extends AgentCardView {
   /** P3 Task 4: the latest declined applications with their adverse-action notice (newest first). */
   declines: DeclineView[];
   signingKey: SigningKeyView | null;
-  apiKey: { prefix: string; createdAt: Date; lastUsedAt: Date | null } | null;
+  apiKey: { prefix: string; createdAt: Date; lastUsedAt: Date | null; readOnly: boolean } | null;
   loans: LoanSummary[];
   notes: NotePositionView[];
   events: AgentEventView[];
@@ -605,7 +605,9 @@ export async function agentDetail(
     documents,
     declines: declineRows.map(declineView),
     signingKey: key ? { fingerprint: keyFingerprint(key.publicKey), createdAt: key.createdAt } : null,
-    apiKey: apiKey ? { prefix: apiKey.prefix, createdAt: apiKey.createdAt, lastUsedAt: apiKey.lastUsedAt } : null,
+    apiKey: apiKey
+      ? { prefix: apiKey.prefix, createdAt: apiKey.createdAt, lastUsedAt: apiKey.lastUsedAt, readOnly: apiKey.scope === "read_only" }
+      : null,
     loans: loanRows,
     notes: positions.map((p) => ({
       id: p.id,

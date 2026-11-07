@@ -10,8 +10,8 @@ export interface CreateWorldInput {
   name: string;
   ownerPrincipalId: string | null;
   railMode: "paypal" | "sim" | "mixed";
-  /** P2 Task 6: `private` worlds are sim-only sandboxes (default `main`). */
-  kind?: "main" | "private";
+  /** P2 Task 6: `private` worlds are sim-only sandboxes (default `main`); P8: `demo` is the public demo world (sim-only). */
+  kind?: "main" | "private" | "demo";
   /** P2 Task 6: the system principal owning a private world's borrower bots. */
   botPrincipalId?: string | null;
   /** P2 Task 6: the bots' RNG seed (defaults to the world id). */
@@ -146,7 +146,7 @@ export async function railForWorld(db: Db, worldId: string): Promise<"paypal" | 
   }
   // P2 Task 6: a private world is sim-only whatever its rail_mode says
   // (the row's CHECK constraint enforces it too).
-  return world.railMode === "sim" || world.kind === "private" ? "sim" : "paypal";
+  return world.railMode === "sim" || world.kind === "private" || world.kind === "demo" ? "sim" : "paypal";
 }
 
 /**
@@ -175,7 +175,11 @@ export async function listActiveWorldsForTick(db: Db): Promise<{ id: string; lad
     .leftJoin(clock, eq(clock.worldId, worlds.id))
     .where(eq(worlds.status, "active"))
     .orderBy(worlds.createdAt, worlds.id);
-  return rows.map((row) => ({ id: row.id, ladderOnTick: !(row.kind === "private" && Number(row.speed ?? 0) === 0) }));
+  // P8: the demo world's clock is frozen too — `advanceDemoWorld` runs its ladder day by day.
+  return rows.map((row) => ({
+    id: row.id,
+    ladderOnTick: !((row.kind === "private" || row.kind === "demo") && Number(row.speed ?? 0) === 0),
+  }));
 }
 
 /** P2 Task 6: every active private world's id, oldest first (the tick runs their bots). */
@@ -342,7 +346,7 @@ export async function createWorldInTx(
       botPrincipalId: input.botPrincipalId ?? null,
       botSeed: input.botSeed ?? null,
       botVersion: input.botVersion ?? 1,
-      lastBotSimDay: input.kind === "private" ? 0 : null,
+      lastBotSimDay: input.kind === "private" || input.kind === "demo" ? 0 : null,
     })
     .returning();
 

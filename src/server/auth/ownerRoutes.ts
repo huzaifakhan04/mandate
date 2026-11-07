@@ -1,4 +1,6 @@
 import type { Db } from "../db/client";
+import { bufferRequestCapped } from "../http/body";
+import { HOUR_MS, takeDbRateLimits } from "../http/dbRateLimit";
 import {
   parseOwnerRegisterInput,
   registerOwnedAgent,
@@ -38,7 +40,36 @@ import { isSameOriginPost } from "./routes";
  * (`reveal.ts`), never in a URL or a JSON body.
  */
 
-const MAX_BODY_BYTES = 16 * 1024;
+export const MAX_BODY_BYTES = 16 * 1024;
+
+/** P8: dashboard mutations per signed-in principal per hour (Postgres-backed, every owner POST route). */
+export const DASHBOARD_MUTATIONS_PER_HOUR = 120;
+
+/** P8: takes one dashboard-mutation hit for `principalId`; the 429 to send, or `null`. */
+export async function dashboardRateLimit(
+  request: Request,
+  getDb: () => Promise<Db>,
+  principalId: string,
+  back: { path: string; returnTo: string } | null,
+): Promise<Response | null> {
+  let db: Db;
+  try {
+    db = await getDb();
+  } catch (err) {
+    // Fail open, like takeDbRateLimits: the route's own DB access reports the outage.
+    console.error(`[rate-limit] dashboard limit skipped: ${err instanceof Error ? err.name : "unknown error"}`);
+    return null;
+  }
+  const limited = await takeDbRateLimits(db, [
+    { key: `dashboard:principal:${principalId}`, limit: DASHBOARD_MUTATIONS_PER_HOUR, windowMs: HOUR_MS },
+  ]);
+  if (limited.allowed) {
+    return null;
+  }
+  const response = failure(request, 429, "rate_limited", "Too many changes in the last hour; try again later.", back);
+  response.headers.set("retry-after", String(limited.retryAfterSeconds));
+  return response;
+}
 
 export function json(status: number, body: unknown, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -87,11 +118,18 @@ function agentBack(agentId: string, query: Record<string, string>) {
   return { path: agentDashboardPath(agentId, query), returnTo: `/dashboard?agent=${agentId}` };
 }
 
-/** Same origin, then a session, then the body size. The principal id, or the refusal. */
-export function gate(
+/**
+ * Same origin, then a session, then the body size — P8: enforced while
+ * streaming (`bufferRequestCapped`), so a chunked body with no
+ * Content-Length is capped too — then (P8) the per-principal dashboard
+ * rate limit. The principal id and a buffered copy of the request (read
+ * its body from `request`, not the original), or the refusal.
+ */
+export async function gate(
   request: Request,
   back: { path: string; returnTo: string } | null,
-): { principalId: string } | Response {
+  getDb: () => Promise<Db>,
+): Promise<{ principalId: string; request: Request } | Response> {
   if (!isSameOriginPost(request)) {
     return failure(request, 403, "forbidden", "Forbidden.", back);
   }
@@ -99,10 +137,15 @@ export function gate(
   if (!session) {
     return failure(request, 401, "unauthorized", "Sign in with PayPal to continue.", back);
   }
-  if (Number(request.headers.get("content-length") ?? "0") > MAX_BODY_BYTES) {
+  const buffered = await bufferRequestCapped(request, MAX_BODY_BYTES);
+  if (!buffered) {
     return failure(request, 413, "too_large", "The request body is too large.", back);
   }
-  return { principalId: session.principalId };
+  const limited = await dashboardRateLimit(request, getDb, session.principalId, back);
+  if (limited) {
+    return limited;
+  }
+  return { principalId: session.principalId, request: buffered };
 }
 
 export async function readFields(request: Request): Promise<Record<string, unknown> | null> {
@@ -125,6 +168,12 @@ export async function readFields(request: Request): Promise<Record<string, unkno
   }
 }
 
+/** P8: the "Read-only key" checkbox / JSON flag (`read_only` = on / true / 1). */
+export function readOnlyField(fields: Record<string, unknown> | null): boolean {
+  const value = fields?.read_only;
+  return value === true || value === "on" || value === "true" || value === "1";
+}
+
 /** The one-time key page for `agentId`. */
 export function apiKeyPagePath(agentId: string): string {
   return `/dashboard/agents/${agentId}/api-key`;
@@ -143,11 +192,11 @@ export function claimTokenFromPaste(value: unknown): string | null {
 export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
   async function register(request: Request): Promise<Response> {
     const back = { path: "/dashboard/agents/new", returnTo: "/dashboard/agents/new" };
-    const gated = gate(request, back);
+    const gated = await gate(request, back, getDb);
     if (gated instanceof Response) {
       return gated;
     }
-    const fields = await readFields(request);
+    const fields = await readFields(gated.request);
     const parsed = fields ? parseOwnerRegisterInput(fields) : ({ ok: false, errors: ["name"] } as const);
     if (!parsed.ok) {
       const query = new URLSearchParams({ error: "invalid", fields: parsed.errors.join(",") });
@@ -169,7 +218,10 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     const worldField = typeof fields?.world === "string" ? fields.world.trim() : "";
     const worldId = worldField && worldField !== "main" ? worldField : null;
     try {
-      const result = await registerOwnedAgent(await getDb(), gated.principalId, parsed.input, new Date(), { worldId });
+      const result = await registerOwnedAgent(await getDb(), gated.principalId, parsed.input, new Date(), {
+        worldId,
+        readOnly: readOnlyField(fields),
+      });
       if (result.outcome === "world_not_found") {
         return failure(request, 404, "world_not_found", "World not found.", null);
       }
@@ -194,17 +246,17 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
   async function agentAction(
     request: Request,
     agentId: string,
-    run: (principalId: string) => Promise<ActionResult>,
+    run: (principalId: string, body: Request) => Promise<ActionResult>,
   ): Promise<Response> {
     if (!isUuid(agentId)) {
       return failure(request, 404, "not_found", "Agent not found.", null);
     }
-    const gated = gate(request, agentBack(agentId, {}));
+    const gated = await gate(request, agentBack(agentId, {}), getDb);
     if (gated instanceof Response) {
       return gated;
     }
     try {
-      const result = await run(gated.principalId);
+      const result = await run(gated.principalId, gated.request);
       if (result.status === 404) {
         return failure(request, 404, "not_found", "Agent not found.", null);
       }
@@ -258,12 +310,14 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     if (!isUuid(agentId)) {
       return failure(request, 404, "not_found", "Agent not found.", null);
     }
-    const gated = gate(request, agentBack(agentId, {}));
+    const gated = await gate(request, agentBack(agentId, {}), getDb);
     if (gated instanceof Response) {
       return gated;
     }
     try {
-      const result = await rotateApiKey(await getDb(), { principalId: gated.principalId, agentId });
+      // P8: "Read-only key" — the new key may call read-only tools only.
+      const readOnly = readOnlyField(await readFields(gated.request));
+      const result = await rotateApiKey(await getDb(), { principalId: gated.principalId, agentId, readOnly });
       if (result.outcome === "not_found") {
         return failure(request, 404, "not_found", "Agent not found.", null);
       }
@@ -284,11 +338,11 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
 
   async function pasteClaim(request: Request): Promise<Response> {
     const back = { path: "/dashboard?claim_error=invalid", returnTo: "/dashboard" };
-    const gated = gate(request, back);
+    const gated = await gate(request, back, getDb);
     if (gated instanceof Response) {
       return gated;
     }
-    const fields = await readFields(request);
+    const fields = await readFields(gated.request);
     const token = claimTokenFromPaste(fields?.claim_link);
     if (!token) {
       return failure(request, 400, "invalid_claim_link", "That doesn't look like a Mandate claim link.", back);
@@ -301,10 +355,10 @@ export function createOwnerHandlers({ getDb }: { getDb: () => Promise<Db> }) {
       if (!isUuid(flagId)) {
         return failure(request, 404, "not_found", "Flag not found.", null);
       }
-      const fields = kind === "review" ? await readFields(request.clone()) : null;
-      return agentAction(request, agentId, async (principalId): Promise<ActionResult> => {
+      return agentAction(request, agentId, async (principalId, body): Promise<ActionResult> => {
         const db = await getDb();
         if (kind === "review") {
+          const fields = await readFields(body);
           const note = typeof fields?.note === "string" ? fields.note : "";
           const outcome = await requestRiskReview(db, { principalId, agentId, flagId, note });
           if (outcome === "not_found") return { status: 404, code: "not_found", message: "Flag not found.", notice: {} };

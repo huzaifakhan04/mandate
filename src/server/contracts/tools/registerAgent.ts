@@ -3,6 +3,7 @@ import { z } from "zod";
 import { ok } from "../envelope";
 import { claimNextAction } from "../kyaActions";
 import { defineTool } from "../registry";
+import { registerAgentLimits } from "../rateLimits";
 import { SAMPLE_BUY_NOTES_ARGS } from "../sampleArgs";
 import { registerAgent as registerAgentService } from "../../services/agents";
 
@@ -64,6 +65,7 @@ export const registerAgentTool = defineTool({
   auth: "none",
   mutating: true,
   readOnly: false,
+  rateLimits: registerAgentLimits,
   input: inputSchema,
   output: outputSchema,
   handler: async (input, ctx) => {

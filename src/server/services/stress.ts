@@ -79,22 +79,45 @@ export async function triggerStressScenario(
   if (!isStressScenario(scenario)) {
     return { outcome: "invalid" };
   }
+  return triggerStressInWorld(db, world, scenario);
+}
+
+/**
+ * P8: the demo world's MILD variants (auto-injected every 3rd sim day):
+ * a default wave of 1 loan, a +200 bps rate spike, and a note run by ONE
+ * lender (the first in seeded order) asking for half its notes.
+ */
+export const MILD_DEFAULT_WAVE_LOANS = 1;
+export const MILD_RATE_SPIKE_BPS = 200;
+
+/**
+ * Triggers `scenario` in `world` — the caller has already decided the
+ * world may be stressed (the owner's private world, or the demo world from
+ * the tick). `mild` selects the demo world's gentler parameters.
+ */
+export async function triggerStressInWorld(
+  db: Db,
+  world: { id: string; botSeed: string | null },
+  scenario: StressScenario,
+  { mild = false }: { mild?: boolean } = {},
+): Promise<Extract<StressOutcome, { outcome: "triggered" }>> {
   const seed = world.botSeed ?? world.id;
   const { day, simNow } = await getSimDay(db, world.id);
   let params: Record<string, unknown>;
   switch (scenario) {
     case "default_wave":
-      params = { loans: DEFAULT_WAVE_LOANS };
+      params = { loans: mild ? MILD_DEFAULT_WAVE_LOANS : DEFAULT_WAVE_LOANS };
       break;
     case "rate_spike":
-      params = { bump_bps: RATE_SPIKE_BPS, apply_sim_day: day + 1 };
+      params = { bump_bps: mild ? MILD_RATE_SPIKE_BPS : RATE_SPIKE_BPS, apply_sim_day: day + 1 };
       break;
     case "note_run": {
       const { lenders } = await worldBots(db, world.id);
-      const order = seededOrder(seed, day, lenders);
+      const order = seededOrder(seed, day, lenders).slice(0, mild ? 1 : undefined);
       const requests: Array<{ bot: string; amount_cents: number; status: string; queue_position?: number }> = [];
       for (const lender of order) {
-        const units = await redeemableUnits(db, world.id, lender.id);
+        const all = await redeemableUnits(db, world.id, lender.id);
+        const units = mild ? all / 2n : all;
         if (units <= 0n) {
           continue;
         }
@@ -115,7 +138,7 @@ export async function triggerStressScenario(
     type: STRESS_EVENT[scenario],
     aggregateType: "world",
     aggregateId: world.id,
-    payload: { scenario, sim_day: day, seed, params },
+    payload: { scenario, sim_day: day, seed, params, ...(mild ? { mild: true } : {}) },
     occurredSimAt: simNow,
   });
   return { outcome: "triggered", scenario, eventId: event!.id, simDay: day, params };

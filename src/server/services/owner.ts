@@ -119,14 +119,14 @@ export async function registerOwnedAgent(
   principalId: string,
   input: OwnerRegisterInput,
   now: Date,
-  options: { worldId?: string | null },
+  options: { worldId?: string | null; readOnly?: boolean },
 ): Promise<OwnerRegistered | { outcome: "world_not_found" }>;
 export async function registerOwnedAgent(
   db: Db,
   principalId: string,
   input: OwnerRegisterInput,
   now: Date = new Date(),
-  options: { worldId?: string | null } = {},
+  options: { worldId?: string | null; readOnly?: boolean } = {},
 ): Promise<OwnerRegistered | { outcome: "world_not_found" }> {
   const { worldId: mainWorldId } = await ensureMainWorldOnce(db);
   let worldId = mainWorldId;
@@ -147,6 +147,7 @@ export async function registerOwnedAgent(
         model: input.model,
         payoutEmail: input.payoutEmail,
         payoutPaypalId: input.payoutPaypalId,
+        keyScope: options.readOnly ? "read_only" : "full",
       },
       now,
     );
@@ -248,7 +249,7 @@ export type RotateApiKeyOutcome = { outcome: "rotated"; apiKey: string } | { out
  */
 export async function rotateApiKey(
   db: Db,
-  params: { principalId: string; agentId: string; now?: Date },
+  params: { principalId: string; agentId: string; now?: Date; readOnly?: boolean },
 ): Promise<RotateApiKeyOutcome> {
   const agent = await ownedAgent(db, params.principalId, params.agentId);
   if (!agent) {
@@ -276,11 +277,13 @@ export async function rotateApiKey(
       agentId: agent.id,
       prefix: generated.prefix,
       keyHash: generated.hash,
+      scope: params.readOnly ? "read_only" : "full",
       createdAt: now,
     });
     await appendAgentEvent(tx, agent.worldId, "agent.api_key_rotated", agent.id, {
       revoked_prefixes: revoked.map((key) => key.prefix),
       prefix: generated.prefix,
+      scope: params.readOnly ? "read_only" : "full",
     });
     return { outcome: "rotated", apiKey: generated.key } as const;
   });

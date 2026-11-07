@@ -19,6 +19,7 @@ const MESSAGES: Record<string, string> = {
   session_mismatch:
     "This PayPal check was started in a different browser, or it expired. Please start again from this browser.",
   paypal_unavailable: "We couldn't reach PayPal. Please try again in a minute.",
+  rate_limited: "Too many verification attempts from your network. Please try again in an hour.",
 };
 
 const FALLBACK = "Something went wrong verifying with PayPal. Please try again.";
