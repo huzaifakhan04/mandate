@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { Suspense } from "react";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
 import { getPagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
 import { claimView, type ClaimAgentSummary, type ClaimView } from "@/server/services/claims";
@@ -28,7 +29,7 @@ function Shell({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex flex-1 flex-col bg-surface">
       <header className="flex h-15 items-center gap-2 border-b border-ink/10 bg-background px-4 sm:px-6">
-        <span className="grid h-7 w-7 place-items-center rounded-lg bg-accent text-sm font-bold text-white">M</span>
+        <MandateMark size={28} variant="tile" className="rounded-lg" />
         <span className="text-[17px] font-bold tracking-tight text-ink">Mandate</span>
       </header>
       <div className="flex flex-1 items-start justify-center px-4 py-10 sm:items-center sm:py-16">

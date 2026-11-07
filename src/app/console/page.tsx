@@ -12,6 +12,8 @@ import {
   resolveConsoleWorld,
 } from "@/server/services/console";
 
+import { MandateMark } from "@/components/brand/MandateLogo";
+
 import { ConsoleApp } from "./_components/console-app";
 import "./console.css";
 
@@ -58,7 +60,7 @@ function Loading() {
     <div className="mc">
       <header className="top">
         <span className="brand">
-          <i aria-hidden="true">M</i>Mandate <em>· Mission control</em>
+          <i aria-hidden="true"><MandateMark size={26} variant="tile" /></i>Mandate <em>· Mission control</em>
         </span>
       </header>
       <main className="shell" aria-busy="true">

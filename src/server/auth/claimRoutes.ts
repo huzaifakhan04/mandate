@@ -1,3 +1,5 @@
+import { mandateMarkSvg } from "@/components/brand/MandateLogo";
+
 import type { Db } from "../db/client";
 import { claimAgent } from "../services/claims";
 import { principalFromRequest, signInPath } from "./guard";
@@ -35,7 +37,8 @@ function conflictPage(): Response {
 <style>
 body{margin:0;background:#f6f7f9;color:#15181d;font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;display:flex;min-height:100vh;align-items:center;justify-content:center;padding:16px;box-sizing:border-box}
 main{background:#fff;border:1px solid #e3e6eb;border-radius:16px;padding:32px;max-width:420px;width:100%;box-sizing:border-box;box-shadow:0 1px 2px rgba(21,24,29,.04),0 4px 16px rgba(21,24,29,.06)}
-.k{font-size:13px;font-weight:600;color:#5b6472;margin:0}
+.k{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#5b6472;margin:0}
+.k svg{border-radius:5px}
 .pill{display:inline-block;margin-top:16px;font-size:11px;font-weight:700;letter-spacing:.04em;padding:3px 9px;border-radius:999px;color:#d93025;background:#fcedec}
 h1{font-size:22px;letter-spacing:-.02em;margin:8px 0 0}
 p{color:#5b6472}
@@ -43,7 +46,7 @@ a{display:inline-block;margin-top:8px;color:#1d4ed8;font-weight:600;text-decorat
 small{display:block;margin-top:24px;color:#8a93a1;font-size:11px}
 </style></head>
 <body><main>
-<p class="k">Mandate</p>
+<p class="k">${mandateMarkSvg(18)}Mandate</p>
 <span class="pill">409 · CONFLICT</span>
 <h1>This agent has already been claimed</h1>
 <p>Another verified PayPal account owns this agent, so it can't be claimed again. If you think this is your agent, ask it for its status and contact the person who claimed it.</p>

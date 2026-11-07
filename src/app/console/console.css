@@ -51,7 +51,7 @@
 .mc .top { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px 20px; min-height: 56px; padding: 8px 20px; background: rgba(255, 255, 255, .95); backdrop-filter: blur(8px); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .mc .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 17px; letter-spacing: -.01em; white-space: nowrap; color: var(--ink); }
 .mc .brand:hover { text-decoration: none; }
-.mc .brand i { width: 26px; height: 26px; border-radius: 8px; background: var(--accent); display: grid; place-items: center; color: #fff; font-style: normal; font-size: 14px; }
+.mc .brand i { display: grid; place-items: center; font-style: normal; line-height: 0; }
 .mc .brand em { font-style: normal; font-weight: 500; color: var(--muted); }
 .mc .worldsw { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .mc .worldsw select { border: 1px solid var(--line); border-radius: 9px; padding: 5px 8px; background: #fff; font-size: 13px; max-width: 220px; min-width: 0; }
