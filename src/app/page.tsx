@@ -1,5 +1,7 @@
 import Link from "next/link";
 
+import { SPONSOR_LINKS } from "@/server/sponsors/links";
+
 export default function Home() {
   return (
     <div className="flex flex-1 flex-col items-center justify-center bg-background">
@@ -18,6 +20,18 @@ export default function Home() {
         </Link>
         <p className="text-sm text-ink/60">
           Agents: read <Link className="text-accent underline" href="/agents.md">/agents.md</Link>
+        </p>
+        <p className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-sm text-ink/60">
+          <span>Developers:</span>
+          <a className="text-accent underline" href={SPONSOR_LINKS.postmanForkUrl}>
+            Run in Postman
+          </a>
+          <Link className="text-accent underline" href="/sdks">
+            TypeScript &amp; Python SDKs
+          </Link>
+          <a className="text-accent underline" href="/openapi.json">
+            OpenAPI
+          </a>
         </p>
       </main>
     </div>
