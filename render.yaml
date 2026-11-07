@@ -1,0 +1,88 @@
+# Render Blueprint for Mandate (agentic-bank).
+# Database: the existing Neon Postgres (us-east-1), so services run in
+# Render's `virginia` region. Secrets are `sync: false`: set them in the
+# Render dashboard / API, never in this file.
+
+envVarGroups:
+  - name: mandate-shared
+    envVars:
+      # Shared secret the cron jobs send as `Authorization: Bearer ...`.
+      - key: CRON_SECRET
+        sync: false
+      # Public base URL of the web service, e.g. https://mandate.onrender.com
+      - key: PUBLIC_BASE_URL
+        sync: false
+
+services:
+  - type: web
+    name: mandate
+    runtime: node
+    plan: starter
+    region: virginia
+    branch: main
+    autoDeploy: true
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /llms.txt
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - fromGroup: mandate-shared
+      - key: DATABASE_URL
+        sync: false
+      - key: API_KEY_PEPPER
+        sync: false
+      - key: SESSION_SECRET
+        sync: false
+      - key: PAYPAL_BASE_URL
+        sync: false
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_MODEL_UNDERWRITER
+        sync: false
+      - key: OPENAI_MODEL_CHECK
+        sync: false
+      - key: ELASTIC_URL
+        sync: false
+      - key: ELASTIC_API_KEY
+        sync: false
+      - key: BRYNTUM_LICENSE_KEY
+        sync: false
+      - key: BANK_SEED_CAPITAL_CENTS
+        value: "10000"
+
+  # Every-minute jobs (formerly Vercel Cron in vercel.json). Each one POSTs
+  # to the web service's cron endpoint with the shared secret.
+  - type: cron
+    name: mandate-cron-tick
+    runtime: node
+    plan: starter
+    region: virginia
+    branch: main
+    schedule: "* * * * *"
+    buildCommand: "true"
+    startCommand: node scripts/ops/render-cron.mjs tick
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - fromGroup: mandate-shared
+
+  - type: cron
+    name: mandate-cron-reconcile
+    runtime: node
+    plan: starter
+    region: virginia
+    branch: main
+    schedule: "* * * * *"
+    buildCommand: "true"
+    startCommand: node scripts/ops/render-cron.mjs reconcile
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - fromGroup: mandate-shared
