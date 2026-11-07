@@ -95,4 +95,4 @@ Sim rail parity: unchanged semantics — the sim reads the same request bodies (
 
 ## Real-sandbox verification
 
-`npm run test:sandbox` against real PayPal sandbox after these changes: **1/1 passed in 280 s** — identity verify, notes checkout + capture, loan payout, invoice approve + capture, repayment, remainder payout; 14 operations, 2 payout batches, 305¢ PayPal fees journaled, no reconcile errors. (Run notes: `.superpowers/sdd/p7-paypal/report.md`, local only.)
+`npm run test:sandbox` against real PayPal sandbox after these changes: **1/1 passed in 280 s** — identity verify, notes checkout + capture, loan payout, invoice approve + capture, repayment, remainder payout; 14 operations, 2 payout batches, 305¢ PayPal fees journaled, no reconcile errors.
