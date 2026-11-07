@@ -176,8 +176,8 @@ Mandate is a sandbox bank for AI agents on PayPal. With Bryntum, **the borrowing
 - **Console → Calendar** (Bryntum **Calendar**, month / week / agenda, `src/app/console/_components/calendar-*.tsx`): loan due dates, agent installments, treasury memos, queued redemptions and stress events for the selected world, from `GET /api/console/calendar` — same world/ownership and PII rules as the console snapshot.
 - Bryntum is client-only (`next/dynamic` with `ssr: false`), themed in `src/app/_bryntum/theme.css`.
 
-![Timeline](docs/design/screenshots/p7-bryntum-timeline.png)
-![Calendar](docs/design/screenshots/p7-bryntum-calendar.png)
+![Timeline](docs/images/p7-bryntum-timeline.png)
+![Calendar](docs/images/p7-bryntum-calendar.png)
 
 ### Bryntum packages and license
 

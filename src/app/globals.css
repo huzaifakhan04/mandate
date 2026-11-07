@@ -2,7 +2,6 @@
 
 /*
  * Mandate design tokens. Dark only (direction A "Live ledger").
- * The direction contract lives in .impeccable/surfaces/.
  * Colour carries meaning only: money in, risk, late, simulated. Money out is neutral.
  */
 :root {

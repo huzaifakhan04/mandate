@@ -21,7 +21,7 @@ import { ensureMainWorldOnce, railForWorld } from "./worlds";
 /**
  * Principals and "Verify with PayPal" (P2 Task 1). The OAuth "Log in
  * with PayPal" route needs a registered return URL we can't get
- * (docs/spikes.md), so a human proves who they are by approving a
+ * (found in the day-1 spike), so a human proves who they are by approving a
  * $0.01 order: once `order.get` shows it `APPROVED` with a
  * `payer.payer_id`, the principal is upserted by that payer id. The
  * order is never captured — nothing here (and no capture handler is

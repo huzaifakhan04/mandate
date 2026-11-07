@@ -26,7 +26,7 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 /**
  * `/console` — the public, read-only bank console ("mission control", P6;
- * design docs/design/console-v2.html). P8: an anonymous visitor lands on
+ * design v2). P8: an anonymous visitor lands on
  * the public demo world (simulated money, auto-advanced); anyone may
  * switch to the main world (`?world=main`, the real PayPal sandbox); a
  * signed-in owner lands on main and may switch to one of their own private

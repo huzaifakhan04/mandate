@@ -6,7 +6,7 @@ import { chromium, type Page } from "@playwright/test";
 /**
  * Task 10 — approves a PayPal sandbox checkout (an order's approve /
  * payer-action URL) as a sandbox personal account, headlessly. Reuses the
- * day-1 spike login flow (scripts/spikes/payee-routing.ts): email →
+ * day-1 spike login flow: email →
  * Next → password → Log In → the review page's pay/continue button.
  *
  * No bot-check circumvention: plain Playwright Chromium, no user-agent
