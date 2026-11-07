@@ -24,6 +24,7 @@ import type { StoredTreasuryMemo } from "./treasuryMemo";
 import { ELASTIC_DISABLED_NOTE, elasticConfigured } from "../elastic/config";
 import { openRiskCounts, RISK_KIND_LABEL, RISK_KINDS, type RiskKind } from "./riskFlags";
 import { ensureMainWorldOnce } from "./worlds";
+import { ensureDemoWorld } from "./demoWorld";
 
 /**
  * P6: the public bank console's read model ("mission control"). One call
@@ -39,7 +40,8 @@ import { ensureMainWorldOnce } from "./worlds";
  * `scrubText`, which masks anything that looks like an email.
  *
  * Who may see which world is decided by `resolveConsoleWorld`: the main
- * world for everyone; a private world only for its signed-in owner.
+ * world and (P8) the public demo world for everyone; a private world only
+ * for its signed-in owner.
  */
 
 const DAY_MS = 86_400_000;
@@ -55,9 +57,13 @@ export type FlowEdge = "lend" | "disburse" | "invoice" | "client_pay" | "repay" 
 export interface ConsoleWorld {
   id: string;
   name: string;
-  kind: "main" | "private";
+  /** P8: `demo` — the public demo world (simulated money, bots only, auto-advanced). */
+  kind: "main" | "private" | "demo";
   rail: "paypal" | "sim";
 }
+
+/** P8: what the console's switcher offers. */
+export type ConsoleWorldChoice = { id: string; name: string; kind: "main" | "private" | "demo" };
 
 export interface ConsoleSnapshot {
   generatedAt: string;
@@ -263,9 +269,12 @@ const num = (value: bigint | null | undefined): number => Number(value ?? 0n);
 /**
  * Which world the console shows: `requested` when it names one of the
  * signed-in principal's active private worlds; the main world when nothing
- * (or `main`) is asked for. Anything else — someone else's world, an
- * archived one, another main-kind world, a malformed id, or any private
- * world without a session — is `null` (the caller answers 404).
+ * (or `main`) is asked for; P8: the public demo world for `demo` (created
+ * on first use). Anything else — someone else's world, an archived one,
+ * another main-kind world, a malformed id (the demo world's own id
+ * included: it is only ever addressed as `demo`, so a reset never strands
+ * a viewer), or any private world without a session — is `null` (the
+ * caller answers 404).
  */
 export async function resolveConsoleWorld(
   db: Db,
@@ -275,6 +284,10 @@ export async function resolveConsoleWorld(
   if (!requested || requested === "main") {
     const { worldId } = await ensureMainWorldOnce(db);
     return { id: worldId, name: "Main", kind: "main", rail: "paypal" };
+  }
+  if (requested === "demo") {
+    const { worldId } = await ensureDemoWorld(db);
+    return { id: worldId, name: "Demo world", kind: "demo", rail: "sim" };
   }
   if (!principalId) {
     return null;
@@ -622,17 +635,27 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
   };
 }
 
-/** Worlds the switcher offers: main, plus the principal's active private worlds. */
-export async function consoleWorldChoices(
-  db: Db,
-  principalId: string | null,
-): Promise<Array<{ id: string; name: string; kind: "main" | "private" }>> {
-  const choices: Array<{ id: string; name: string; kind: "main" | "private" }> = [{ id: "main", name: "Main world", kind: "main" }];
+/** Worlds the switcher offers: (P8) the demo world and main for everyone, plus the principal's active private worlds. */
+export async function consoleWorldChoices(db: Db, principalId: string | null): Promise<ConsoleWorldChoice[]> {
+  const choices: ConsoleWorldChoice[] = [
+    { id: "demo", name: "Demo world · simulated money", kind: "demo" },
+    { id: "main", name: "Main world (real PayPal sandbox)", kind: "main" },
+  ];
   if (!principalId) {
     return choices;
   }
   const rows = await listOwnedPrivateWorlds(db, principalId);
   return [...choices, ...rows.map((r) => ({ id: r.id, name: scrubText(r.name), kind: "private" as const }))];
+}
+
+/** P8: the console's default world — the demo world for anonymous visitors, main for a signed-in owner. */
+export function defaultConsoleWorld(principalId: string | null): "demo" | "main" {
+  return principalId ? "main" : "demo";
+}
+
+/** P8: the `world=` parameter a client polls with for `world`. */
+export function consoleWorldParam(world: ConsoleWorld): string {
+  return world.kind === "private" ? world.id : world.kind;
 }
 
 /**

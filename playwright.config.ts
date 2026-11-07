@@ -38,6 +38,10 @@ export default defineConfig({
       // after an apply) use their templates — e2e never calls OpenAI, even
       // when `.env.local` carries a key. `E2E_OPENAI=1` opts in.
       OPENAI_DISABLED: process.env.E2E_OPENAI === "1" ? "" : "1",
+      // P8: the specs share one dev server, one PGlite and one client IP, so
+      // the Postgres-backed rate limits (10 registrations per IP per hour, …)
+      // are off here; unit + test:pg suites cover them. `E2E_RATE_LIMITS=1` opts in.
+      RATE_LIMITS_DISABLED: process.env.E2E_RATE_LIMITS === "1" ? "" : "1",
     },
   },
 });

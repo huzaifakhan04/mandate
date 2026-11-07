@@ -10,6 +10,7 @@ import type { Db } from "../db/client";
 import { describeError, isRetryableTransactionError } from "../db/errors";
 import { scoped } from "../db/scoped";
 import { agents, idempotencyKeys, worlds } from "../db/schema";
+import { takeDbRateLimits } from "../http/dbRateLimit";
 import { ensureMainWorldOnce } from "../services/worlds";
 import type { Envelope } from "./envelope";
 import { docsUrlForTool, fail, httpStatusForEnvelope } from "./envelope";
@@ -40,6 +41,11 @@ export interface RunToolDeps {
    * the server can drive a bot.
    */
   actingBotId?: string | null;
+  /**
+   * P8: the caller's IP (REST and MCP pass `clientKey(request)`), for the
+   * per-IP rate limits (`register_agent`). Absent → per-IP limits are skipped.
+   */
+  clientIp?: string | null;
 }
 
 export interface RunToolResult {
@@ -113,9 +119,22 @@ async function botPrincipal(db: Db, agentId: string): Promise<AgentPrincipal | n
   return row ?? null;
 }
 
-async function worldIsActive(db: Db, worldId: string): Promise<boolean> {
-  const [row] = await db.select({ status: worlds.status }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
-  return row?.status === "active";
+async function worldState(db: Db, worldId: string): Promise<{ active: boolean; kind: string | null }> {
+  const [row] = await db.select({ status: worlds.status, kind: worlds.kind }).from(worlds).where(eq(worlds.id, worldId)).limit(1);
+  return { active: row?.status === "active", kind: row?.kind ?? null };
+}
+
+/** P8: the 429 every rate-limited tool call returns. */
+export function rateLimitedEnvelope(retryAfterSeconds: number): Envelope<unknown> {
+  return {
+    ...fail(
+      "RATE_LIMITED",
+      `Too many calls. Wait ${retryAfterSeconds} s before trying again.`,
+      ["rate_limited"],
+      { retry_after_seconds: retryAfterSeconds },
+    ),
+    next_actions: [{ tool: "get_status", args: {} }],
+  };
 }
 
 /** Strips an optional `Bearer ` prefix from an `Authorization` header value. */
@@ -336,6 +355,7 @@ export async function runTool(
     request = null,
     requestId = randomUUID(),
     actingBotId = null,
+    clientIp = null,
   }: RunToolDeps,
 ): Promise<RunToolResult> {
   if (!tool) {
@@ -367,10 +387,20 @@ export async function runTool(
       }
 
       worldId = agent.worldId;
+      const world = await worldState(db, worldId);
       // P2 Task 6: a reset private world is archived — its agents stop.
-      if (!(await worldIsActive(db, worldId))) {
+      if (!world.active) {
         return respond(
           fail("WORLD_ARCHIVED", "This agent's sandbox world was reset or archived.", ["world_archived"]),
+          toolName,
+        );
+      }
+      // P8: the public demo world is driven by the server's bots only —
+      // nothing outside the server may act in it (defence in depth: its
+      // agents have no API keys and no one can register into it).
+      if (world.kind === "demo" && !actingBotId) {
+        return respond(
+          fail("DEMO_WORLD_READ_ONLY", "The demo world is read-only: only its simulated bots act in it.", ["demo_world_read_only"]),
           toolName,
         );
       }
@@ -404,6 +434,29 @@ export async function runTool(
         return [issue.path.join(".") || "root"];
       });
       return respond(fail("INVALID_REQUEST", "Invalid input.", reasonCodes), toolName);
+    }
+
+    // P8: a read-only API key may call readOnly tools only.
+    if (agent && agent.scope === "read_only" && !tool.readOnly) {
+      return respond(
+        fail("FORBIDDEN_SCOPE", "This API key is read-only; it can only call read-only tools.", ["read_only_key"]),
+        toolName,
+      );
+    }
+
+    // P8: Postgres-backed rate limits (not for the server's own bots).
+    if (tool.rateLimits && !actingBotId) {
+      const limits = tool.rateLimits({
+        input: parsed.data as never,
+        agentId: agent?.agentId ?? null,
+        clientIp,
+        simNow,
+        worldId,
+      });
+      const limited = await takeDbRateLimits(db, limits);
+      if (!limited.allowed) {
+        return respond(rateLimitedEnvelope(limited.retryAfterSeconds), toolName);
+      }
     }
 
     // P2 Task 3: signed mutating requests (never stored under an idempotency key).

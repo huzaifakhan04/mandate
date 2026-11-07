@@ -152,7 +152,7 @@ export function createSimApproveHandlers({ getDb }: { getDb: () => Promise<Db> }
       return failure(request, 404, "not_found", "Checkout not found.", null);
     }
     const here = simApprovePath(worldId, orderId);
-    const gated = gate(request, { path: here, returnTo: here });
+    const gated = await gate(request, { path: here, returnTo: here }, getDb);
     if (gated instanceof Response) {
       return gated;
     }

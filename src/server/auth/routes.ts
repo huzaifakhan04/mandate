@@ -1,5 +1,7 @@
 import type { Db } from "../db/client";
 import { VerificationError, completeVerification, startVerification } from "../services/principals";
+import { HOUR_MS, takeDbRateLimits } from "../http/dbRateLimit";
+import { clientKey } from "../http/rateLimit";
 import { cookieFromHeader } from "./guard";
 import {
   type CookieOptions,
@@ -33,7 +35,11 @@ export type VerifyErrorReason =
   | VerificationError["code"]
   | "session_mismatch"
   | "cancelled"
+  | "rate_limited"
   | "error";
+
+/** P8: each `POST /verify/start` creates a real PayPal order — at most 10 per client IP per hour. */
+export const VERIFY_START_PER_IP_PER_HOUR = 10;
 
 function serializeCookie(name: string, value: string, options: CookieOptions): string {
   const parts = [
@@ -125,6 +131,22 @@ export function createVerifyStartHandler({ getDb }: { getDb: () => Promise<Db> }
     const requested = await formField(request, "return_to");
     try {
       const db = await getDb();
+      const limited = await takeDbRateLimits(db, [
+        { key: `verify_start:ip:${clientKey(request)}`, limit: VERIFY_START_PER_IP_PER_HOUR, windowMs: HOUR_MS },
+      ]);
+      if (!limited.allowed) {
+        const wantsHtml = (request.headers.get("accept") ?? "").includes("text/html");
+        if (wantsHtml) {
+          return errorRedirect(request, "rate_limited");
+        }
+        return new Response(
+          JSON.stringify({ error: "rate_limited", message: "Too many verification attempts; try again later.", retry_after_seconds: limited.retryAfterSeconds }),
+          {
+            status: 429,
+            headers: { "content-type": "application/json", "cache-control": "no-store", "retry-after": String(limited.retryAfterSeconds) },
+          },
+        );
+      }
       const { approveUrl, orderId, returnTo } = await startVerification(db, { returnTo: requested });
       return redirect(approveUrl, [
         serializeCookie(VERIFY_COOKIE_NAME, createVerifyState({ orderId, returnTo }), verifyCookieOptions()),

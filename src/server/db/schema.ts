@@ -64,7 +64,9 @@ export const worlds = pgTable("worlds", {
   /**
    * P2 Task 6: `main` (the shared world, and P1's test worlds) or
    * `private` (a principal's sandbox world: sim rail only, seeded bots,
-   * clock controls; never reachable from main-world reads).
+   * clock controls; never reachable from main-world reads). P8: `demo`
+   * (the one public demo world: sim rail only, bots v2, advanced by the
+   * tick; read-only from outside — no agent registers into it).
    */
   kind: text("kind").notNull().default("main"),
   /** P2 Task 6: the system principal that owns this private world's borrower bots. */
@@ -88,6 +90,10 @@ export const worlds = pgTable("worlds", {
   index("worlds_owner_kind_idx").on(table.ownerPrincipalId, table.kind, table.status),
   // Review Focus 5: a private world is sim-only, at the row level too.
   check("worlds_private_is_sim", sql`${table.kind} <> 'private' OR ${table.railMode} = 'sim'`),
+  // P8: the public demo world is sim-only too (simulated money, never PayPal).
+  check("worlds_demo_is_sim", sql`${table.kind} <> 'demo' OR ${table.railMode} = 'sim'`),
+  // P8: at most one active demo world (ensureDemoWorld is race-safe on it).
+  uniqueIndex("worlds_one_active_demo_idx").on(table.kind).where(sql`${table.kind} = 'demo' AND ${table.status} = 'active'`),
 ]);
 
 // -----------------------------------------------------------------------
@@ -280,12 +286,19 @@ export const apiKeys = pgTable("api_keys", {
     .references(() => agents.id),
   prefix: text("prefix").notNull().unique(),
   keyHash: text("key_hash").notNull(),
+  /**
+   * P8: `full` (every tool the agent may call) or `read_only` (only
+   * `readOnly` tools — anything else is 403 `FORBIDDEN_SCOPE`).
+   */
+  scope: text("scope").notNull().default("full"),
   lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
   revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true })
     .notNull()
     .defaultNow(),
-});
+}, (table) => [
+  check("api_keys_scope_check", sql`${table.scope} IN ('full', 'read_only')`),
+]);
 
 export const kyaDocuments = pgTable("kya_documents", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -1287,5 +1300,29 @@ export const loanInstallments = pgTable(
   (table) => [
     uniqueIndex("loan_installments_loan_seq_idx").on(table.worldId, table.loanId, table.seq),
     index("loan_installments_status_idx").on(table.worldId, table.status),
+  ],
+);
+
+// -----------------------------------------------------------------------
+// P8: unscoped infrastructure
+// -----------------------------------------------------------------------
+
+/**
+ * P8: fixed-window rate-limit counters shared by every serverless
+ * instance. One row per (bucket, window); `count` is bumped with an
+ * atomic upsert (`src/server/http/dbRateLimit.ts`). Not world-scoped:
+ * buckets key on client IPs, agents and principals across worlds. Old
+ * windows are pruned by the tick.
+ */
+export const rateLimits = pgTable(
+  "rate_limits",
+  {
+    bucketKey: text("bucket_key").notNull(),
+    windowStart: timestamp("window_start", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (table) => [
+    uniqueIndex("rate_limits_bucket_window_idx").on(table.bucketKey, table.windowStart),
+    index("rate_limits_window_idx").on(table.windowStart),
   ],
 );

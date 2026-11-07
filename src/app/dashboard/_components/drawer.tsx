@@ -815,7 +815,9 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
           <p>
             {agent.apiKey ? (
               <>
-                <span className="mono">mnd_{agent.apiKey.prefix}_••••</span> · created {formatDate(agent.apiKey.createdAt)}
+                <span className="mono">mnd_{agent.apiKey.prefix}_••••</span>
+                {agent.apiKey.readOnly ? <span data-testid="key-read-only"> · read-only</span> : null} · created{" "}
+                {formatDate(agent.apiKey.createdAt)}
                 {agent.apiKey.lastUsedAt ? ` · last used ${formatDate(agent.apiKey.lastUsedAt)}` : " · never used"}
               </>
             ) : (
@@ -824,6 +826,9 @@ function KeysSection({ agent }: { agent: AgentDetailView }) {
           </p>
         </div>
         <form method="post" action={`/dashboard/agents/${agent.id}/api-key/rotate`}>
+          <label className="check">
+            <input type="checkbox" name="read_only" value="on" data-testid="rotate-read-only" /> Read-only key
+          </label>{" "}
           <button type="submit" className="btn sm">
             Rotate API key
           </button>

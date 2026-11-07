@@ -39,6 +39,10 @@
 .mc .tag { font-family: var(--font-geist-mono), ui-monospace, Menlo, monospace; font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: 5px; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
 .mc .tag.sb { background: var(--accent-soft); color: var(--accent); }
 .mc .tag.sim { background: var(--sim-soft); color: var(--sim); }
+/* P8: the public demo world's badge and note */
+.mc .tag.demo { background: var(--sim-soft); color: var(--sim); border: 1px solid currentColor; }
+.mc .demo-note { margin: 10px 0 0; padding: 8px 14px; border: 1px dashed var(--line); border-radius: 12px; background: #fff; font-size: 13px; color: var(--muted); min-width: 0; overflow-wrap: anywhere; }
+.mc .demo-note a { color: var(--accent); }
 .mc .btn { border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 5px 12px; font-weight: 600; color: var(--ink); font-size: 13px; white-space: nowrap; }
 .mc .btn:hover:not(:disabled) { background: var(--surface); }
 .mc .btn:disabled { opacity: .55; cursor: progress; }

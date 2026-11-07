@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { fail, ok } from "../envelope";
 import { defineTool } from "../registry";
+import { checkoutLimits } from "../rateLimits";
 import { beginDirectRepayment, refreshDirectRepayment } from "../../services/repayments";
 
 const inputSchema = z.object({
@@ -35,6 +36,7 @@ export const repayLoanTool = defineTool({
   auth: "agent",
   mutating: true,
   readOnly: false,
+  rateLimits: checkoutLimits("repay_loan"),
   input: inputSchema,
   output: outputSchema,
   handler: async (input, ctx) => {

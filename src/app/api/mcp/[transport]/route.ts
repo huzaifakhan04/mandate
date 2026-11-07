@@ -7,6 +7,7 @@ import { findTool, registry } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import { describeWithExample, toolHints } from "@/server/contracts/toolMeta";
 import { signedRequestFrom, type SignedRequest } from "@/server/auth/signatures";
+import { clientKeyFromHeaders } from "@/server/http/rateLimit";
 import "@/server/contracts/tools";
 import { getDb } from "@/server/db/client";
 
@@ -59,11 +60,14 @@ function headerDeps(headers: Headers | undefined): {
   authorization: string | null;
   idempotencyKey: string | null;
   request: SignedRequest | null;
+  clientIp: string | null;
 } {
   return {
     authorization: headers?.get("authorization") ?? null,
     idempotencyKey: headers?.get("idempotency-key") ?? null,
     request: signedRequestContext.getStore() ?? null,
+    // P8: per-IP rate limits (register_agent), same key as the REST route.
+    clientIp: headers ? clientKeyFromHeaders(headers) : null,
   };
 }
 

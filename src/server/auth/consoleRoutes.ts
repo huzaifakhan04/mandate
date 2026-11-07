@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { HOUR_MS, rateLimitedResponse, takeDbRateLimits } from "../http/dbRateLimit";
 import { createTokenBucket, clientKey } from "../http/rateLimit";
 import { cachedConsoleSnapshot, resolveConsoleWorld } from "../services/console";
 import { consoleSearch } from "../services/consoleSearch";
@@ -18,7 +19,12 @@ import { principalFromRequest } from "./guard";
  *   events (`consoleCalendar`), same world rules, PII rules and limiter.
  * - Rate limited per client IP by an in-memory token bucket (burst 30,
  *   2 requests/s sustained — a page polls at 0.5/s): 429 + `retry-after`.
+ * - P8: plus a coarse Postgres-backed cap per client IP and endpoint
+ *   (`CONSOLE_DB_CAP_PER_HOUR`, 2000/hour — one open tab polls the
+ *   snapshot 1800 times an hour), which holds across serverless instances.
  */
+
+export const CONSOLE_DB_CAP_PER_HOUR = 2000;
 
 export const SNAPSHOT_BURST = 30;
 export const SNAPSHOT_REFILL_PER_SECOND = 2;
@@ -47,6 +53,16 @@ export function createConsoleHandlers({
   searchLimiter?: ReturnType<typeof createTokenBucket>;
   now?: () => Date;
 }) {
+  /** P8: the coarse cross-instance cap (fails open on a DB error). */
+  async function dbCap(db: Db, what: string, request: Request): Promise<Response | null> {
+    const limited = await takeDbRateLimits(
+      db,
+      [{ key: `console:${what}:ip:${clientKey(request)}`, limit: CONSOLE_DB_CAP_PER_HOUR, windowMs: HOUR_MS }],
+      now(),
+    );
+    return limited.allowed ? null : rateLimitedResponse(limited.retryAfterSeconds);
+  }
+
   async function serve(
     request: Request,
     what: string,
@@ -64,6 +80,10 @@ export function createConsoleHandlers({
     const session = principalFromRequest(request);
     try {
       const db = await getDb();
+      const capped = await dbCap(db, what, request);
+      if (capped) {
+        return capped;
+      }
       const world = await resolveConsoleWorld(db, session?.principalId ?? null, requested);
       if (!world) {
         return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });
@@ -106,6 +126,10 @@ export function createConsoleHandlers({
       const session = principalFromRequest(request);
       try {
         const db = await getDb();
+        const capped = await dbCap(db, "search", request);
+        if (capped) {
+          return capped;
+        }
         const world = await resolveConsoleWorld(db, session?.principalId ?? null, params.get("world"));
         if (!world) {
           return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });

@@ -66,11 +66,16 @@ export function createTokenBucket({ capacity, refillPerSecond, maxKeys = 10_000 
 
 /** The client key for rate limiting: the first `x-forwarded-for` hop, else `x-real-ip`, else `unknown`. */
 export function clientKey(request: Request): string {
+  return clientKeyFromHeaders(request.headers);
+}
+
+/** `clientKey` from bare headers (the MCP route only has the request's headers per tool call). */
+export function clientKeyFromHeaders(headers: Headers): string {
   // Trusting the first x-forwarded-for hop is safe on Vercel: its edge overwrites the header with the real client IP.
-  const forwarded = request.headers.get("x-forwarded-for");
+  const forwarded = headers.get("x-forwarded-for");
   const first = forwarded?.split(",")[0]?.trim();
   if (first) {
     return first.slice(0, 64);
   }
-  return request.headers.get("x-real-ip")?.trim().slice(0, 64) || "unknown";
+  return headers.get("x-real-ip")?.trim().slice(0, 64) || "unknown";
 }

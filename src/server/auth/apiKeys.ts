@@ -20,7 +20,12 @@ export interface AgentPrincipal {
   agentId: string;
   worldId: string;
   status: string;
+  /** P8: the presenting key's scope; absent (bots, older callers) = `full`. */
+  scope?: ApiKeyScope;
 }
+
+/** P8: `full`, or `read_only` (readOnly tools only — `FORBIDDEN_SCOPE` otherwise). */
+export type ApiKeyScope = "full" | "read_only";
 
 export interface GeneratedApiKey {
   /** The full key to hand to the agent once; never stored. */
@@ -102,6 +107,7 @@ export async function verifyApiKey(
       worldId: apiKeys.worldId,
       keyHash: apiKeys.keyHash,
       revokedAt: apiKeys.revokedAt,
+      scope: apiKeys.scope,
       agentStatus: agents.status,
     })
     .from(apiKeys)
@@ -128,5 +134,10 @@ export async function verifyApiKey(
 
   await db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.id));
 
-  return { agentId: row.agentId, worldId: row.worldId, status: row.agentStatus };
+  return {
+    agentId: row.agentId,
+    worldId: row.worldId,
+    status: row.agentStatus,
+    scope: row.scope === "read_only" ? "read_only" : "full",
+  };
 }

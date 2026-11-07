@@ -4,7 +4,8 @@ import { getTableConfig, type PgTable } from "drizzle-orm/pg-core";
 
 import * as schema from "@/server/db/schema";
 
-const WORLD_ID_EXEMPT_TABLES = new Set(["worlds", "principals"]);
+// P8: rate_limits buckets key on IPs / agents / principals across worlds.
+const WORLD_ID_EXEMPT_TABLES = new Set(["worlds", "principals", "rate_limits"]);
 const WORLD_ID_NULLABLE_TABLES = new Set(["webhook_events"]);
 
 function getPgTables(): PgTable[] {

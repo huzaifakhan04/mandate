@@ -130,7 +130,8 @@ export async function writeDailyTreasuryMemo(
   let output: TreasuryOfficerOutput;
   let source: StoredTreasuryMemo["source"];
   let aiRunId: string | null = null;
-  if (world?.kind === "private") {
+  // P8: the demo world, like a private one, gets the template (no LLM spend).
+  if (world?.kind === "private" || world?.kind === "demo") {
     output = treasuryOfficerTemplate(input);
     source = "template";
   } else {

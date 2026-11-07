@@ -42,11 +42,11 @@ function errorName(err: unknown): string {
 export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
   async function create(request: Request): Promise<Response> {
     const back = { path: "/dashboard/worlds?error=invalid", returnTo: "/dashboard/worlds" };
-    const gated = gate(request, back);
+    const gated = await gate(request, back, getDb);
     if (gated instanceof Response) {
       return gated;
     }
-    const fields = await readFields(request);
+    const fields = await readFields(gated.request);
     try {
       const result = await createPrivateWorld(await getDb(), gated.principalId, { name: fields?.name });
       switch (result.outcome) {
@@ -77,11 +77,11 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     if (!isUuid(worldId)) {
       return failure(request, 404, "not_found", "World not found.", null);
     }
-    const gated = gate(request, worldBack(worldId, {}));
+    const gated = await gate(request, worldBack(worldId, {}), getDb);
     if (gated instanceof Response) {
       return gated;
     }
-    const fields = await readFields(request);
+    const fields = await readFields(gated.request);
     const days = Number(typeof fields?.days === "string" ? fields.days : NaN);
     const allowed = (ADVANCE_CHOICES as readonly number[]).includes(days);
     try {
@@ -107,7 +107,7 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     if (!isUuid(worldId)) {
       return failure(request, 404, "not_found", "World not found.", null);
     }
-    const gated = gate(request, worldBack(worldId, {}));
+    const gated = await gate(request, worldBack(worldId, {}), getDb);
     if (gated instanceof Response) {
       return gated;
     }
@@ -130,11 +130,11 @@ export function createWorldHandlers({ getDb }: { getDb: () => Promise<Db> }) {
     if (!isUuid(worldId)) {
       return failure(request, 404, "not_found", "World not found.", null);
     }
-    const gated = gate(request, worldBack(worldId, {}));
+    const gated = await gate(request, worldBack(worldId, {}), getDb);
     if (gated instanceof Response) {
       return gated;
     }
-    const fields = await readFields(request);
+    const fields = await readFields(gated.request);
     try {
       // Ownership first: a foreign world or the main world 404s whatever `scenario` says.
       const result = await triggerStressScenario(await getDb(), gated.principalId, worldId, fields?.scenario);

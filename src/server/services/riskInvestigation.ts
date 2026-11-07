@@ -307,7 +307,8 @@ export async function investigateFlag(
 
   let caseFile: StoredCaseFile;
   let aiRunId: string | null = null;
-  if (world?.kind === "private" && !forceModel) {
+  // P8: the demo world, like a private one, never spends on an LLM.
+  if ((world?.kind === "private" || world?.kind === "demo") && !forceModel) {
     caseFile = { ...template.output, source: "template", steps: 0, tool_calls: template.toolCalls, generated_at: now.toISOString() };
   } else {
     const simNow = await getSimNow(db, worldId, now);

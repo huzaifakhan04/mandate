@@ -4,7 +4,13 @@ import { Suspense } from "react";
 
 import { getPagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
-import { cachedConsoleSnapshot, consoleWorldChoices, resolveConsoleWorld } from "@/server/services/console";
+import {
+  cachedConsoleSnapshot,
+  consoleWorldChoices,
+  consoleWorldParam,
+  defaultConsoleWorld,
+  resolveConsoleWorld,
+} from "@/server/services/console";
 
 import { ConsoleApp } from "./_components/console-app";
 import "./console.css";
@@ -18,9 +24,11 @@ type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
 /**
  * `/console` — the public, read-only bank console ("mission control", P6;
- * design docs/design/console-v2.html). Anyone sees the main world; a
- * signed-in owner may switch to one of their own private sandbox worlds
- * (`?world=<id>`) and move its clock. Someone else's world → 404. The
+ * design docs/design/console-v2.html). P8: an anonymous visitor lands on
+ * the public demo world (simulated money, auto-advanced); anyone may
+ * switch to the main world (`?world=main`, the real PayPal sandbox); a
+ * signed-in owner lands on main and may switch to one of their own private
+ * sandbox worlds (`?world=<id>`) and move its clock. Someone else's world → 404. The
  * first snapshot is rendered on the server; the client then polls
  * `/api/console/snapshot` every 2 s while the tab is visible.
  */
@@ -30,7 +38,7 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
   const session = await getPagePrincipal();
   const principalId = session?.principalId ?? null;
   const db = await getDb();
-  const world = await resolveConsoleWorld(db, principalId, requested);
+  const world = await resolveConsoleWorld(db, principalId, requested || defaultConsoleWorld(principalId));
   if (!world) {
     notFound();
   }
@@ -38,7 +46,7 @@ async function ConsolePage({ searchParams }: { searchParams: SearchParams }) {
   return (
     <ConsoleApp
       initial={snapshot}
-      worldParam={world.kind === "main" ? "main" : world.id}
+      worldParam={consoleWorldParam(world)}
       choices={choices}
       licenseKey={process.env.BRYNTUM_LICENSE_KEY ?? null}
     />

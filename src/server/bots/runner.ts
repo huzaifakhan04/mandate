@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 
 import { getSimDay, getSimNow } from "../clock/clock";
 import type { Db } from "../db/client";
@@ -233,7 +233,7 @@ export async function runBotsCatchUp(
   const [world] = await db
     .select()
     .from(worlds)
-    .where(and(eq(worlds.id, worldId), eq(worlds.kind, "private"), eq(worlds.status, "active")))
+    .where(and(eq(worlds.id, worldId), inArray(worlds.kind, ["private", "demo"]), eq(worlds.status, "active")))
     .limit(1);
   if (!world) {
     return 0;

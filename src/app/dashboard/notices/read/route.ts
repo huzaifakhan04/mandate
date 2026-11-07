@@ -12,11 +12,11 @@ import { markOwnerNoticesRead } from "@/server/services/dashboard";
  */
 export async function POST(request: Request): Promise<Response> {
   const back = { path: "/dashboard#notices", returnTo: "/dashboard" };
-  const gated = gate(request, back);
+  const gated = await gate(request, back, getDb);
   if (gated instanceof Response) {
     return gated;
   }
-  const fields = (await readFields(request)) ?? {};
+  const fields = (await readFields(gated.request)) ?? {};
   const world = typeof fields.world === "string" && isUuid(fields.world) ? fields.world : undefined;
   const noticeId = typeof fields.notice_id === "string" && fields.notice_id ? fields.notice_id : undefined;
   if (noticeId !== undefined && !isUuid(noticeId)) {

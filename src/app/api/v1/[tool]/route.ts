@@ -7,6 +7,7 @@ import { queryParamsToInput } from "@/server/contracts/queryInput";
 import { findTool } from "@/server/contracts/registry";
 import { runTool } from "@/server/contracts/runTool";
 import { signedRequestFrom } from "@/server/auth/signatures";
+import { clientKey } from "@/server/http/rateLimit";
 import "@/server/contracts/tools";
 import { getDb as defaultGetDb, type Db } from "@/server/db/client";
 
@@ -52,6 +53,8 @@ export function createRestHandler({ getDb }: RestHandlerDeps) {
       requestId,
       authorization,
       idempotencyKey,
+      // P8: per-IP rate limits (register_agent).
+      clientIp: clientKey(req),
       // P2 Task 3: what a request signature covers — method, path and the
       // exact body bytes as received (never a re-serialisation).
       request: signedRequestFrom(req.headers, req.method.toUpperCase(), new URL(req.url).pathname, rawBody),

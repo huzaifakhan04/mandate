@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { AgentPrincipal } from "../auth/apiKeys";
 import type { Db } from "../db/client";
 import type { scoped } from "../db/scoped";
+import type { DbLimit } from "../http/dbRateLimit";
 import type { Envelope } from "./envelope";
 import { TOOL_GROUPS, toolExamples, toolGroup, toolHints } from "./toolMeta";
 
@@ -58,6 +59,16 @@ export interface FinalizeCtx {
   db: Db;
 }
 
+/** P8: what a tool's `rateLimits` hook sees (after auth and input validation). */
+export interface RateLimitCtx<Input = unknown> {
+  input: Input;
+  agentId: string | null;
+  /** The caller's IP (first `x-forwarded-for` hop), or `null` off-HTTP (tests, internal callers). */
+  clientIp: string | null;
+  simNow: Date;
+  worldId: string;
+}
+
 export interface ToolDef<
   Input extends z.ZodObject<z.ZodRawShape> = z.ZodObject<z.ZodRawShape>,
   Output extends z.ZodType = z.ZodType,
@@ -102,6 +113,14 @@ export interface ToolDef<
    * `X-Mandate-Previous-Signature` from that current key (rotation).
    */
   signingKeyFromInput?: (input: z.infer<Input>) => string;
+  /**
+   * P8: the Postgres-backed rate limits a call takes a hit from (after
+   * auth, input validation and the scope check; before the signature gate
+   * and the transaction). Any limit over → 429 `RATE_LIMITED` with
+   * `data.retry_after_seconds`; never stored under an idempotency key.
+   * Server-internal bot calls skip them.
+   */
+  rateLimits?: (ctx: RateLimitCtx<z.infer<Input>>) => DbLimit[];
   input: Input;
   output: Output;
   handler: (input: z.infer<Input>, ctx: ToolCtx) => Promise<Envelope<unknown>>;

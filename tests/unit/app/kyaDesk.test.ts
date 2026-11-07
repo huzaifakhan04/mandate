@@ -147,7 +147,8 @@ describe("KYA desk after a document upload", () => {
     handlers = createDocumentHandlers({
       getDb: async () => {
         calls += 1;
-        if (calls > 1) {
+        // P8: call 1 is the dashboard rate limit, call 2 the upload itself.
+        if (calls > 2) {
           throw new Error("db unavailable");
         }
         return db;
