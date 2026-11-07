@@ -7,6 +7,7 @@ import { listOwnedPrivateWorlds } from "@/server/services/privateWorldAccess";
 
 import { Crumb, LEGAL, LoadingFrame, OwnerShell } from "../../_components/chrome";
 import "../../dashboard.css";
+import { SelectValue } from "@/components/ui/select-value";
 
 export const metadata: Metadata = {
   title: "Mandate · Register an agent",
@@ -154,6 +155,7 @@ async function RegisterForm({ searchParams }: { searchParams: SearchParams }) {
                 defaultValue={selectedWorld}
                 aria-describedby="hint-world"
               >
+                <SelectValue />
                 <option value="main">Main world (PayPal sandbox)</option>
                 {privateWorlds.map((world) => (
                   <option key={world.id} value={world.id}>

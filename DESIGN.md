@@ -308,3 +308,7 @@ A six-column grid: mono time, a 20px circular direction glyph (green for in, `t2
 - **Don't** use filled status pills, cards around list content, or radii above 8px inside the app.
 - **Don't** use unicode glyphs (✓ ✕ →) or emoji as icons.
 - **Don't** use the logo tile variant inside the app.
+
+### Select
+
+Every `<select>` uses one treatment from `globals.css`. Closed: a 30px raised field with a drawn chevron in its own 28px gutter, and the label ellipsizes before the chevron. Open: in browsers with customizable select (`appearance: base-select`) the option list is drawn in the theme. It is exactly the field's width, on the raised surface with a hairline border and an 8px radius. Options are 28px rows with a hover fill and an indigo checkmark. Long labels wrap; they never widen the list. This list is the one floating layer allowed a shadow (`0 8px 24px rgba(0,0,0,.45)`), because it sits above content. Put `<SelectValue />` (`src/components/ui/select-value.tsx`) as the first child of every select so the closed label can ellipsize. Other browsers open the OS list, but the closed field still matches.

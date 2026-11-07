@@ -10,6 +10,7 @@ import { getPrincipal } from "@/server/services/principals";
 import { listPrivateWorlds } from "@/server/services/privateWorlds";
 
 import { formatDate, initials } from "./format";
+import { SelectValue } from "@/components/ui/select-value";
 
 /** One source of truth for the legal line (re-exported for the owner pages). */
 export { LEGAL };
@@ -94,6 +95,7 @@ export async function OwnerShell({
                 World
               </label>
               <select id="world-select" name="world" defaultValue={selected}>
+                <SelectValue />
                 <option value="">Main world</option>
                 {privateWorlds.map((w) => (
                   <option key={w.id} value={w.id}>

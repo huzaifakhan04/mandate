@@ -128,9 +128,134 @@ textarea {
   caret-color: var(--acc);
 }
 
+/* ---------- select: one themed control everywhere ----------
+ * Closed: flat raised field, drawn chevron with its own 28px gutter, text
+ * ellipsis. Open: where the browser supports customizable select
+ * (`appearance: base-select`), the option list is drawn in the app's theme,
+ * anchored to the field's width. Elsewhere the OS list opens, but the
+ * closed control still matches. Native <select> keeps keyboard, screen
+ * reader and no-JS form behaviour.
+ */
 select {
+  appearance: none;
+  -webkit-appearance: none;
+  box-sizing: border-box;
+  height: 30px;
+  max-width: 100%;
+  padding: 0 28px 0 10px;
+  border-radius: var(--r2);
+  border: 1px solid var(--line-2);
   background-color: var(--raised);
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 16 16' fill='none' stroke='%238b8d93' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  background-size: 12px 12px;
   color: var(--t1);
+  font: 500 12.5px/1 var(--font-geist-sans), system-ui, sans-serif;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background-color 0.15s var(--ease);
+}
+select:hover { border-color: var(--line-3); }
+select:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+select:disabled { opacity: 0.45; cursor: not-allowed; }
+
+@supports (appearance: base-select) {
+  select,
+  select::picker(select) {
+    appearance: base-select;
+  }
+  select {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    padding: 0 28px 0 10px;
+    background-image: none;
+  }
+  /* <SelectValue/> (src/components/ui/select-value.tsx) supplies this button. */
+  select > button {
+    all: unset;
+    display: block;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  select::picker-icon {
+    content: "";
+    position: absolute;
+    right: 9px;
+    top: calc(50% - 6px);
+    width: 12px;
+    height: 12px;
+    background: var(--t3);
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4.5 6.5L8 10l3.5-3.5'/%3E%3C/svg%3E") center / 12px 12px no-repeat;
+    transition: rotate 0.15s var(--ease);
+  }
+  select:open::picker-icon {
+    rotate: 180deg;
+  }
+  select:open {
+    border-color: var(--line-3);
+    background-color: var(--hover);
+  }
+  /* The open list: same surface family, a hairline, and the one floating
+     shadow the system allows (popovers sit above content). */
+  select::picker(select) {
+    box-sizing: border-box;
+    /* exactly the field's width; long labels wrap instead of widening it */
+    width: anchor-size(width);
+    max-height: min(320px, 60vh);
+    margin-block: 4px;
+    padding: 4px;
+    border: 1px solid var(--line-2);
+    border-radius: var(--r3);
+    background: var(--raised);
+    color: var(--t1);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    overflow-y: auto;
+    opacity: 1;
+    transition: opacity 0.12s var(--ease), overlay 0.12s allow-discrete, display 0.12s allow-discrete;
+  }
+  @starting-style {
+    select:open::picker(select) {
+      opacity: 0;
+    }
+  }
+  select option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 28px;
+    padding: 6px 8px;
+    border-radius: var(--r1);
+    color: var(--t2);
+    font: 400 12.5px/1.3 var(--font-geist-sans), system-ui, sans-serif;
+    white-space: normal;
+    cursor: pointer;
+  }
+  select option:hover,
+  select option:focus-visible {
+    background: var(--hover);
+    color: var(--t1);
+    outline: none;
+  }
+  select option:checked {
+    color: var(--t1);
+    font-weight: 500;
+  }
+  select option::checkmark {
+    order: 1;
+    margin-left: auto;
+    color: var(--acc);
+  }
+  select option:disabled {
+    color: var(--t4);
+    cursor: not-allowed;
+  }
 }
 
 input[type="checkbox"],
@@ -205,13 +330,14 @@ h3 {
   height: 30px;
   padding: 0 10px;
   border-radius: var(--r2);
-  background: var(--panel);
+  background-color: var(--panel);
   border: 1px solid var(--line-2);
   color: var(--t1);
   font: 400 13px/1 var(--font-geist-sans), system-ui, sans-serif;
 }
 .ui-input::placeholder { color: var(--t4); }
 .ui-input:focus { outline: none; border-color: var(--acc); }
+select.ui-input { padding-right: 28px; }
 
 /* status: small glyph + plain label, never a filled pill */
 .ui-st { display: inline-flex; align-items: center; gap: 6px; color: var(--t2); font-size: 12px; white-space: nowrap; }
@@ -253,10 +379,7 @@ h3 {
 .shell-brand { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 8px; color: var(--t1); text-decoration: none; font-weight: 560; letter-spacing: -0.015em; }
 .shell-brand:hover { text-decoration: none; }
 .shell-world { padding: 0 2px; }
-.shell-world select {
-  width: 100%; height: 30px; padding: 0 8px; border-radius: var(--r2); background: var(--raised); color: var(--t1);
-  border: 1px solid var(--line-2); font: 500 12.5px/1 var(--font-geist-sans), system-ui, sans-serif;
-}
+.shell-world select { width: 100%; }
 .shell-nav { display: flex; flex-direction: column; gap: 1px; }
 .shell-nav a, .shell-nav button {
   all: unset; box-sizing: border-box; display: flex; align-items: center; gap: 10px; height: 30px; padding: 0 8px;

@@ -17,7 +17,7 @@
 .mc .shell-brand { color: var(--t1); }
 .mc .shell-world { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .mc .shell-world form { margin: 0; min-width: 0; }
-.mc .shell-world select { cursor: pointer; font-size: 12px; padding: 0 4px 0 8px; text-overflow: ellipsis; }
+.mc .shell-world select { font-size: 12px; }
 .mc .world-static { display: flex; align-items: center; height: 30px; padding: 0 8px; border: 1px solid var(--line-2); border-radius: var(--r2); color: var(--t1); font-size: 12.5px; }
 .mc .world-meta { display: flex; align-items: center; gap: 8px; padding: 0 2px; min-height: 18px; color: var(--t3); font-size: 12px; }
 .mc .world-meta:empty { display: none; }

@@ -11,6 +11,7 @@ import { STATUS_PILL, drawerHref, isDelinquentStatus, loanPill } from "./cards";
 import { Pill } from "./chrome";
 import { DrawerKeys } from "./drawer-keys";
 import { approveHref, centsInputValue, formatBps, formatCents, formatDate, formatDateTime, loanLabel, shortId } from "./format";
+import { SelectValue } from "@/components/ui/select-value";
 
 export type DrawerTab = "loans" | "notes" | "events";
 
@@ -765,6 +766,7 @@ function DocumentsSection({ agent }: { agent: AgentDetailView }) {
             Document type
           </label>
           <select className="ui-input" id="doc-kind" name="kind" defaultValue="operator_registration">
+            <SelectValue />
             {KYA_DOCUMENT_KINDS.map((kind) => (
               <option key={kind} value={kind}>
                 {DOC_KIND_LABEL[kind]}

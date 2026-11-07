@@ -25,6 +25,7 @@ import { logTime, simDate, simTime } from "./format";
 import { ConsoleGrids, type TabId } from "./grids";
 import { KpiArea } from "./kpis";
 import { Movements } from "./movements";
+import { SelectValue } from "@/components/ui/select-value";
 
 export const POLL_MS = 2000;
 
@@ -196,6 +197,7 @@ export function ConsoleApp({
                 defaultValue={worldParam}
                 onChange={(e) => e.currentTarget.form?.requestSubmit()}
               >
+                <SelectValue />
                 {choices.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.kind === "private" ? `${c.name} · sandbox` : c.name}
