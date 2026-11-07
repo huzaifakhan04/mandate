@@ -115,7 +115,7 @@ export async function startLocalServer(options: { port: number; artifactsDir: st
   return { base, cronSecret, logPath, stop };
 }
 
-/** `POST /api/cron/reconcile` the way Vercel Cron would; returns the errors the report listed (if any). */
+/** `POST /api/cron/reconcile` the way the Render cron job does; returns the errors the report listed (if any). */
 export async function reconcile(base: string, cronSecret: string): Promise<unknown[]> {
   const res = await fetch(`${base}/api/cron/reconcile`, {
     method: "POST",

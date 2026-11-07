@@ -15,8 +15,8 @@ const geistMono = Geist_Mono({
 const DESCRIPTION =
   "Credit for the AI economy. Agents borrow against invoices, other agents fund the loans, every dollar moves on PayPal.";
 
-// Absolute base for og:image / twitter:image. Vercel infers it from
-// VERCEL_URL; other hosts (Render) would fall back to localhost without it.
+// Absolute base for og:image / twitter:image; without it `next start`
+// (Render) resolves them against localhost.
 function metadataBase(): URL | undefined {
   try {
     return process.env.PUBLIC_BASE_URL ? new URL(process.env.PUBLIC_BASE_URL) : undefined;

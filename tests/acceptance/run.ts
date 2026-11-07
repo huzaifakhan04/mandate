@@ -10,7 +10,7 @@
  * server per run, so each run's ledger assertions are exact) and drives the
  * reconcile cron itself, since PayPal webhooks can't reach localhost. With
  * --base (e.g. prod) it only polls the public tools: settlement there is
- * Vercel cron + webhooks, and /api/test/ledger is not served.
+ * Render cron jobs + webhooks, and /api/test/ledger is not served.
  *
  * Per run: a lender agent funds $30 of notes (the harness approves its
  * PayPal checkout as PAYPAL_LENDER); a borrower agent surfaces its claim_url

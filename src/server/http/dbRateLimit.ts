@@ -7,7 +7,7 @@ import type { RateLimitResult } from "./rateLimit";
 
 /**
  * P8: Postgres-backed fixed-window rate limits, so a limit holds across
- * every Vercel instance (the in-memory token bucket in `rateLimit.ts` is
+ * every server instance (the in-memory token bucket in `rateLimit.ts` is
  * per instance). One `rate_limits` row per (bucket, window); each hit is
  * ONE atomic statement —
  *

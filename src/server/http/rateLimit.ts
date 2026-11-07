@@ -71,9 +71,9 @@ export function createTokenBucket({ capacity, refillPerSecond, maxKeys = 10_000 
  *   `cf-connecting-ip` / `true-client-ip` with the real client IP — but it
  *   keeps a client-supplied `x-forwarded-for` as the first hop, so that
  *   header is spoofable there and never read.
- * - Vercel (and local dev): the edge overwrites `x-forwarded-for`, so its
- *   first hop is the client; `cf-*` headers are not trusted (a client could
- *   send them).
+ * - Elsewhere (local dev, tests, a proxy that overwrites `x-forwarded-for`):
+ *   the first `x-forwarded-for` hop, else `x-real-ip`; `cf-*` headers are
+ *   not trusted there (a client could send them).
  */
 export function clientIpFromHeaders(headers: Headers): string | null {
   if (process.env.RENDER) {

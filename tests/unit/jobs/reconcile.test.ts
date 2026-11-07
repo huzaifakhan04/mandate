@@ -583,7 +583,7 @@ describe("cron routes require CRON_SECRET", () => {
     expect(res.status).toBe(401);
   });
 
-  it("the right secret (GET, as Vercel Cron sends) → 200 with the run's report", async () => {
+  it("the right secret (GET) → 200 with the run's report", async () => {
     await createSimWorld(db);
     const res = await handler().GET(
       new Request("http://localhost/api/cron/reconcile", { headers: { authorization: "Bearer test-cron-secret" } }),

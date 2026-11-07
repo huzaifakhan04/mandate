@@ -28,7 +28,7 @@ import {
  * `npm test` stays offline. Run it with `npm run test:sandbox`.
  *
  * Webhooks can't reach localhost, so the test drives settlement the way
- * Vercel Cron would: `POST /api/cron/reconcile` with the CRON_SECRET it
+ * the Render cron job would: `POST /api/cron/reconcile` with the CRON_SECRET it
  * generated for the server, in a polling loop.
  *
  * Accounts: the lender buys notes as PAYPAL_LENDER_EMAIL; the borrower's

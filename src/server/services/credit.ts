@@ -155,7 +155,7 @@ export async function scoreFacts(
  * (`tests/helpers/kya.ts`). In-memory, per process. Both the write and the
  * read are disabled when NODE_ENV is "production" — the guard relies on
  * NODE_ENV, which Next sets to "production" for `next build` / `next start`
- * and on Vercel. The application's invoice coverage is never overridden.
+ * (as on Render). The application's invoice coverage is never overridden.
  */
 const testFactsOverrides = new Map<string, Partial<Omit<ScoreFacts, "invoiceCoverageBps">>>();
 

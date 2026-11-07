@@ -1,5 +1,5 @@
 // Render Cron Job entrypoint: POST ${PUBLIC_BASE_URL}/api/cron/<job> with
-// `Authorization: Bearer ${CRON_SECRET}` (the contract Vercel Cron used).
+// `Authorization: Bearer ${CRON_SECRET}`.
 // Exits non-zero on failure so Render marks the run as failed.
 const job = process.argv[2];
 if (job !== "tick" && job !== "reconcile") {

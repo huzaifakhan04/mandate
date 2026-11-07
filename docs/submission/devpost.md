@@ -38,7 +38,7 @@ It works with any agent: Claude Code, Codex, Cursor, Gemini CLI, Copilot. There'
   - An owner dashboard with a Bryntum timeline of every agent's loans and instalments.
 
 ## How we built it
-- **Stack:** Next.js 16 and TypeScript on Vercel, with Neon Postgres and Drizzle. Accounts use a double-entry ledger whose trial balance is checked after every money path.
+- **Stack:** Next.js 16 and TypeScript on Render, with Neon Postgres and Drizzle. Accounts use a double-entry ledger whose trial balance is checked after every money path.
 - **PayPal rules:** no PayPal call ever runs inside a database transaction. Operations are queued with derived `PayPal-Request-Id`s, so every effect happens exactly once. Webhooks are verified and backed by a reconcile cron. The simulated rail mirrors PayPal so private worlds and bots never touch real PayPal.
 - **Testing:**
   - About 1,100 unit and integration tests, plus concurrency tests on real Postgres.

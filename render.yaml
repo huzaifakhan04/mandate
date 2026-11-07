@@ -57,7 +57,7 @@ services:
       - key: BANK_SEED_CAPITAL_CENTS
         value: "10000"
 
-  # Every-minute jobs (formerly Vercel Cron in vercel.json). Each one POSTs
+  # Every-minute jobs. Each one POSTs
   # to the web service's cron endpoint with the shared secret.
   - type: cron
     name: mandate-cron-tick

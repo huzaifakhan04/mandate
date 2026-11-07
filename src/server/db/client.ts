@@ -1,5 +1,4 @@
 import { neonConfig, Pool } from "@neondatabase/serverless";
-import { attachDatabasePool } from "@vercel/functions";
 import { drizzle, type NeonDatabase } from "drizzle-orm/neon-serverless";
 import type { PgliteDatabase } from "drizzle-orm/pglite";
 import ws from "ws";
@@ -40,9 +39,6 @@ function createDb(): NeonDatabase<typeof schema> {
   pool.on("error", (err: Error & { code?: string }) => {
     console.error(`[db] idle pool client error: ${err.name}${err.code ? ` (${err.code})` : ""}: ${err.message}`);
   });
-  // Fluid compute: lets Vercel close idle pool clients before the instance
-  // is suspended, instead of leaking them until Neon times them out.
-  attachDatabasePool(pool);
   return drizzle(pool, { schema });
 }
 

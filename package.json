@@ -31,7 +31,6 @@
     "@modelcontextprotocol/server": "^2.4.0",
     "@neondatabase/serverless": "^1.2.0",
     "@paypal/paypal-server-sdk": "^2.5.0",
-    "@vercel/functions": "^3.11.0",
     "ag-grid-community": "^36.3.0",
     "ag-grid-react": "^36.3.0",
     "drizzle-orm": "^0.45.4",
