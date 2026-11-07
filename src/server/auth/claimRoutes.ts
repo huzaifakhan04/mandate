@@ -1,6 +1,7 @@
 import { mandateMarkSvg } from "@/components/brand/MandateLogo";
 
 import type { Db } from "../db/client";
+import { absoluteUrl } from "../http/publicUrl";
 import { claimAgent } from "../services/claims";
 import { principalFromRequest, signInPath } from "./guard";
 import { isSameOriginPost } from "./routes";
@@ -68,10 +69,10 @@ export function createClaimHandler({ getDb }: { getDb: () => Promise<Db> }) {
       return plain(403, "Forbidden");
     }
     const claimPath = `/claim/${token}`;
-    const claimPage = new URL(claimPath, request.url).toString();
+    const claimPage = absoluteUrl(claimPath, request);
     const session = principalFromRequest(request);
     if (!session) {
-      return seeOther(new URL(signInPath(claimPath), request.url).toString());
+      return seeOther(absoluteUrl(signInPath(claimPath), request));
     }
 
     let outcome: Awaited<ReturnType<typeof claimAgent>>["outcome"];
@@ -86,7 +87,7 @@ export function createClaimHandler({ getDb }: { getDb: () => Promise<Db> }) {
       case "claimed_by_other":
         return conflictPage();
       case "principal_unverified":
-        return seeOther(new URL(signInPath(claimPath), request.url).toString());
+        return seeOther(absoluteUrl(signInPath(claimPath), request));
       case "claimed":
       case "already_yours":
       case "expired":

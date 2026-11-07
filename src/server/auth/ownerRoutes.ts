@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { absoluteUrl } from "../http/publicUrl";
 import { bufferRequestCapped } from "../http/body";
 import { HOUR_MS, takeDbRateLimits } from "../http/dbRateLimit";
 import {
@@ -83,7 +84,7 @@ export function wantsHtml(request: Request): boolean {
 }
 
 export function seeOther(request: Request, path: string, cookies: string[] = []): Response {
-  const headers = new Headers({ location: new URL(path, request.url).toString(), "cache-control": "no-store" });
+  const headers = new Headers({ location: absoluteUrl(path, request), "cache-control": "no-store" });
   for (const cookie of cookies) {
     headers.append("set-cookie", cookie);
   }

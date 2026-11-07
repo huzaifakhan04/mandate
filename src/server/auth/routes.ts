@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { absoluteUrl } from "../http/publicUrl";
 import { VerificationError, completeVerification, startVerification } from "../services/principals";
 import { HOUR_MS, takeDbRateLimits } from "../http/dbRateLimit";
 import { clientKey } from "../http/rateLimit";
@@ -71,7 +72,7 @@ function redirect(location: string, cookies: string[] = []): Response {
 }
 
 function errorRedirect(request: Request, reason: VerifyErrorReason, cookies: string[] = []): Response {
-  return redirect(new URL(`/verify/error?reason=${reason}`, request.url).toString(), cookies);
+  return redirect(absoluteUrl(`/verify/error?reason=${reason}`, request), cookies);
 }
 
 /**
@@ -171,7 +172,7 @@ export function createVerifyReturnHandler({ getDb }: { getDb: () => Promise<Db> 
     try {
       const db = await getDb();
       const principal = await completeVerification(db, orderId);
-      return redirect(new URL(state.returnTo, request.url).toString(), [
+      return redirect(absoluteUrl(state.returnTo, request), [
         serializeCookie(SESSION_COOKIE_NAME, createSession(principal.id), sessionCookieOptions()),
         clearCookie(VERIFY_COOKIE_NAME),
       ]);
@@ -190,6 +191,6 @@ export function createLogoutHandler() {
     if (!isSameOriginPost(request)) {
       return forbidden();
     }
-    return redirect(new URL("/", request.url).toString(), [clearCookie(SESSION_COOKIE_NAME)]);
+    return redirect(absoluteUrl("/", request), [clearCookie(SESSION_COOKIE_NAME)]);
   };
 }

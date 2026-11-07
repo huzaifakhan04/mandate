@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { absoluteUrl } from "../http/publicUrl";
 import {
   MAX_KYA_DOCUMENT_BYTES,
   deleteKyaDocument,
@@ -47,7 +48,7 @@ function wantsHtml(request: Request): boolean {
 function seeOther(request: Request, path: string): Response {
   return new Response(null, {
     status: 303,
-    headers: { location: new URL(path, request.url).toString(), "cache-control": "no-store" },
+    headers: { location: absoluteUrl(path, request), "cache-control": "no-store" },
   });
 }
 

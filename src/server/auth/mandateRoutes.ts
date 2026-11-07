@@ -1,4 +1,5 @@
 import type { Db } from "../db/client";
+import { absoluteUrl } from "../http/publicUrl";
 import { dollarsToCentsField, percentToBpsField, type MandateSignInput } from "../domain/mandate";
 import { clientIp, revokeMandate, signMandate, type MandateRow } from "../services/mandates";
 import { bufferRequestCapped } from "../http/body";
@@ -42,7 +43,7 @@ function wantsHtml(request: Request): boolean {
 function seeOther(request: Request, path: string): Response {
   return new Response(null, {
     status: 303,
-    headers: { location: new URL(path, request.url).toString(), "cache-control": "no-store" },
+    headers: { location: absoluteUrl(path, request), "cache-control": "no-store" },
   });
 }
 
