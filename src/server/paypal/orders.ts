@@ -1,4 +1,12 @@
 import type {
+  WireLinkDescription,
+  WireOrder,
+  WireOrderRequest,
+  WireOrdersCapture,
+  WirePurchaseUnitRequest,
+  WireUserAction,
+} from "./sdkTypes";
+import type {
   CaptureRecord,
   ExecutableRequest,
   OrderCaptureResult,
@@ -89,37 +97,49 @@ export interface CreateOrderRequestParams {
   payeeEmail?: string;
   returnUrl: string;
   cancelUrl: string;
+  /**
+   * APIMatic audit: the PayPal page's final button. `PAY_NOW` (default) —
+   * the amount is final and the order is captured as soon as the payer
+   * returns (every checkout here). `CONTINUE` — PayPal's default, for an
+   * order that is approved but not captured on return (the $0.01 "Verify
+   * with PayPal" order).
+   */
+  userAction?: WireUserAction;
 }
 
-/** `POST /v2/checkout/orders` — an `intent: CAPTURE` USD order. Rejects non-positive amounts. */
+/**
+ * `POST /v2/checkout/orders` — an `intent: CAPTURE` USD order. Rejects
+ * non-positive amounts. The body is typed against the official SDK's
+ * `OrderRequest` (`WireOrderRequest`), so a wrong wire key or enum value is
+ * a compile error. `shipping_preference: NO_SHIPPING`: nothing here ships,
+ * so PayPal must not ask the payer for (or return) a shipping address.
+ */
 export function buildCreateOrderRequest(params: CreateOrderRequestParams): ExecutableRequest {
   assertPositiveAmountCents(params.amountCents);
 
-  const purchaseUnit: Record<string, unknown> = {
+  const purchaseUnit: WirePurchaseUnitRequest = {
     amount: { currency_code: "USD", value: centsToAmount(params.amountCents) },
     description: params.description,
     custom_id: params.customId,
+    ...(params.payeeEmail ? { payee: { email_address: params.payeeEmail } } : {}),
   };
-  if (params.payeeEmail) {
-    purchaseUnit.payee = { email_address: params.payeeEmail };
-  }
 
-  return {
-    method: "POST",
-    path: "/v2/checkout/orders",
-    body: {
-      intent: "CAPTURE",
-      purchase_units: [purchaseUnit],
-      payment_source: {
-        paypal: {
-          experience_context: {
-            return_url: params.returnUrl,
-            cancel_url: params.cancelUrl,
-          },
+  const body: WireOrderRequest = {
+    intent: "CAPTURE",
+    purchase_units: [purchaseUnit],
+    payment_source: {
+      paypal: {
+        experience_context: {
+          return_url: params.returnUrl,
+          cancel_url: params.cancelUrl,
+          user_action: params.userAction ?? "PAY_NOW",
+          shipping_preference: "NO_SHIPPING",
         },
       },
     },
   };
+
+  return { method: "POST", path: "/v2/checkout/orders", body };
 }
 
 function orderPath(orderId: string): string {
@@ -147,12 +167,23 @@ export function orderIdFromPath(path: string): string {
   return decodeURIComponent(match[1] as string);
 }
 
+/**
+ * The parsers below read PayPal's `Order` through the SDK's wire type
+ * (`WireOrder`): every field name they touch is checked against the
+ * official model at compile time. Values are still runtime-validated —
+ * every Order member is optional in the SDK, so a truncated 2xx decodes
+ * "cleanly" there too (plugin: assert on the members you depend on).
+ */
+function asOrder(body: unknown): WireOrder | undefined {
+  return asRecord(body) as WireOrder | undefined;
+}
+
 export function parseCreateOrderResponse(body: unknown): OrderCreateResult {
-  const record = asRecord(body);
+  const record = asOrder(body);
   const orderId = requireString(record?.id, "the order id");
-  const links = Array.isArray(record?.links) ? record.links : [];
+  const links: unknown[] = Array.isArray(record?.links) ? record.links : [];
   const approve = links
-    .map(asRecord)
+    .map((link) => asRecord(link) as Partial<WireLinkDescription> | undefined)
     .find((link) => link?.rel === "approve" || link?.rel === "payer-action");
   return {
     orderId,
@@ -162,14 +193,21 @@ export function parseCreateOrderResponse(body: unknown): OrderCreateResult {
 }
 
 function firstCapture(body: unknown): CaptureRecord | null {
-  const unit = asRecord((asRecord(body)?.purchase_units as unknown[] | undefined)?.[0]);
-  const payments = asRecord(unit?.payments);
-  const captured = asRecord((payments?.captures as unknown[] | undefined)?.[0]);
+  const units: unknown = asOrder(body)?.purchase_units;
+  const unit = asRecord(Array.isArray(units) ? units[0] : undefined) as
+    | NonNullable<WireOrder["purchase_units"]>[number]
+    | undefined;
+  const captures: unknown = asRecord(unit?.payments)?.captures;
+  const captured = asRecord(Array.isArray(captures) ? captures[0] : undefined) as
+    | WireOrdersCapture
+    | undefined;
   if (!captured) {
     return null;
   }
-  const amount = asRecord(captured.amount);
-  const breakdown = asRecord(captured.seller_receivable_breakdown);
+  const amount = asRecord(captured.amount) as WireOrdersCapture["amount"];
+  const breakdown = asRecord(captured.seller_receivable_breakdown) as
+    | WireOrdersCapture["seller_receivable_breakdown"]
+    | undefined;
   return {
     captureId: requireString(captured.id, "the capture id"),
     captureStatus: requireString(captured.status, "the capture status"),
@@ -208,7 +246,7 @@ export function parseCaptureOrderResponse(
   }
   return {
     orderId,
-    status: requireString(asRecord(body)?.status, "the order status"),
+    status: requireString(asOrder(body)?.status, "the order status"),
     ...capture,
     recovered,
   };
@@ -218,29 +256,46 @@ function optionalString(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/** The order's `payer` (P2 Verify with PayPal), or `null` when the order has none yet. */
-function parsePayer(value: unknown): OrderPayer | null {
-  const payer = asRecord(value);
-  if (!payer) {
-    return null;
-  }
-  const name = asRecord(payer.name);
-  const fullName = [optionalString(name?.given_name), optionalString(name?.surname)]
+function fullName(value: unknown): string | null {
+  const name = asRecord(value) as NonNullable<WireOrder["payer"]>["name"];
+  const joined = [optionalString(name?.given_name), optionalString(name?.surname)]
     .filter((part): part is string => part !== null)
     .join(" ");
-  return {
-    payerId: optionalString(payer.payer_id),
-    email: optionalString(payer.email_address),
-    name: fullName.length > 0 ? fullName : null,
-  };
+  return joined.length > 0 ? joined : null;
+}
+
+/**
+ * The order's payer (P2 Verify with PayPal), or `null` when the order has
+ * none yet. APIMatic audit: the SDK marks `Order.payer` **@deprecated** —
+ * "the details in the `payer` object are now available under
+ * `payment_source.paypal`" (`account_id` = the payer id). So
+ * `payment_source.paypal` is read first and each field falls back to the
+ * legacy `payer` object, which PayPal still sends today.
+ */
+function parsePayer(order: WireOrder | undefined): OrderPayer | null {
+  const wallet = asRecord(asRecord(order?.payment_source)?.paypal) as
+    | NonNullable<NonNullable<WireOrder["payment_source"]>["paypal"]>
+    | undefined;
+  const legacy = asRecord(order?.payer) as WireOrder["payer"];
+  if (!wallet && !legacy) {
+    return null;
+  }
+  const payerId = optionalString(wallet?.account_id) ?? optionalString(legacy?.payer_id);
+  const email = optionalString(wallet?.email_address) ?? optionalString(legacy?.email_address);
+  const name = fullName(wallet?.name) ?? fullName(legacy?.name);
+  if (!payerId && !email && !name && !legacy) {
+    // A `payment_source.paypal` carrying only experience settings (before approval) is no payer.
+    return null;
+  }
+  return { payerId, email, name };
 }
 
 export function parseGetOrderResponse(body: unknown): OrderGetResult {
-  const record = asRecord(body);
+  const record = asOrder(body);
   return {
     orderId: requireString(record?.id, "the order id"),
     status: requireString(record?.status, "the order status"),
     capture: firstCapture(body),
-    payer: parsePayer(record?.payer),
+    payer: parsePayer(record),
   };
 }

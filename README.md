@@ -85,7 +85,7 @@ flowchart LR
 | **PayPal** (sandbox) | Every money movement: Orders v2 checkouts for notes and repayments, invoice payment links whose payee is the bank, Payouts for loans and remainders, Log in with PayPal to verify humans, and webhooks. | `src/server/paypal`, `src/server/rail` |
 | **AG Grid** | The public console's ledger, loans, notes and agents tables. | `src/app/console/_components/grids.tsx` |
 | **Postman** | A public workspace with a v2.1 collection built from `/openapi.json` and the registry. It has folders *Start here, Lend, Borrow, Repay, Collections, Treasury*, sets the bearer auth with a pre-request script, uses the registry's example bodies (including the ALA declarations and attestation), checks the envelope shape in tests, and captures ids between requests. The publish script upserts the collection and the *Mandate prod* environment by name. | `scripts/sponsors/postman-publish.ts`, `docs/sponsors/postman/` |
-| **APIMatic** | Validates the OpenAPI document, imports it as an API entity, generates the TypeScript and Python SDKs (both smoke-tested against prod), and builds a static docs portal. If you are building on PayPal yourself, APIMatic's **PayPal Context Plugin** ([ContextMatic](https://github.com/apimatic/context-matic)) is an MCP server that gives coding agents version-aware PayPal Server SDK docs. It is a developer tool, not a Platform API endpoint, so this repo does not call it. | `scripts/sponsors/apimatic-generate.ts`, `sdks/`, `public/docs-portal/` |
+| **APIMatic** | Validates the OpenAPI document, imports it as an API entity, generates the TypeScript and Python SDKs (both smoke-tested against prod), and builds a static docs portal. We also built and audited our PayPal integration with APIMatic's **Context Plugin for PayPal** in Claude Code (see below). | `scripts/sponsors/apimatic-generate.ts`, `sdks/`, `public/docs-portal/` |
 | **Kernel** | Cloud browsers that approve PayPal *sandbox* checkouts in the acceptance harness (`--browser kernel`), and that let an operator approve a sandbox checkout when no human is at hand. Stealth mode and the CAPTCHA solver stay off, and the bank never approves PayPal pages server-side. | `tests/helpers/kernelApprove.ts`, `npm run test:kernel` |
 | **OpenAI** | Underwriting narratives, adverse-action explanations and treasury memos, each with a template fallback. | `src/server/ai` |
 
@@ -115,3 +115,29 @@ Sponsor scripts (real APIs; keys come from `.env.local` and are never printed):
 npx tsx --env-file=.env.local scripts/sponsors/postman-publish.ts            # build + upsert the Postman collection/environment
 npx tsx --env-file=.env.local scripts/sponsors/apimatic-generate.ts --portal # validate, import, SDKs, docs portal
 ```
+
+## Built with the APIMatic Context Plugin for PayPal
+
+Mandate's PayPal layer (OAuth, Orders v2 create/get/capture with `payment_source.paypal.experience_context`,
+Payouts send/get/item-cancel, webhook signature verification) was audited and hardened with the
+[APIMatic Context Plugin for PayPal](https://github.com/context-plugins/paypal-typescript-sdk) in Claude Code:
+
+```bash
+npx context-plugins install paypal
+```
+
+All nine `paypal:typescript-*` skills were used (getting-started, integrate-paypal, models,
+calling-endpoints, error-handling, authentication, client-initialization, configuration-resilience,
+testing). What came out of it:
+
+- **Typed against the official SDK.** `@paypal/paypal-server-sdk` models are the compile-time contract for
+  every Orders wire body we build or parse (`src/server/paypal/sdkTypes.ts`, `Wire<T>` = SDK model with its
+  wire-key renaming) — while our queued-operation transport keeps derived `PayPal-Request-Id`s, stored
+  request shapes and sim-rail parity.
+- **Five real fixes** (each with an msw test in `tests/unit/paypal/apimaticAudit.test.ts`): `user_action:
+  PAY_NOW` + `shipping_preference: NO_SHIPPING`; payer read from `payment_source.paypal` (SDK marks
+  `payer` deprecated); no idempotency header on GETs; validated OAuth token responses; a duplicate payout
+  batch treated as an unknown outcome instead of a failed payout.
+- **Audit report:** [`docs/sponsors/apimatic-context-plugin-audit.md`](docs/sponsors/apimatic-context-plugin-audit.md)
+  (call-by-call table: what we do, what the plugin says, verdict). Contract sheet: [`paypal-plan.md`](paypal-plan.md).
+  Reproduction notes: [`.mcp/apimatic-context-plugin.md`](.mcp/apimatic-context-plugin.md).

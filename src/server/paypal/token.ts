@@ -20,8 +20,16 @@ let inFlight: Promise<string> | null = null;
 
 interface OAuthTokenResponse {
   access_token: string;
-  expires_in: number;
+  /** Seconds. RFC 6749 §5.1 makes it RECOMMENDED, not required. */
+  expires_in?: number;
 }
+
+/**
+ * Lifetime assumed when PayPal omits `expires_in`. The APIMatic SDK caches
+ * such a token forever (until a 401); we cap it instead — a 401 still
+ * forces a refresh either way (`paypalFetch`).
+ */
+const DEFAULT_TOKEN_TTL_MS = 5 * 60_000;
 
 /**
  * A non-2xx response from `/v1/oauth2/token` itself (as opposed to a
@@ -38,6 +46,31 @@ export class PayPalOAuthError extends Error {
     super(`PayPal OAuth token request failed (${status}): ${responseBody}`);
     this.name = "PayPalOAuthError";
   }
+}
+
+/**
+ * APIMatic audit: the SDK *decodes* the token response against a schema
+ * rather than casting it. A 2xx without a non-empty `access_token` (or with
+ * a non-numeric `expires_in`) is a `PayPalOAuthError`, never a cached
+ * `undefined` token sent as `Bearer undefined`.
+ */
+function parseTokenResponse(status: number, text: string): OAuthTokenResponse {
+  let body: unknown;
+  try {
+    body = JSON.parse(text);
+  } catch {
+    throw new PayPalOAuthError(status, "token response is not JSON");
+  }
+  const record = body !== null && typeof body === "object" ? (body as Record<string, unknown>) : {};
+  const accessToken = record.access_token;
+  const expiresIn = record.expires_in;
+  if (typeof accessToken !== "string" || accessToken.length === 0) {
+    throw new PayPalOAuthError(status, "token response has no access_token");
+  }
+  if (expiresIn !== undefined && (typeof expiresIn !== "number" || !Number.isFinite(expiresIn) || expiresIn <= 0)) {
+    throw new PayPalOAuthError(status, "token response has an invalid expires_in");
+  }
+  return { access_token: accessToken, ...(expiresIn !== undefined ? { expires_in: expiresIn } : {}) };
 }
 
 async function requestNewToken(): Promise<string> {
@@ -61,10 +94,11 @@ async function requestNewToken(): Promise<string> {
     throw new PayPalOAuthError(res.status, text);
   }
 
-  const body = (await res.json()) as OAuthTokenResponse;
+  const body = parseTokenResponse(res.status, await res.text());
   cached = {
     accessToken: body.access_token,
-    expiresAt: Date.now() + body.expires_in * 1000,
+    expiresAt:
+      body.expires_in === undefined ? Date.now() + DEFAULT_TOKEN_TTL_MS : Date.now() + body.expires_in * 1000,
   };
   return cached.accessToken;
 }

@@ -316,13 +316,17 @@ describe("treasury policy (P5 Task 3)", () => {
     expect(ticked.queuedRedemptionsPaid).toBe(2);
     expect((await redemption(q1Id)).status).toBe("completed");
     expect((await redemption(q2Id)).status).toBe("completed");
-    // FIFO: the head's payout was enqueued first.
+    // One payout each. (FIFO itself is proven above: the payable q2 stayed
+    // queued behind the unpayable head.) Both payouts are enqueued in ONE
+    // transaction, so their `created_at` (now() = tx start) ties: ordering
+    // by it alone is undefined (physical row order), so don't assert it.
     const ops = await db
       .select()
       .from(paypalOperations)
       .where(and(eq(paypalOperations.worldId, worldId), eq(paypalOperations.purpose, "note_redemption"))!)
       .orderBy(asc(paypalOperations.createdAt));
-    expect(ops.map((op) => op.sourceId)).toEqual([q1Id, q2Id]);
+    expect(ops.map((op) => op.sourceId).sort()).toEqual([q1Id, q2Id].sort());
+    expect(ops[0]?.createdAt.getTime()).toBe(ops[1]?.createdAt.getTime());
     expect(await units(l2.agentId)).toBeGreaterThanOrEqual(4000n);
     expect(await units(l1.agentId)).toBeGreaterThanOrEqual(30000n - available);
     await expectInvariants();

@@ -107,6 +107,8 @@ export async function startVerification(
       customId: verificationId,
       returnUrl: publicUrl("/verify/return"),
       cancelUrl: publicUrl("/verify/error?reason=cancelled"),
+      // Approved, never captured: PayPal's "Continue" button, not "Pay Now".
+      userAction: "CONTINUE",
     }),
   });
   const result = await executeOperation(db, operationId, { ignoreBackoff: true });
