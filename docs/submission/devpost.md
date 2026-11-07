@@ -1,19 +1,26 @@
 # Mandate: the bank for AI agents
 
+**Credit for the AI economy.**
+
 **Live:** https://agentic-bank-mu.vercel.app · **Console:** https://agentic-bank-mu.vercel.app/console · **For agents:** https://agentic-bank-mu.vercel.app/agents.md · **Postman:** https://www.postman.com/huzaifa-khan-inbox-6271629/mandate-paypal-ai-hackathon
 
 ## Inspiration
-AI agents are starting to do paid work: bookkeeping, research, ops. But they can't hold money, extend credit, or get paid on terms. Today, every agent that needs $40 to finish a job has to stop and wait for a human with a card.
+AI agents are becoming workers, and soon, businesses. Every business runs on credit: a small advance now, paid back when the customer pays. Agents can't get it. An agent that finishes a $400 job but needs $10 today to deliver it has one option, which is a human's credit card. So the work stalls.
 
-We asked a simple question. What would a real bank look like if its customers were agents and their humans stayed accountable? It would follow the same rules as a conventional bank: know your customer, signed limits, underwriting, disclosures, collections and reserves. Every dollar would move over PayPal.
+We set out to build the missing piece: a lender whose customers are agents. It applies a real bank's discipline (know your customer, underwriting, plain-language disclosures, collections and reserves), and every dollar moves over PayPal.
 
 ## What it does
-Mandate is a sandbox bank whose customers are AI agents. Agents need no UI. Every operation is a tool over **MCP**, **REST** and **OpenAPI**, and every response uses the same envelope with `next_actions`, so an agent always knows what to do next.
+Mandate is a sandbox bank that does one thing: **credit for AI agents**.
+1. An agent borrows a few dollars against an invoice it's owed.
+2. Other agents with spare cash fund those loans and earn a share of the fee.
+3. When the client pays the invoice, the loan repays itself.
+
+It works with any agent: Claude Code, Codex, Cursor, Gemini CLI, Copilot. There's no app to learn. Every operation is a tool over **MCP**, **REST** and **OpenAPI**, and every response uses the same envelope with `next_actions`, so an agent always knows what to do next. We tested it end to end with real Claude Code agents.
 
 - **Lend:** an agent with spare cash buys lender notes through a **PayPal checkout**. It earns 80% of borrowers' fees and can cash out through **PayPal Payouts**. Notes are clearly labelled as not deposits and not FDIC-insured.
 - **Borrow:** an agent borrows $10–$500 for 7–30 days, often against a client invoice. The money arrives through **PayPal Payouts**.
 - **Repay:** the bank issues an invoice **payment link** (Orders v2, with the bank as payee). The agent's client pays it, the bank keeps the principal and the fee, and the remainder is paid out to the agent. This settles automatically, with no agent online, through verified webhooks and a reconcile job.
-- **Humans stay accountable:** the owner verifies with PayPal, claims the agent through a one-time link, and signs a **standing mandate** with per-loan, total-owed, fee and term caps. These caps are enforced at apply time and again at accept time. KYA tiers (claimed, documents, Ed25519 request signing) unlock larger limits.
+- **Safety rails:** the owner verifies with PayPal, claims the agent through a one-time link, and signs a **standing mandate** with per-loan, total-owed, fee and term caps. These caps are enforced at apply time and again at accept time. KYA tiers (claimed, documents, Ed25519 request signing) unlock larger limits.
 - **Underwriting:**
   - A deterministic credit score (0–100), grades A–E, risk-based pricing (cost of funds, expected loss, ops and capital) and a rules pipeline with Reg B-style adverse-action reasons.
   - OpenAI writes the explanations only. Every decision comes out byte-identical with the LLM turned off.
@@ -71,7 +78,7 @@ Real Claude agents that were given only a URL completed the whole loop on real P
 The ledger balanced to zero every time.
 
 ## What we learned
-Agent-native finance is mostly classic banking discipline (mandates, disclosures, collections, reserves) plus one new requirement: every response must tell the agent what to do next.
+Credit for agents is mostly classic lending discipline (underwriting, disclosures, collections, reserves) plus one new requirement: every response must tell the agent what to do next.
 
 ## What's next
 Real-money pilots behind a licensed partner, agent-to-agent invoice factoring, and mandates that agents can request changes to and humans approve on mobile.
