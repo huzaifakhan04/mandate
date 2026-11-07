@@ -2,6 +2,7 @@ import type { Db } from "../db/client";
 import { createTokenBucket, clientKey } from "../http/rateLimit";
 import { cachedConsoleSnapshot, resolveConsoleWorld } from "../services/console";
 import { consoleSearch } from "../services/consoleSearch";
+import { consoleCalendar } from "../services/timeline";
 import { principalFromRequest } from "./guard";
 
 /**
@@ -13,6 +14,8 @@ import { principalFromRequest } from "./guard";
  *   archived or malformed id — gets the same 404.
  * - `cache-control: no-store` on every response; server-side, snapshots
  *   come from a 1.5 s single-flight per-world cache (`cachedConsoleSnapshot`).
+ * - P7: `GET /api/console/calendar?world=<main|id>` — the Calendar tab's
+ *   events (`consoleCalendar`), same world rules, PII rules and limiter.
  * - Rate limited per client IP by an in-memory token bucket (burst 30,
  *   2 requests/s sustained — a page polls at 0.5/s): 429 + `retry-after`.
  */
@@ -44,29 +47,40 @@ export function createConsoleHandlers({
   searchLimiter?: ReturnType<typeof createTokenBucket>;
   now?: () => Date;
 }) {
+  async function serve(
+    request: Request,
+    what: string,
+    build: (db: Db, world: NonNullable<Awaited<ReturnType<typeof resolveConsoleWorld>>>) => Promise<unknown>,
+  ): Promise<Response> {
+    const limit = limiter.take(clientKey(request), now().getTime());
+    if (!limit.allowed) {
+      return jsonResponse(
+        429,
+        { ok: false, error: "rate_limited", message: "Too many requests; slow down." },
+        { "retry-after": String(limit.retryAfterSeconds) },
+      );
+    }
+    const requested = new URL(request.url).searchParams.get("world");
+    const session = principalFromRequest(request);
+    try {
+      const db = await getDb();
+      const world = await resolveConsoleWorld(db, session?.principalId ?? null, requested);
+      if (!world) {
+        return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });
+      }
+      return jsonResponse(200, await build(db, world));
+    } catch (err) {
+      console.error(`[console] ${what} failed: ${err instanceof Error ? err.name : "unknown error"}`);
+      return jsonResponse(500, { ok: false, error: "error", message: "Something went wrong." });
+    }
+  }
+
   return {
-    async snapshot(request: Request): Promise<Response> {
-      const limit = limiter.take(clientKey(request), now().getTime());
-      if (!limit.allowed) {
-        return jsonResponse(
-          429,
-          { ok: false, error: "rate_limited", message: "Too many requests; slow down." },
-          { "retry-after": String(limit.retryAfterSeconds) },
-        );
-      }
-      const requested = new URL(request.url).searchParams.get("world");
-      const session = principalFromRequest(request);
-      try {
-        const db = await getDb();
-        const world = await resolveConsoleWorld(db, session?.principalId ?? null, requested);
-        if (!world) {
-          return jsonResponse(404, { ok: false, error: "not_found", message: "World not found." });
-        }
-        return jsonResponse(200, { ok: true, snapshot: await cachedConsoleSnapshot(db, world, () => now().getTime()) });
-      } catch (err) {
-        console.error(`[console] snapshot failed: ${err instanceof Error ? err.name : "unknown error"}`);
-        return jsonResponse(500, { ok: false, error: "error", message: "Something went wrong." });
-      }
+    snapshot(request: Request): Promise<Response> {
+      return serve(request, "snapshot", async (db, world) => ({ ok: true, snapshot: await cachedConsoleSnapshot(db, world, () => now().getTime()) }));
+    },
+    calendar(request: Request): Promise<Response> {
+      return serve(request, "calendar", async (db, world) => ({ ok: true, calendar: await consoleCalendar(db, world, now()) }));
     },
 
     /**

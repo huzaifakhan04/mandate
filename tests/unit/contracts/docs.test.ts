@@ -311,6 +311,29 @@ describe("agents.md identity sections (P2 Task 7)", () => {
     expect(md.indexOf("## Private worlds")).toBeLessThan(md.indexOf("## When you're late"));
   });
 
+  it("P7: documents repayment plans — the rules, the tick's re-planning table, where the plan shows", () => {
+    const section = md.slice(md.indexOf("## Repayment plans"), md.indexOf("## The bank's economy"));
+    expect(md.indexOf("## When you're late")).toBeLessThan(md.indexOf("## Repayment plans"));
+    for (const text of [
+      "`plan_repayments`",
+      "`reschedule_installment`",
+      "1 to 4 installments",
+      "at least **1 sim day ahead**",
+      "at most **2 times**",
+      "`auto_reschedule: true`",
+      "`PLAN_EXISTS` (409)",
+      "`INVALID_PLAN` (400)",
+      "`amounts_do_not_sum`",
+      "`installment_missed`",
+      "`installment_failed`",
+      "refunded or reversed",
+      "`data.repayment_plan`",
+      "never changes what you owe",
+    ]) {
+      expect(section).toContain(text);
+    }
+  });
+
   it("P5: documents the economy — base rate, inflation, utilization premium, treasury gates + reason codes, the queue, stress scenarios", () => {
     const section = md.slice(md.indexOf("## The bank's economy"), md.indexOf("## Human approval"));
     expect(md.indexOf("## When you're late")).toBeLessThan(md.indexOf("## The bank's economy"));

@@ -13,6 +13,8 @@ import { isOwingStatus } from "../../domain/loanMachine";
 import { noticeView, unreadNotices } from "../../services/collections";
 import { queuedRedemptionsFor } from "../../services/notes";
 import { activeRiskFlags, RISK_KIND_TEXT, RISK_REVIEW_TEXT, type RiskKind } from "../../services/riskFlags";
+import { repaymentPlanView } from "../../services/installments";
+import { repaymentPlanSchema } from "../repaymentPlan";
 
 const outputSchema = z.object({
   agent: z.object({
@@ -39,6 +41,8 @@ const outputSchema = z.object({
       total_due_cents: z.number(),
       /** P4: for a CHARGED_OFF loan, your owner's guarantee link (null otherwise). */
       guarantee_link: z.object({ url: z.string().nullable(), amount_cents: z.number(), status: z.string() }).nullable(),
+      /** P7: your own repayment plan (plan_repayments), or null if you haven't proposed one. */
+      repayment_plan: repaymentPlanSchema.nullable(),
     })
     .nullable(),
   /** P4: notices you haven't acknowledged (late, penalty, substandard, cured…); clear them with ack_notices. */
@@ -83,7 +87,8 @@ export const getStatusTool = defineTool({
     "Returns the calling agent's own account snapshot: status, KYA tier (and the claim_url " +
     "to give your human while you are unclaimed), note and payable balances, any open loan, " +
     "lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), " +
-    "unread notices (late fees, penalty, substandard — acknowledge with ack_notices), " +
+    "unread notices (late fees, penalty, substandard, missed installments — acknowledge with ack_notices), " +
+    "your repayment plan (open_loan.repayment_plan), " +
     "and the current simulated time. Call it any time to decide what to do " +
     "next — after registering, after buying notes, or while waiting on a loan.",
   auth: "agent",
@@ -131,6 +136,7 @@ export const getStatusTool = defineTool({
                   status: status.openLoan.guaranteeLink.status.toUpperCase(),
                 }
               : null,
+            repayment_plan: await repaymentPlanView(ctx.db, ctx.worldId, status.openLoan.loanId),
           }
         : null,
       notices: notices.map(noticeView),

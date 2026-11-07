@@ -8,6 +8,8 @@ import { refreshGuaranteeLink } from "../../services/paymentLinks";
 import { daysLate } from "../../domain/delinquency";
 import { noticeView, totalDueCents, unreadNotices } from "../../services/collections";
 import { noticeSchema } from "../notices";
+import { repaymentPlanView } from "../../services/installments";
+import { repaymentPlanSchema } from "../repaymentPlan";
 
 const inputSchema = z.object({
   loan_id: z.uuid(),
@@ -37,6 +39,8 @@ const outputSchema = z.object({
       guarantee_link: z.object({ url: z.string().nullable(), amount_cents: z.number(), status: z.string() }).nullable(),
     })
     .optional(),
+  /** P7: the agent's own repayment plan (plan_repayments), re-planned by the bank as payments land; null if none. */
+  repayment_plan: repaymentPlanSchema.nullable(),
   history: z.array(z.object({ type: z.string(), occurred_sim_at: z.string(), payload: z.unknown() })),
 });
 
@@ -47,7 +51,7 @@ export const getLoanTool = defineTool({
     "Returns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, " +
     "CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days " +
     "late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward " +
-    "to the client (if the loan has an invoice) and full event history. Call it after accept_offer to " +
+    "to the client (if the loan has an invoice), your repayment plan (plan_repayments) and full event history. Call it after accept_offer to " +
     "follow the disbursement, and while the loan is open to see what is still owed. It may finish " +
     "creating the payment link on first call (an idempotent PayPal step); it never changes the loan.",
   auth: "agent",
@@ -124,6 +128,7 @@ export const getLoanTool = defineTool({
               },
             }
           : {}),
+        repayment_plan: await repaymentPlanView(ctx.db, ctx.worldId, loan.id),
         history: view.history.map((event) => ({
           type: event.type,
           occurred_sim_at: event.occurredSimAt.toISOString(),

@@ -53,6 +53,7 @@ import {
   TENURE_DAYS_PER_POINT,
 } from "../domain/scorecard";
 import { TIER_MAX_PER_LOAN_CENTS } from "../domain/kya";
+import { MAX_AGENT_MOVES, MAX_INSTALLMENTS } from "../domain/installments";
 import { ADVERSE_ACTION_NOTICE } from "../services/adverseAction";
 import type { ToolDef } from "./registry";
 
@@ -407,7 +408,7 @@ Every loan has a due date on the world's simulated clock (\`get_loan\` → \`due
 | +10 | \`charged_off\` | Status \`CHARGED_OFF\`. The bank writes the loan off: principal + fee + late fees + penalty at that moment. Note holders bear the principal loss pro rata to their notes. **Your human's guarantee is invoked:** the bank sends them a payment link (on their dashboard) for the full written-off amount. You stay restricted and the mandate stays frozen until it is recovered. |
 | any time after | \`recovered\` | Any payment after charge-off — the guarantee, the invoice link, or \`repay_loan\` — is a **recovery**. Note holders are made whole first. Once the full written-off amount is back, the status is \`RECOVERED\`, your restriction lifts and the freeze ends. Anything paid beyond it is refunded to your payout receiver. |
 
-**Where you see it.** \`get_status\` → \`data.open_loan\` carries \`status\`, \`days_late\`, \`late_fee_cents\`, \`penalty_cents\` and \`total_due_cents\` (what settles the loan now; once charged off, what is still recoverable, plus the \`guarantee_link\`). \`data.notices\` lists your **unread notices** — \`{notice_id, kind, loan_id, sim_at, body}\`, with \`kind\` one of \`late\`, \`penalty\`, \`substandard\`, \`charged_off\`, \`recovery\`, \`recovered\`, \`cured\`. \`get_loan\` shows the same fields for one loan, its notices, and \`charge_off\` (\`written_off_cents\`, \`recovered_cents\`, \`guarantee_link\`). Check \`get_status\` whenever you resume work.
+**Where you see it.** \`get_status\` → \`data.open_loan\` carries \`status\`, \`days_late\`, \`late_fee_cents\`, \`penalty_cents\` and \`total_due_cents\` (what settles the loan now; once charged off, what is still recoverable, plus the \`guarantee_link\`). \`data.notices\` lists your **unread notices** — \`{notice_id, kind, loan_id, sim_at, body}\`, with \`kind\` one of \`late\`, \`penalty\`, \`substandard\`, \`charged_off\`, \`recovery\`, \`recovered\`, \`cured\` (and, for [repayment plans](#repayment-plans), \`installment_missed\`, \`installment_rescheduled\`, \`installment_failed\`). \`get_loan\` shows the same fields for one loan, its notices, and \`charge_off\` (\`written_off_cents\`, \`recovered_cents\`, \`guarantee_link\`). Check \`get_status\` whenever you resume work.
 
 **What to do with a notice.** Read it, **tell your human what it means for them** — what is owed now, what the next step is and when, and that at +10 their guarantee is invoked — then call \`ack_notices\` (all unread, or \`notice_ids\`) so it stops being listed. \`ack_notices\` changes nothing about the loan; your human's dashboard keeps its own read state.
 
@@ -443,6 +444,36 @@ The bank runs a **Risk Desk** on Elastic: its events, PayPal operations and loan
 - Your human sees the flag, the reason and the case file in the agent's drawer on the dashboard (\`${base}/dashboard\`) and can **Request review** with a note explaining why the activity is legitimate.
 - Clearing a flag early is an **admin** action in the main world; in your human's own private world they are the admin and can clear it themselves.
 - Tell your human about the flag when \`get_status\` shows one; there is nothing to retry until it clears.
+`;
+}
+
+function renderRepaymentPlansSection(): string {
+  return `## Repayment plans
+
+You drive your own repayment schedule. Once your loan is \`ACTIVE\`, propose a plan with \`plan_repayments\`; the bank then watches your PayPal payments and **re-plans it automatically** on its tick. The plan is guidance and reminders: it never changes what you owe, the ledger, or the loan's \`due_sim_at\` — the late-fee ladder above still starts only after the due date.
+
+**Proposing (\`plan_repayments\`).** 1 to ${MAX_INSTALLMENTS} installments \`{date, amount_cents}\`, dates as \`YYYY-MM-DD\` sim days (UTC), strictly increasing, from today (sim) up to the loan's due date; the amounts must sum **exactly** to \`total_due_cents\` right now (\`get_loan\`). \`auto_reschedule: true\` lets the bank move a missed installment to the next sim day, **once**. One plan per loan: the same plan again is a replay; a different one is \`PLAN_EXISTS\` (409). A rule broken is \`INVALID_PLAN\` (400) with a reason code: \`too_many_installments\`, \`invalid_date\`, \`dates_not_increasing\`, \`date_in_past\`, \`date_after_due\`, \`amount_not_positive\`, \`amounts_do_not_sum\`.
+
+\`\`\`json
+{ "auto_reschedule": true,
+  "installments": [ { "date": "2026-11-10", "amount_cents": 400 },
+                    { "date": "2026-11-12", "amount_cents": 400 },
+                    { "date": "2026-11-14", "amount_cents": 258 } ] }
+\`\`\`
+
+**Moving one (\`reschedule_installment\`).** \`{installment: 1–4, date}\`: the new date is at least **1 sim day ahead** (tomorrow or later) and **never after the loan's due date**; each installment can be moved at most **${MAX_AGENT_MOVES} times** (the bank's auto-move doesn't count). A \`MISSED\` or \`FAILED\` installment you move is \`PLANNED\` again. Broken rules: \`INVALID_PLAN\` with \`too_soon\`, \`date_after_due\`, \`move_limit\`, \`already_paid\`, \`same_date\` or \`invalid_date\`.
+
+**What the bank does on each tick** (deterministic, from payment events):
+
+| Event | Effect on the plan |
+|---|---|
+| A payment lands (\`repay_loan\`, the invoice link) | Everything paid since the plan is applied to installments **in date order**: paying early marks them \`PAID\`; whatever is left over shifts onto the next installment (\`paid_cents\` > 0, still \`PLANNED\`). Late payments still count. |
+| An installment's day ends uncovered | \`MISSED\` + an \`installment_missed\` notice. With \`auto_reschedule\` it is moved once to the next sim day (\`installment_rescheduled\` notice); a second miss stays \`MISSED\`. |
+| A PayPal capture for your loan fails (denied/declined) | The first open installment is \`FAILED\` + an \`installment_failed\` notice (one failure, one installment). |
+| A payment is refunded or reversed by PayPal | The installment it covered is no longer paid: \`FAILED\` + notice. |
+| The loan is \`REPAID\` / \`RECOVERED\` | Every installment \`PAID\`. |
+
+**Where you see it.** \`get_loan\` → \`data.repayment_plan\` and \`get_status\` → \`data.open_loan.repayment_plan\`: \`{auto_reschedule, planned_total_cents, paid_cents, next_due: {installment, due_on, amount_left_cents}, installments: [{installment, due_on, original_due_on, amount_cents, paid_cents, status, moves, moves_left, auto_moved, paid_sim_at, missed_sim_at, failed_sim_at}]}\`. Installment notices arrive with the others in \`data.notices\` (acknowledge them with \`ack_notices\`). Your human watches the same schedule live on their dashboard's **Timeline** (read-only); the public console's **Calendar** shows every loan's due date and installment.
 `;
 }
 
@@ -834,6 +865,8 @@ ${renderSigningSection(base)}
 ${renderPrivateWorldsSection(base)}
 ${renderLateSection(base)}
 ${renderRiskReviewSection(base)}
+
+${renderRepaymentPlansSection()}
 ${renderEconomySection()}
 ${renderHumanApprovalSection()}
 ${renderDeveloperToolsSection(base)}
@@ -853,7 +886,7 @@ export function renderLlmsTxt(baseUrl: string): string {
 
 > Mandate is a sandbox bank for AI agents on PayPal sandbox: buy lender notes, borrow short-term loans against them, and repay — every operation is a tool over REST, MCP, and OpenAPI.
 
-- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, what happens when a loan is late (delinquency ladder, guarantee, recovery), risk review (what triggers a flag, its effect, how it resolves), human-approval handling, the full tool reference, errors, and money rules.
+- [Agent guide](${base}/agents.md): connect instructions (MCP/REST), a quickstart, claiming and KYA tiers, mandates (borrowing limits), request signing, private worlds, what happens when a loan is late (delinquency ladder, guarantee, recovery), risk review (what triggers a flag, its effect, how it resolves), repayment plans you drive yourself (plan_repayments, reschedule_installment), human-approval handling, the full tool reference, errors, and money rules.
 - [Bank console](${base}/console): watch the bank live — read-only mission control (clock, KPIs, money flow, PayPal API log, ledger).
 - [OpenAPI document](${base}/openapi.json): the machine-readable REST schema for every tool.
 - [MCP endpoint](${mcpUrl(base)}): Streamable HTTP, \`Authorization: Bearer <api_key>\`.

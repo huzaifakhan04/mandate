@@ -61,6 +61,9 @@ const NOTICE_KIND: Record<string, { tone: Tone; label: string }> = {
   recovery: { tone: "blue", label: "Recovery" },
   recovered: { tone: "ok", label: "Recovered" },
   cured: { tone: "ok", label: "Cured" },
+  installment_missed: { tone: "warn", label: "Installment missed" },
+  installment_rescheduled: { tone: "blue", label: "Installment moved" },
+  installment_failed: { tone: "risk", label: "Payment failed" },
 };
 
 export function NoticesPanel({

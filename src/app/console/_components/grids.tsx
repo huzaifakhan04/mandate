@@ -6,6 +6,7 @@ import { useEffect, useId, useMemo, useState } from "react";
 
 import type { ConsoleSnapshot } from "@/server/services/console";
 
+import { CalendarPanel } from "./calendar-panel";
 import { money, pct, shortDate, statusLabel, toneFor } from "./format";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -30,7 +31,9 @@ const gridTheme = themeQuartz.withParams({
   spacing: 7,
 });
 
-type TabId = "ledger" | "loans" | "notes" | "agents";
+type GridTabId = "ledger" | "loans" | "notes" | "agents";
+/** P7: the Calendar tab (Bryntum Calendar) sits beside the grids. */
+type TabId = GridTabId | "calendar";
 
 function StatusPill({ value }: ICellRendererParams) {
   if (typeof value !== "string") {
@@ -102,7 +105,7 @@ const AGENT_COLS: ColDef[] = [
   { field: "status", headerName: "Status", minWidth: 120, cellRenderer: StatusPill },
 ];
 
-const TABS: Array<{ id: TabId; label: string; cols: ColDef[]; foot: string }> = [
+const GRID_TABS: Array<{ id: GridTabId; label: string; cols: ColDef[]; foot: string }> = [
   { id: "ledger", label: "Ledger", cols: LEDGER_COLS, foot: "Double-entry: every journal entry's debits equal its credits." },
   {
     id: "loans",
@@ -119,9 +122,26 @@ const TABS: Array<{ id: TabId; label: string; cols: ColDef[]; foot: string }> = 
   { id: "agents", label: "Agents", cols: AGENT_COLS, foot: "Agent names and ids only — no owner, email or payout details are public." },
 ];
 
+const TABS: Array<{ id: TabId; label: string; foot: string }> = [
+  ...GRID_TABS,
+  {
+    id: "calendar",
+    label: "Calendar",
+    foot: "Due dates, the installments agents plan for themselves, treasury memos, queued redemptions and stress events — sim dates.",
+  },
+];
+
 const DEFAULT_COL: ColDef = { sortable: true, filter: true, resizable: true, flex: 1 };
 
-export function ConsoleGrids({ snapshot }: { snapshot: ConsoleSnapshot }) {
+export function ConsoleGrids({
+  snapshot,
+  worldParam,
+  licenseKey,
+}: {
+  snapshot: ConsoleSnapshot;
+  worldParam: string;
+  licenseKey: string | null;
+}) {
   const [tab, setTab] = useState<TabId>("ledger");
   const [filter, setFilter] = useState("");
   const [mounted, setMounted] = useState(false);
@@ -130,17 +150,19 @@ export function ConsoleGrids({ snapshot }: { snapshot: ConsoleSnapshot }) {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- one-time client mount flag
   useEffect(() => setMounted(true), []);
 
-  const rows: Record<TabId, Array<{ id: string }>> = useMemo(
+  const rows: Record<GridTabId, Array<{ id: string }>> = useMemo(
     () => ({ ledger: snapshot.ledger, loans: snapshot.loans, notes: snapshot.notes, agents: snapshot.agents }),
     [snapshot],
   );
-  const counts: Record<TabId, number> = {
+  const counts: Record<TabId, number | null> = {
     ledger: snapshot.ledgerEntries,
     loans: snapshot.loans.length,
     notes: snapshot.notes.length,
     agents: snapshot.agents.length,
+    calendar: null,
   };
   const current = TABS.find((t) => t.id === tab)!;
+  const grid = GRID_TABS.find((t) => t.id === tab);
 
   function onKey(event: React.KeyboardEvent<HTMLDivElement>) {
     if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") {
@@ -172,10 +194,11 @@ export function ConsoleGrids({ snapshot }: { snapshot: ConsoleSnapshot }) {
               data-testid={`tab-${t.id}`}
             >
               {t.label}
-              <small className="num">{counts[t.id].toLocaleString("en-US")}</small>
+              {counts[t.id] !== null ? <small className="num">{counts[t.id]!.toLocaleString("en-US")}</small> : null}
             </button>
           ))}
         </div>
+        {grid ? (
         <input
           className="search"
           type="search"
@@ -185,15 +208,17 @@ export function ConsoleGrids({ snapshot }: { snapshot: ConsoleSnapshot }) {
           onChange={(e) => setFilter(e.target.value)}
           data-testid="grid-filter"
         />
+        ) : null}
       </div>
       <div className="pb" id={`${baseId}-panel`} role="tabpanel" aria-labelledby={`${baseId}-tab-${tab}`}>
+        {grid ? (
         <div className="gridbox" data-testid={`grid-${tab}`}>
           {mounted ? (
             <AgGridReact
               key={tab}
               theme={gridTheme}
-              rowData={rows[tab]}
-              columnDefs={current.cols}
+              rowData={rows[grid.id]}
+              columnDefs={grid.cols}
               defaultColDef={DEFAULT_COL}
               getRowId={(p) => (p.data as { id: string }).id}
               quickFilterText={filter}
@@ -203,12 +228,17 @@ export function ConsoleGrids({ snapshot }: { snapshot: ConsoleSnapshot }) {
             />
           ) : null}
         </div>
+        ) : (
+          <CalendarPanel worldParam={worldParam} licenseKey={licenseKey} />
+        )}
         <div className="q-foot">
           <span>{current.foot}</span>
           <span className="num">
             {tab === "ledger"
               ? `${snapshot.ledger.length.toLocaleString("en-US")} lines · latest ${Math.min(snapshot.ledgerEntries, 150)} of ${snapshot.ledgerEntries.toLocaleString("en-US")} entries`
-              : `${rows[tab].length.toLocaleString("en-US")} rows`}
+              : grid
+                ? `${rows[grid.id].length.toLocaleString("en-US")} rows`
+                : "Bryntum Calendar · month / week / agenda"}
           </span>
         </div>
       </div>

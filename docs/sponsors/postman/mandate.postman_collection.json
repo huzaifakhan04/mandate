@@ -106,7 +106,7 @@
                 "get_status"
               ]
             },
-            "description": "Your agent, KYA tier, mandate, positions and open items.\n\nReturns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard — acknowledge with ack_notices), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_status` at `{{baseUrl}}/api/mcp/mcp`."
+            "description": "Your agent, KYA tier, mandate, positions and open items.\n\nReturns the calling agent's own account snapshot: status, KYA tier (and the claim_url to give your human while you are unclaimed), note and payable balances, any open loan, lending limits, your Agent Credit Score (0–100, grade A–E, grade limit, top 3 factors), unread notices (late fees, penalty, substandard, missed installments — acknowledge with ack_notices), your repayment plan (open_loan.repayment_plan), and the current simulated time. Call it any time to decide what to do next — after registering, after buying notes, or while waiting on a loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_status` at `{{baseUrl}}/api/mcp/mcp`."
           },
           "response": []
         },
@@ -427,7 +427,7 @@
                 "get_loan"
               ]
             },
-            "description": "Loan status, balance, repayment link and history.\n\nReturns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_loan` at `{{baseUrl}}/api/mcp/mcp`."
+            "description": "Loan status, balance, repayment link and history.\n\nReturns one of the calling agent's loans: its status (DISBURSING, ACTIVE, LATE, SUBSTANDARD, CHARGED_OFF, RECOVERED, DISBURSEMENT_FAILED, REPAID), principal, fee, outstanding balance, due date, delinquency (days late, late fees, rate penalty, total due) and unread notices about it, the invoice repayment link to forward to the client (if the loan has an invoice), your repayment plan (plan_repayments) and full event history. Call it after accept_offer to follow the disbursement, and while the loan is open to see what is still owed. It may finish creating the payment link on first call (an idempotent PayPal step); it never changes the loan.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** read-only, idempotent · Also an MCP tool: `get_loan` at `{{baseUrl}}/api/mcp/mcp`."
           },
           "response": []
         },
@@ -496,6 +496,74 @@
               ]
             },
             "description": "Repay part of it.\n\nRepays the calling agent's ACTIVE, LATE or SUBSTANDARD loan directly through a PayPal checkout the agent's human approves (a restricted agent may still repay). amount_cents defaults to everything owed (total_due_cents) and may not exceed it; late fees are paid first, then the rate penalty, the fee, then principal. A CHARGED_OFF loan can still be repaid: the payment is a recovery of what was written off (total_due_cents). Present the approve_url to the payer, then call confirm_checkout.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, reaches PayPal · Also an MCP tool: `repay_loan` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "plan_repayments",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"auto_reschedule\": true,\n  \"installments\": [\n    {\n      \"date\": \"2026-11-10\",\n      \"amount_cents\": 400\n    },\n    {\n      \"date\": \"2026-11-12\",\n      \"amount_cents\": 400\n    },\n    {\n      \"date\": \"2026-11-14\",\n      \"amount_cents\": 258\n    }\n  ]\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/plan_repayments",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "plan_repayments"
+              ]
+            },
+            "description": "Propose your own 3-installment plan for the open loan, auto-moving a missed one.\n\nProposes your own repayment schedule for your ACTIVE loan: 1 to 4 installments, each {date: YYYY-MM-DD sim date, amount_cents}. Dates must be strictly increasing, from today (sim) up to the loan's due date; the amounts must sum exactly to total_due_cents now (see get_loan). loan_id defaults to your open loan. Set auto_reschedule: true to let the bank move a missed installment to the next sim day, once. The bank then watches your payments: any payment (repay_loan, the invoice link) is applied to installments in date order — paying early marks them PAID, a partial payment leaves the rest on that installment; a day that ends uncovered marks it MISSED (with a notice); a failed or refunded PayPal payment marks it FAILED. Move one with reschedule_installment (up to 2 times each). The plan is guidance and reminders: it never changes what you owe, and late fees still start only after the loan's due date. One plan per loan; calling again with the same plan returns it unchanged.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating, idempotent · Also an MCP tool: `plan_repayments` at `{{baseUrl}}/api/mcp/mcp`."
+          },
+          "response": []
+        },
+        {
+          "name": "reschedule_installment",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"installment\": 2,\n  \"date\": \"2026-11-13\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/reschedule_installment",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "api",
+                "v1",
+                "reschedule_installment"
+              ]
+            },
+            "description": "Move installment 2 to a later sim day.\n\nMoves one unpaid installment of your repayment plan (from plan_repayments) to a new sim date. Rules: the new date is at least 1 sim day ahead (tomorrow or later) and never after the loan's due date; each installment can be moved at most 2 times (a bank auto-reschedule doesn't count). A MISSED or FAILED installment moved this way is PLANNED again. installment is its number in the plan (1–4); loan_id defaults to your open loan. It changes nothing about what you owe or the loan's due date.\n\n**Auth:** Bearer `{{apiKey}}` (set by the collection pre-request script) · **Hints:** mutating · Also an MCP tool: `reschedule_installment` at `{{baseUrl}}/api/mcp/mcp`."
           },
           "response": []
         }

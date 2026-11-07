@@ -6,11 +6,13 @@ import { requirePagePrincipal } from "@/server/auth/guard";
 import { getDb } from "@/server/db/client";
 import { agentDetail, guaranteesOwed, ownerDashboard, ownerNotices } from "@/server/services/dashboard";
 import { resolveDashboardWorld } from "@/server/services/privateWorldAccess";
+import { ownerTimeline } from "@/server/services/timeline";
 
 import { AgentCard, PasteClaimCard, SummaryStrip } from "./_components/cards";
 import { DashFrame, LEGAL, LoadingFrame, TopBar } from "./_components/chrome";
 import { GuaranteeCards, NoticesPanel } from "./_components/collections";
 import { AgentDrawer, type DrawerParams, type DrawerTab } from "./_components/drawer";
+import { TimelinePanel } from "./_components/timeline-panel";
 import "./dashboard.css";
 
 export const metadata: Metadata = {
@@ -50,6 +52,20 @@ async function Dashboard({ searchParams }: { searchParams: SearchParams }) {
   const notices = await ownerNotices(db, session.principalId, { worldId: privateWorldId });
   const guarantees = guaranteesOwed(agents);
   const tab: DrawerTab = TABS.includes(params.tab as DrawerTab) ? (params.tab as DrawerTab) : "loans";
+  // P7: `?view=timeline` — the Bryntum repayment timeline instead of the agent cards.
+  const view = params.view === "timeline" ? "timeline" : "agents";
+  const timeline = view === "timeline" ? await ownerTimeline(db, session.principalId, { worldId: privateWorldId }) : null;
+  const viewHref = (target: "agents" | "timeline") => {
+    const query = new URLSearchParams();
+    if (privateWorldId) {
+      query.set("world", privateWorldId);
+    }
+    if (target === "timeline") {
+      query.set("view", "timeline");
+    }
+    const text = query.toString();
+    return `/dashboard${text ? `?${text}` : ""}`;
+  };
 
   return (
     <DashFrame hasDrawer={Boolean(detail)}>
@@ -87,18 +103,33 @@ async function Dashboard({ searchParams }: { searchParams: SearchParams }) {
           </div>
         ) : null}
 
+        <nav className="viewtabs" aria-label="Dashboard view">
+          <Link href={viewHref("agents")} aria-current={view === "agents" ? "page" : undefined} data-testid="view-agents">
+            Agents
+          </Link>
+          <Link href={viewHref("timeline")} aria-current={view === "timeline" ? "page" : undefined} data-testid="view-timeline">
+            Timeline
+          </Link>
+        </nav>
+
         <GuaranteeCards guarantees={guarantees} privateWorld={Boolean(privateWorldId)} />
 
-        <SummaryStrip summary={summary} />
+        {timeline ? (
+          <TimelinePanel initial={timeline} worldId={privateWorldId} licenseKey={process.env.BRYNTUM_LICENSE_KEY ?? null} />
+        ) : (
+          <>
+            <SummaryStrip summary={summary} />
 
-        <section className="grid" aria-label="Agents">
-          {agents.map((agent) => (
-            <AgentCard key={agent.id} agent={agent} selected={agent.id === detail?.id} />
-          ))}
-          <PasteClaimCard error={params.claim_error === "invalid"} />
-        </section>
+            <section className="grid" aria-label="Agents">
+              {agents.map((agent) => (
+                <AgentCard key={agent.id} agent={agent} selected={agent.id === detail?.id} />
+              ))}
+              <PasteClaimCard error={params.claim_error === "invalid"} />
+            </section>
+          </>
+        )}
 
-        {agents.length === 0 ? (
+        {agents.length === 0 && !timeline ? (
           <p className="sub" style={{ marginTop: 16 }}>
             {privateWorldId
               ? "No agents of yours in this sandbox world yet. Register one here; the bots are already trading."

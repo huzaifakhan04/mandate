@@ -21,5 +21,7 @@ import "./declineOffer";
 import "./getApplication";
 import "./getLoan";
 import "./repayLoan";
+import "./planRepayments";
+import "./rescheduleInstallment";
 import "./getStatement";
 import "./ackNotices";

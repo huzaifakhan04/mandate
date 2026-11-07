@@ -1227,3 +1227,65 @@ export const riskFlags = pgTable(
     check("risk_flags_status", sql`${table.status} in ('open', 'cleared')`),
   ],
 );
+
+/**
+ * P7: an agent's own repayment plan for its open loan — up to 4 dated
+ * installments it proposed with `plan_repayments` (sim dates on or before
+ * the loan's due date, amounts summing to the total due at plan time),
+ * moved with `reschedule_installment`, and re-planned by the tick from
+ * payment events (`services/installments.ts`). Guidance and reminders
+ * only: the ledger never reads it, and the delinquency ladder is still
+ * driven by the loan's `due_sim_at` alone.
+ *
+ * `due_on` is the installment's sim day (00:00 UTC); it is missed once the
+ * sim clock passes the end of that day without it being fully covered.
+ * `status`: `planned` | `paid` | `missed` | `failed`.
+ */
+export const loanInstallments = pgTable(
+  "loan_installments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    worldId: uuid("world_id")
+      .notNull()
+      .references(() => worlds.id),
+    loanId: uuid("loan_id")
+      .notNull()
+      .references(() => loans.id),
+    agentId: uuid("agent_id")
+      .notNull()
+      .references(() => agents.id),
+    /** 1-based position in the plan as proposed. */
+    seq: integer("seq").notNull(),
+    dueOn: timestamp("due_on", { withTimezone: true }).notNull(),
+    /** The day the agent first planned it (before any move). */
+    originalDueOn: timestamp("original_due_on", { withTimezone: true }).notNull(),
+    amountCents: bigint("amount_cents", { mode: "bigint" }).notNull(),
+    /** What payments since the plan have covered, allocated in date order. */
+    paidCents: bigint("paid_cents", { mode: "bigint" }).notNull().default(sql`0`),
+    status: text("status").notNull().default("planned"),
+    /** Moves made by the agent (`reschedule_installment`, at most 2). */
+    moves: integer("moves").notNull().default(0),
+    /** The plan's opt-in: move a missed installment to the next sim day, once. */
+    autoReschedule: boolean("auto_reschedule").notNull().default(false),
+    autoMoved: boolean("auto_moved").notNull().default(false),
+    /** The `loan.repayment_planned` event's seq: payments after it count toward the plan. */
+    planEventSeq: bigint("plan_event_seq", { mode: "bigint" }).notNull(),
+    /** Total due when the plan was made (the installments sum to it). */
+    plannedTotalCents: bigint("planned_total_cents", { mode: "bigint" }).notNull(),
+    paidSimAt: timestamp("paid_sim_at", { withTimezone: true }),
+    missedSimAt: timestamp("missed_sim_at", { withTimezone: true }),
+    failedSimAt: timestamp("failed_sim_at", { withTimezone: true }),
+    /** The failure signal consumed by this installment (`link:<id>` or `refund:<repayment id>`). */
+    failureRef: text("failure_ref"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("loan_installments_loan_seq_idx").on(table.worldId, table.loanId, table.seq),
+    index("loan_installments_status_idx").on(table.worldId, table.status),
+  ],
+);

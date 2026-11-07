@@ -172,6 +172,27 @@ const META: Record<string, ToolMetaEntry> = {
       { summary: "Repay part of it", args: { loan_id: EXAMPLE_IDS.loan_id, amount_cents: 500 } },
     ],
   },
+  plan_repayments: {
+    group: "Repay",
+    idempotent: true,
+    examples: [
+      {
+        summary: "Propose your own 3-installment plan for the open loan, auto-moving a missed one",
+        args: {
+          auto_reschedule: true,
+          installments: [
+            { date: "2026-11-10", amount_cents: 400 },
+            { date: "2026-11-12", amount_cents: 400 },
+            { date: "2026-11-14", amount_cents: 258 },
+          ],
+        },
+      },
+    ],
+  },
+  reschedule_installment: {
+    group: "Repay",
+    examples: [{ summary: "Move installment 2 to a later sim day", args: { installment: 2, date: "2026-11-13" } }],
+  },
   get_statement: {
     group: "Treasury",
     examples: [{ summary: "Your ledger statement: notes, loans, fees, payouts", args: {} }],
