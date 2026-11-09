@@ -292,6 +292,17 @@ const STRESS_LABEL: Record<string, string> = {
   rate_spike: "Stress: rate spike",
 };
 
+/**
+ * Loan statuses that still have a due date ahead of (or behind) them: in
+ * flight, owing, or charged off and unrecovered. A settled loan (REPAID,
+ * RECOVERED) or one that never funded gets no "due" event on the Calendar.
+ */
+const DUE_EVENT_STATUSES: ReadonlySet<string> = new Set(["disbursing", "active", "late", "substandard", "charged_off"]);
+
+export function showsDueEvent(status: string): boolean {
+  return DUE_EVENT_STATUSES.has(status);
+}
+
 function dayRange(at: Date): { startDate: string; endDate: string } {
   const start = dayStart(at);
   return { startDate: start.toISOString(), endDate: addDays(start, 1).toISOString() };
@@ -310,6 +321,9 @@ export async function consoleCalendar(db: Db, world: ConsoleWorld, realNow: Date
     .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
     .slice(0, LOAN_LIMIT);
   for (const loan of loanRows) {
+    if (!showsDueEvent(loan.status)) {
+      continue; // settled (repaid/recovered): nothing is due any more
+    }
     const label = shortLabel("L", loan.id);
     const agent = nameOf.get(loan.agentId) ?? "—";
     out.push({

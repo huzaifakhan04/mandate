@@ -3,6 +3,7 @@
  * and the console Calendar read model + endpoint (same world/PII rules as
  * the console snapshot).
  */
+import { eq } from "drizzle-orm";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { getSimNow } from "@/server/clock/clock";
@@ -10,11 +11,12 @@ import { createConsoleHandlers } from "@/server/auth/consoleRoutes";
 import { SESSION_COOKIE_NAME, createSession } from "@/server/auth/session";
 import { createTimelineHandler } from "@/server/auth/timelineRoutes";
 import type { Db } from "@/server/db/client";
-import { principals } from "@/server/db/schema";
+import { loans, principals } from "@/server/db/schema";
 import { createTestDb } from "@/server/db/testing";
 import { addDays, dayStart, simDate } from "@/server/domain/installments";
 import { runTick } from "@/server/jobs/tick";
 import { simApprove } from "@/server/rail/simHandler";
+import { consoleSnapshot } from "@/server/services/console";
 import { consoleCalendar, ownerTimeline, type OwnerTimeline } from "@/server/services/timeline";
 import { createWorld } from "@/server/services/worlds";
 
@@ -119,6 +121,29 @@ describe("timeline + calendar (P7)", () => {
     const text = JSON.stringify(calendar);
     expect(text).not.toContain("@");
     expect(text).not.toContain("secret");
+  });
+
+  it("consoleCalendar: a repaid loan has no due event; the console Loans grid shows its priced grade", async () => {
+    const s = await scenario();
+    const world = { id: s.worldId, name: "Timeline", kind: "main" as const, rail: "sim" as const };
+    expect((await consoleCalendar(db, world)).events.some((e) => e.id === `due:${s.loanId}`)).toBe(true);
+
+    const snap = await consoleSnapshot(db, world);
+    const row = snap.loans.find((l) => l.id === s.loanId)!;
+    expect(row.grade).toMatch(/^[A-E]$/);
+
+    const [loan] = await db.select().from(loans).where(eq(loans.id, s.loanId));
+    const owed = Number(loan!.outstandingCents + loan!.lateFeeOutstandingCents);
+    const started = await call(db, "repay_loan", s.borrower.key, { loan_id: s.loanId, amount_cents: owed });
+    const checkoutId = (started.envelope.data as Data).checkout_id as string;
+    await simApprove(db, checkoutId);
+    await call(db, "confirm_checkout", s.borrower.key, { checkout_id: checkoutId });
+    const [after] = await db.select().from(loans).where(eq(loans.id, s.loanId));
+    expect(after!.status).toBe("repaid");
+
+    const calendar = await consoleCalendar(db, world);
+    expect(calendar.events.some((e) => e.id === `due:${s.loanId}`)).toBe(false);
+    expect(calendar.events.some((e) => e.calendar === "installment")).toBe(true);
   });
 
   it("calendar endpoint: main for anyone, a private world for its owner only", async () => {
