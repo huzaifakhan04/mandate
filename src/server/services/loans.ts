@@ -5,6 +5,7 @@ import type { Db } from "../db/client";
 import { agents, applications, events, loans, noteSeries, offers } from "../db/schema";
 import { scoped } from "../db/scoped";
 import { canonicalJson, disclosureHash } from "../domain/disclosure";
+import { loanGrade } from "../domain/loanGrade";
 import { availableLiquidity } from "../domain/liquidity";
 import {
   fromDbStatus,
@@ -982,6 +983,8 @@ export async function beginAcceptOffer(
     // Provisional; re-based on the disbursement time at activation (Ruling P).
     dueSimAt: addDays(simNow, offer.termDays),
     status: toDbStatus(transition(acceptedState, "DISBURSE")),
+    // The grade the offer was priced at (its disclosure's credit_grade).
+    riskGrade: loanGrade(null, offer.disclosure),
   });
   if (!loan) {
     throw new Error("Expected a loans row to be inserted");

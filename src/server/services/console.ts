@@ -25,6 +25,7 @@ import { ELASTIC_DISABLED_NOTE, elasticConfigured } from "../elastic/config";
 import { openRiskCounts, RISK_KIND_LABEL, RISK_KINDS, type RiskKind } from "./riskFlags";
 import { ensureMainWorldOnce } from "./worlds";
 import { ensureDemoWorld } from "./demoWorld";
+import { loanGrade } from "../domain/loanGrade";
 
 /**
  * P6: the public bank console's read model ("mission control"). One call
@@ -266,6 +267,7 @@ const EDGE_LABEL: Record<FlowEdge, string> = {
 
 const num = (value: bigint | null | undefined): number => Number(value ?? 0n);
 
+
 /**
  * Which world the console shows: `requested` when it names one of the
  * signed-in principal's active private worlds; the main world when nothing
@@ -327,7 +329,7 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
   const offerRows = loanRows.length
     ? await w.selectFields(
         offers,
-        { id: offers.id, aprBps: offers.aprBps },
+        { id: offers.id, aprBps: offers.aprBps, disclosure: offers.disclosure },
         inArray(
           offers.id,
           loanRows.map((l) => l.offerId),
@@ -335,6 +337,9 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
       )
     : [];
   const aprOf = new Map(offerRows.map((o) => [o.id, o.aprBps]));
+  const disclosureOf = new Map(offerRows.map((o) => [o.id, o.disclosure as unknown]));
+  const gradeOfLoan = (loan: { riskGrade: string | null; offerId: string }) =>
+    loanGrade(loan.riskGrade, disclosureOf.get(loan.offerId));
   const owingStatuses = new Set<string>(["active", "late", "substandard"]);
   const loansView = loanRows
     .slice()
@@ -350,7 +355,7 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
         loan: shortLabel("L", loan.id),
         agent: nameOf.get(loan.agentId) ?? "—",
         status: loan.status,
-        grade: loan.riskGrade,
+        grade: gradeOfLoan(loan),
         principalCents: num(loan.principalCents),
         feeCents: num(loan.feeCents),
         aprBps: aprOf.get(loan.offerId) ?? null,
@@ -511,7 +516,7 @@ export async function consoleSnapshot(db: Db, world: ConsoleWorld, realNow: Date
     .sort((a, b) => (b.principalCents > a.principalCents ? 1 : b.principalCents < a.principalCents ? -1 : 0))
     .map((l) => ({
       name: nameOf.get(l.agentId) ?? "—",
-      grade: l.riskGrade,
+      grade: gradeOfLoan(l),
       status: l.status,
       principalCents: num(l.principalCents),
     }));
