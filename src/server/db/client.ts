@@ -31,7 +31,13 @@ function createDb(): NeonDatabase<typeof schema> {
     );
   }
 
-  const pool = new Pool({ connectionString });
+  // Without these a stalled connection hangs a request forever (both
+  // default to no limit): `connectionTimeoutMillis` bounds opening a
+  // connection / waiting for a free pooled one, `query_timeout` bounds a
+  // single query on a connection that has gone silent. Either fails the
+  // query with an error instead, which callers already handle. Nothing in
+  // the app runs a query anywhere near 30 s.
+  const pool = new Pool({ connectionString, connectionTimeoutMillis: 10_000, query_timeout: 30_000 });
   // An idle pooled client can error (e.g. Neon closing an idle connection
   // or a compute scaling to zero). Without a listener that `error` event
   // is unhandled and crashes the process. Log the error's name/code/
